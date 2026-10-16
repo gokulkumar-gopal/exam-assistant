@@ -1,6 +1,6 @@
 module github.com/gokulkumar/exam-assistant/backend
 
-go 1.24
+go 1.24.0
 
 require (
 	github.com/aws/aws-lambda-go v1.54.0
@@ -9,6 +9,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/dynamodb v1.70.3
 	github.com/awslabs/aws-lambda-go-api-proxy v0.16.2
 	github.com/oklog/ulid/v2 v2.1.2
+	golang.org/x/crypto v0.45.0
 )
 
 require (

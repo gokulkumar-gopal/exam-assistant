@@ -9,6 +9,9 @@ import (
 	"strings"
 )
 
+// MinJWTSecretBytes is the shortest accepted JWT_SECRET.
+const MinJWTSecretBytes = 32
+
 // Config is the whole process configuration.
 type Config struct {
 	Env      string // "local" or "production"
@@ -109,6 +112,10 @@ func Load(getenv func(string) string) (Config, error) {
 	switch c.Mode {
 	case "api":
 		c.JWTSecret = require("JWT_SECRET")
+		// HS256 wants a key at least as long as the hash output. The value is never echoed.
+		if c.JWTSecret != "" && len(c.JWTSecret) < MinJWTSecretBytes {
+			fail("JWT_SECRET must be at least %d bytes", MinJWTSecretBytes)
+		}
 		c.GoogleClientID = require("GOOGLE_CLIENT_ID")
 		for _, o := range strings.Split(get("ALLOWED_ORIGINS"), ",") {
 			if o = strings.TrimSpace(o); o != "" {

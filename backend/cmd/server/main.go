@@ -12,8 +12,10 @@ import (
 	"time"
 
 	"github.com/gokulkumar/exam-assistant/backend/internal/api"
+	"github.com/gokulkumar/exam-assistant/backend/internal/auth"
 	"github.com/gokulkumar/exam-assistant/backend/internal/clock"
 	"github.com/gokulkumar/exam-assistant/backend/internal/config"
+	"github.com/gokulkumar/exam-assistant/backend/internal/store/memory"
 )
 
 func main() {
@@ -31,10 +33,19 @@ func main() {
 		logger.Error("config", "err", err)
 		os.Exit(1)
 	}
-	_ = cfg // consumed by services as later tasks wire them into api.Deps
 
+	// The local server keeps users in memory; the DynamoDB store is wired for deployed stages later.
+	users := memory.NewUserStore()
+	clk := clock.Real{}
 	// The InProcessRunner is wired into Deps here when the generation task adds it.
-	handler := api.NewRouter(api.Deps{Logger: logger, Clock: clock.Real{}})
+	handler := api.NewRouter(api.Deps{
+		Logger:         logger,
+		Clock:          clk,
+		Users:          users,
+		Auth:           auth.NewService(users, auth.NewBcryptHasher(auth.BcryptCost), clk),
+		Sessions:       auth.NewSessions([]byte(cfg.JWTSecret), cfg.Env),
+		AllowedOrigins: cfg.AllowedOrigins,
+	})
 
 	addr := os.Getenv("ADDR")
 	if addr == "" {

@@ -137,6 +137,7 @@ func TestLoadConfigFailsFast(t *testing.T) {
 		{"unknown provider", apiEnv, func(m map[string]string) { m["LLM_PROVIDERS"] = "openai" }, "LLM_PROVIDERS"},
 		{"non-numeric cap", apiEnv, func(m map[string]string) { m["GEN_MAX_PER_DAY"] = "lots" }, "GEN_MAX_PER_DAY"},
 		{"zero cap", apiEnv, func(m map[string]string) { m["GEN_MAX_RUNNING"] = "0" }, "GEN_MAX_RUNNING"},
+		{"short JWT_SECRET", apiEnv, func(m map[string]string) { m["JWT_SECRET"] = "0123456789abcdef0123456789abcde" }, "JWT_SECRET"},
 		{"bad effort", apiEnv, func(m map[string]string) { m["LLM_EFFORT"] = "extreme" }, "LLM_EFFORT"},
 	}
 	for _, tc := range cases {
@@ -184,5 +185,37 @@ func TestLoadConfigModelEnabledHook(t *testing.T) {
 	config.ModelEnabled = func(string, []string) bool { t.Fatal("hook must not run when LLM_MODEL empty"); return false }
 	if _, err := config.Load(env(m)); err != nil {
 		t.Fatalf("empty LLM_MODEL: %v", err)
+	}
+}
+
+func TestJWTSecretLengthIsMeasuredInBytes(t *testing.T) {
+	m := apiEnv()
+	m["JWT_SECRET"] = strings.Repeat("a", 32)
+	if _, err := config.Load(env(m)); err != nil {
+		t.Errorf("32-byte secret rejected: %v", err)
+	}
+	// 11 runes of 3 bytes = 33 bytes is long enough; 10 runes = 30 bytes is not.
+	m["JWT_SECRET"] = strings.Repeat("€", 11)
+	if _, err := config.Load(env(m)); err != nil {
+		t.Errorf("33-byte secret rejected: %v", err)
+	}
+	m["JWT_SECRET"] = strings.Repeat("€", 10)
+	if _, err := config.Load(env(m)); err == nil {
+		t.Error("30-byte secret accepted")
+	}
+}
+
+func TestShortJWTSecretErrorDoesNotEchoSecret(t *testing.T) {
+	m := apiEnv()
+	m["JWT_SECRET"] = "tooshort-but-secret"
+	_, err := config.Load(env(m))
+	if err == nil || strings.Contains(err.Error(), "tooshort-but-secret") {
+		t.Errorf("err = %v", err)
+	}
+}
+
+func TestWorkerDoesNotNeedJWTSecret(t *testing.T) {
+	if _, err := config.Load(env(workerEnv())); err != nil {
+		t.Errorf("worker without JWT_SECRET: %v", err)
 	}
 }
