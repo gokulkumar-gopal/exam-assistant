@@ -1,5 +1,6 @@
 // Same-origin API client (fs 8, 8.1). Paths are given without the /api prefix.
 import type { ApiErrorBody } from "./types";
+import { reachability as sharedReach, type Reachability } from "./reachability";
 
 export class ApiError extends Error {
   status: number;
@@ -23,6 +24,7 @@ export interface ApiDeps {
   redirect?: (url: string) => void;
   currentPath?: () => string;
   mock?: boolean;
+  reach?: Reachability;
 }
 
 const RETRY_DELAYS = [1000, 2000, 4000];
@@ -36,6 +38,7 @@ export function createApi(deps: ApiDeps = {}) {
   const redirect = deps.redirect ?? ((url: string) => { if (hasWindow) window.location.assign(url); });
   const currentPath =
     deps.currentPath ?? (() => (hasWindow ? window.location.pathname + window.location.search : "/"));
+  const reach = deps.reach ?? sharedReach;
   const useMock = deps.mock ?? process.env.NEXT_PUBLIC_MOCK_API === "true";
 
   let offsetMs = 0;
@@ -103,15 +106,21 @@ export function createApi(deps: ApiDeps = {}) {
 
   async function api<T>(method: Method, path: string, body?: unknown, opts?: ApiOpts): Promise<T> {
     const isRead = method === "GET";
-    for (let i = 0; ; i++) {
-      try {
-        return await attempt<T>(method, path, body, opts);
-      } catch (err) {
-        const retryable = err instanceof ApiError && (err.status === 0 || RETRYABLE.has(err.status));
-        // Reads retry 1/2/4 s; writes never retry here (callers keep form state).
-        if (!isRead || opts?.noRetry || !retryable || i >= RETRY_DELAYS.length) throw err;
-        await sleep(RETRY_DELAYS[i]);
+    let marked = false;
+    try {
+      for (let i = 0; ; i++) {
+        try {
+          return await attempt<T>(method, path, body, opts);
+        } catch (err) {
+          const retryable = err instanceof ApiError && (err.status === 0 || RETRYABLE.has(err.status));
+          // Reads retry 1/2/4 s; writes never retry here (callers keep form state).
+          if (!isRead || opts?.noRetry || !retryable || i >= RETRY_DELAYS.length) throw err;
+          if (!marked) { marked = true; reach.begin(); }
+          await sleep(RETRY_DELAYS[i]);
+        }
       }
+    } finally {
+      if (marked) reach.end();
     }
   }
 

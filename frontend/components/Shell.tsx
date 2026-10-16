@@ -4,11 +4,21 @@
 // The guard only redirects; it never reads or stores credentials.
 import { useEffect } from "react";
 import { usePathname, useRouter } from "next/navigation";
+import { ReachabilityNotice } from "@/components/ReachabilityNotice";
 import { AppBar } from "@/components/AppBar";
 import { useSession } from "@/lib/session";
 import { isExamTakePath, isPublicPath, loginUrl, returnPath } from "@/lib/routes";
 
 export function Shell({ children }: { children: React.ReactNode }) {
+  return (
+    <>
+      <ReachabilityNotice />
+      <ShellInner>{children}</ShellInner>
+    </>
+  );
+}
+
+function ShellInner({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
   const { user, loading, error, loggedOut, refresh } = useSession();
