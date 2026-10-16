@@ -16,8 +16,9 @@ const (
 )
 
 // Model is one catalog row. Prices are USD per million tokens. SupportsEffort is true for
-// the models that accept output_config.effort; Haiku 4.5 rejects it with a 400 (AI-spec 3.2)
-// and Gemini has no such setting, so for those no effort is sent or recorded.
+// the Anthropic models that accept output_config.effort; Haiku 4.5 rejects it with a 400
+// (AI-spec 3.2), so none is sent or recorded for it. Gemini has no effort parameter, but
+// LLM_EFFORT is mapped to its thinking level; see EffortSent.
 type Model struct {
 	ID, Name, Provider, Tier string
 	InPerMTok, OutPerMTok    float64
@@ -138,4 +139,31 @@ func LookupModel(id string) (Model, bool) {
 		}
 	}
 	return Model{}, false
+}
+
+// GeminiThinkingEffort is the LLM_EFFORT value the Gemini adapter turns into a thinking level
+// (low, medium or high), or "" when none is sent (empty or unknown). The adapter and
+// EffortSent both use it, so what the job records is what was sent.
+func GeminiThinkingEffort(effort string) string {
+	switch effort {
+	case "low", "medium", "high":
+		return effort
+	}
+	return ""
+}
+
+// EffortSent is the effort a call to model carries, which is what the job records (AI-spec 11):
+// the configured effort for the Claude models that take it, the thinking level for Gemini,
+// and "" for Haiku 4.5 and unknown models.
+func EffortSent(model, effort string) string {
+	m, ok := LookupModel(model)
+	switch {
+	case !ok:
+		return ""
+	case m.Provider == ProviderGemini:
+		return GeminiThinkingEffort(effort)
+	case m.SupportsEffort:
+		return effort
+	}
+	return ""
 }

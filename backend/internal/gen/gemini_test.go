@@ -742,3 +742,54 @@ func TestNewGeminiDefaultsAndInterfaces(t *testing.T) {
 		t.Error("an empty key was accepted (the SDK would fall back to the environment)")
 	}
 }
+
+// The 400 for an unknown key is recognised by its error details when the message is reworded.
+func TestGeminiInvalidKeyRecognisedByErrorDetails(t *testing.T) {
+	f := newFakeAPI(t, func(n int, w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(400)
+		_ = json.NewEncoder(w).Encode(map[string]any{"error": map[string]any{
+			"code": 400, "message": "Credentials rejected.", "status": "INVALID_ARGUMENT",
+			"details": []any{map[string]any{"@type": "type.googleapis.com/google.rpc.ErrorInfo", "reason": "API_KEY_INVALID"}},
+		}})
+	})
+	_, err := newGeminiGen(t, f, nil).Generate(context.Background(), geminiInput())
+	if !errors.Is(err, ErrAuth) {
+		t.Fatalf("err = %v, want ErrAuth", err)
+	}
+	if n := f.calls.Load(); n != 1 {
+		t.Errorf("requests = %d, want 1", n)
+	}
+}
+
+func TestGeminiUnknownEffortIsLoggedAndSendsNoThinking(t *testing.T) {
+	f := defaultGeminiAPI(t)
+	var logs bytes.Buffer
+	g := newGeminiGen(t, f, func(c *GeminiConfig) {
+		c.Effort = "Medium"
+		c.Logger = slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	})
+	for i := 0; i < 2; i++ {
+		if _, err := g.Generate(context.Background(), geminiInput()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, has := genConfigOf(t, f.last(t))["thinkingConfig"]; has {
+		t.Error("thinkingConfig sent for an unknown effort")
+	}
+	if n := strings.Count(logs.String(), "level=WARN"); n != 1 || !strings.Contains(logs.String(), "unknown LLM_EFFORT") {
+		t.Errorf("want exactly one WARN, got %d: %q", n, logs.String())
+	}
+}
+
+func TestEffortSentMatchesAdapter(t *testing.T) {
+	for _, e := range []string{"", "low", "medium", "high", "Medium", "x"} {
+		want := ""
+		if tc := thinkingFor(e); tc != nil {
+			want = strings.ToLower(string(tc.ThinkingLevel))
+		}
+		if got := EffortSent(geminiModel, e); got != want {
+			t.Errorf("effort %q: recorded %q, adapter sends %q", e, got, want)
+		}
+	}
+}

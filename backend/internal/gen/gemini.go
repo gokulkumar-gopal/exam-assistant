@@ -108,16 +108,19 @@ func NewGemini(apiKey string, cfg GeminiConfig) (Generator, error) {
 	if log == nil {
 		log = slog.Default()
 	}
+	if cfg.Effort != "" && GeminiThinkingEffort(cfg.Effort) == "" {
+		log.Warn("gemini: unknown LLM_EFFORT, no thinking level is sent", "effort", cfg.Effort)
+	}
 	return &geminiGen{
 		client: client, thinking: thinkingFor(cfg.Effort), timeout: timeout,
 		system: cfg.System, instruction: cfg.Instruction, schema: cfg.Schema, log: log,
 	}, nil
 }
 
-// thinkingFor maps LLM_EFFORT onto the thinking level. Empty (or anything else) sets nothing,
-// so the model's default applies. Thoughts are billed as output but not returned.
+// thinkingFor maps LLM_EFFORT onto the thinking level (GeminiThinkingEffort). Empty or
+// unknown sets nothing, so the model's default applies (an unknown value is logged once by NewGemini). Thoughts are billed as output but not returned.
 func thinkingFor(effort string) *genai.ThinkingConfig {
-	switch effort {
+	switch GeminiThinkingEffort(effort) {
 	case "low":
 		return &genai.ThinkingConfig{ThinkingLevel: genai.ThinkingLevelLow}
 	case "medium":
@@ -221,7 +224,7 @@ func (g *geminiGen) Generate(ctx context.Context, in GenInput) (GenOutput, error
 		return out, fmt.Errorf("gemini: %s (finish %q, block %q, request %s): %w", refusal, finish, block, resp.ResponseID, ErrRefusal)
 	}
 
-	qs, unreadable, err := parseAnthropicOutput(text.String())
+	qs, unreadable, err := parseOutput(text.String())
 	out.Questions, out.UnreadableSources = qs, unreadable
 	if err != nil {
 		return out, fmt.Errorf("gemini: request %s: %w", resp.ResponseID, err)

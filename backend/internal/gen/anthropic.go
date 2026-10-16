@@ -45,8 +45,8 @@ const (
 // AnthropicConfig configures NewAnthropic.
 //
 // System, Instruction and Schema are the prompt package's System(), Instruction and Schema.
-// They are injected because prompt imports gen, so gen cannot import prompt (B-2.10 passes
-// them when it wires the factory (B-2.9).
+// They are injected because prompt imports gen, so gen cannot import prompt; the factory in
+// package providers passes them.
 type AnthropicConfig struct {
 	Effort  string        // output_config.effort; empty sends none (LLM_EFFORT)
 	Timeout time.Duration // per attempt; 0 means 120s (LLM_TIMEOUT_SECONDS)
@@ -247,7 +247,7 @@ func (a *anthropicGen) Generate(ctx context.Context, in GenInput) (GenOutput, er
 			text.WriteString(c.Text)
 		}
 	}
-	qs, unreadable, err := parseAnthropicOutput(text.String())
+	qs, unreadable, err := parseOutput(text.String())
 	out.Questions, out.UnreadableSources = qs, unreadable
 	if err != nil {
 		return out, fmt.Errorf("anthropic: request %s: %w", requestID, err)
@@ -255,10 +255,10 @@ func (a *anthropicGen) Generate(ctx context.Context, in GenInput) (GenOutput, er
 	return out, nil
 }
 
-// parseAnthropicOutput decodes the model's JSON. Questions that decode are returned even when
+// parseOutput decodes the model's JSON. Questions that decode are returned even when
 // others do not; the error then wraps ErrInvalidOutput. The model's text is never put in the
 // error.
-func parseAnthropicOutput(text string) ([]RawQuestion, []string, error) {
+func parseOutput(text string) ([]RawQuestion, []string, error) {
 	dec := json.NewDecoder(strings.NewReader(text))
 	var top struct {
 		Questions         *[]json.RawMessage `json:"questions"`
