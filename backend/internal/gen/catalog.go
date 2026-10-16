@@ -126,3 +126,13 @@ func dollarsRoundedToCents(micros int64) float64 {
 	}
 	return float64(q) / 100
 }
+
+// LookupModel returns the catalog model with the given id.
+func LookupModel(id string) (Model, bool) {
+	for _, m := range catalog {
+		if m.ID == id {
+			return m, true
+		}
+	}
+	return Model{}, false
+}
