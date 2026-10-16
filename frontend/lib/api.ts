@@ -56,7 +56,7 @@ export function createApi(deps: ApiDeps = {}) {
     if (useMock) {
       const { mockFetch } = await import("./mock");
       try {
-        res = mockFetch(method, path, body);
+        res = await mockFetch(method, path, body, opts?.idempotencyKey);
       } catch {
         throw new ApiError(0, "network", "Couldn't reach the server. Try again.");
       }
