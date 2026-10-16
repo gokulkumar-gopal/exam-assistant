@@ -79,3 +79,11 @@ func TestCreateJobRejectsDayMismatch(t *testing.T) {
 		t.Fatalf("err = %v", err)
 	}
 }
+
+func TestExamStoreContract(t *testing.T) {
+	storetest.RunExamStoreSuite(t, func(t *testing.T) store.ExamStore { return memory.NewExamStore() })
+}
+
+func TestAttemptStoreContract(t *testing.T) {
+	storetest.RunAttemptStoreSuite(t, func(t *testing.T) store.AttemptStore { return memory.NewAttemptStore() })
+}

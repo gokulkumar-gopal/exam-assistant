@@ -22,6 +22,7 @@ import (
 // joined by OR (OR binds loosest, no parentheses); update expressions made of SET (values
 // ":v" or "if_not_exists(a, :v)"), ADD (numbers) and REMOVE clauses; key conditions
 // "pk = :v" on the table or on a GSI (projected per the INCLUDE lists in template.yaml).
+// Also: "x <> :v", "size(x) < :v", "NOT contains(x, :v)" and SET list_append(x, :v).
 // Anything else panics,
 // so a new expression shape forces the fake to be extended.
 type fakeDynamo struct {
@@ -35,12 +36,14 @@ type fakeDynamo struct {
 	batch  []*dynamodb.BatchGetItemInput
 	// unprocessedOnce, when set, makes each BatchGetItem leave the last key unprocessed once.
 	unprocessedOnce bool
-	pendingRetry    map[string][]map[string]types.AttributeValue
-	failTx          error // returned by TransactWriteItems failTxCount times (once when 0)
-	failTxCount     int
-	upds            []*dynamodb.UpdateItemInput
-	failUpdate      error // returned by UpdateItem failUpdateCount times (once when 0), before any write
-	failUpdateCount int
+	// alwaysUnprocessed leaves the last key of every BatchGetItem unprocessed, forever.
+	alwaysUnprocessed bool
+	pendingRetry      map[string][]map[string]types.AttributeValue
+	failTx            error // returned by TransactWriteItems failTxCount times (once when 0)
+	failTxCount       int
+	upds              []*dynamodb.UpdateItemInput
+	failUpdate        error // returned by UpdateItem failUpdateCount times (once when 0), before any write
+	failUpdateCount   int
 	// queryPageSize, when > 0, caps the items one Query evaluates, to exercise pagination.
 	queryPageSize int
 	indexes       map[string]indexDef
@@ -54,8 +57,10 @@ type indexDef struct {
 
 func newFake() *fakeDynamo {
 	return &fakeDynamo{tables: map[string]map[string]map[string]types.AttributeValue{}, indexes: map[string]indexDef{
-		"owner-index": {pk: "ownerId", sk: "id", proj: templateIncludeList("owner-index")},
-		"day-index":   {pk: "day", sk: "createdAt", proj: templateIncludeList("day-index")},
+		"owner-index":   {pk: "ownerId", sk: "id", proj: templateIncludeList("owner-index")},
+		"day-index":     {pk: "day", sk: "createdAt", proj: templateIncludeList("day-index")},
+		"creator-index": {pk: "creatorId", sk: "id", proj: templateIncludeList("creator-index")},
+		"user-index":    {pk: "userId", sk: "examId", proj: templateIncludeList("user-index")},
 	}}
 }
 
@@ -75,8 +80,10 @@ func keyNames(table string) (pk, sk string) {
 		return "id", ""
 	case strings.HasSuffix(table, "-documents"):
 		return "ownerId", "id"
-	case strings.HasSuffix(table, "-jobs"):
+	case strings.HasSuffix(table, "-jobs"), strings.HasSuffix(table, "-exams"):
 		return "id", ""
+	case strings.HasSuffix(table, "-attempts"):
+		return "examId", "userId"
 	}
 	panic("unknown table " + table)
 }
@@ -158,8 +165,49 @@ func num(av types.AttributeValue) int64 {
 	return v
 }
 
+// listLen returns the length of a list attribute; ok=false when absent or not a list.
+func listLen(av types.AttributeValue, ok bool) (int64, bool) {
+	l, isList := av.(*types.AttributeValueMemberL)
+	if !ok || !isList {
+		return 0, false
+	}
+	return int64(len(l.Value)), true
+}
+
 func termOK(term string, names map[string]string, vals map[string]types.AttributeValue, item map[string]types.AttributeValue) bool {
 	switch {
+	case strings.HasPrefix(term, "NOT contains("):
+		args := strings.Split(strings.TrimSuffix(strings.TrimPrefix(term, "NOT contains("), ")"), ",")
+		l, isList := item[resolve(strings.TrimSpace(args[0]), names)].(*types.AttributeValueMemberL)
+		want, bound := vals[strings.TrimSpace(args[1])]
+		if !bound {
+			panic("unbound value " + args[1])
+		}
+		if isList {
+			for _, e := range l.Value {
+				if reflect.DeepEqual(e, want) {
+					return false
+				}
+			}
+		}
+		return true
+	case strings.HasPrefix(term, "size(") && strings.Contains(term, ") < "):
+		parts := strings.SplitN(term, ") < ", 2)
+		a := resolve(strings.TrimPrefix(parts[0], "size("), names)
+		n, ok := listLen(item[a], item[a] != nil)
+		want, bound := vals[strings.TrimSpace(parts[1])]
+		if !bound {
+			panic("unbound value " + parts[1])
+		}
+		return ok && n < num(want)
+	case strings.Contains(term, " <> "):
+		parts := strings.SplitN(term, " <> ", 2)
+		got, ok := item[resolve(strings.TrimSpace(parts[0]), names)]
+		want, bound := vals[strings.TrimSpace(parts[1])]
+		if !bound {
+			panic("unbound value " + parts[1])
+		}
+		return ok && !reflect.DeepEqual(got, want)
 	case strings.HasPrefix(term, "attribute_not_exists("):
 		a := resolve(strings.TrimSuffix(strings.TrimPrefix(term, "attribute_not_exists("), ")"), names)
 		_, ok := item[a]
@@ -244,6 +292,22 @@ func applyUpdate(expr string, names map[string]string, vals map[string]types.Att
 						continue
 					}
 					rhs = strings.TrimSpace(args[1])
+				}
+				if strings.HasPrefix(rhs, "list_append(") {
+					args := strings.Split(strings.TrimSuffix(strings.TrimPrefix(rhs, "list_append("), ")"), ",")
+					if resolve(strings.TrimSpace(args[0]), names) != attr {
+						panic("unsupported list_append on another attribute: " + rhs)
+					}
+					cur, _ := item[attr].(*types.AttributeValueMemberL)
+					add, _ := val(args[1]).(*types.AttributeValueMemberL)
+					merged := &types.AttributeValueMemberL{}
+					if cur != nil {
+						merged.Value = append(merged.Value, cur.Value...)
+					}
+					merged.Value = append(merged.Value, add.Value...)
+					item[attr] = merged
+					touched = append(touched, attr)
+					continue
 				}
 				item[attr] = val(rhs)
 				touched = append(touched, attr)
@@ -432,10 +496,7 @@ func project(table string, item map[string]types.AttributeValue, idx indexDef) m
 // templateIncludeList reads the NonKeyAttributes of a GSI from backend/template.yaml, so the
 // fake projects exactly what the deployed index would.
 func templateIncludeList(index string) []string {
-	b, err := os.ReadFile(templatePath)
-	if err != nil {
-		panic(err)
-	}
+	b := []byte(templateText())
 	re := regexp.MustCompile(`IndexName: ` + regexp.QuoteMeta(index) + `\b[\s\S]*?NonKeyAttributes: \[([^\]]*)\]`)
 	m := re.FindStringSubmatch(string(b))
 	if m == nil {
@@ -446,6 +507,14 @@ func templateIncludeList(index string) []string {
 		out = append(out, strings.TrimSpace(a))
 	}
 	return out
+}
+
+func templateText() string {
+	b, err := os.ReadFile(templatePath)
+	if err != nil {
+		panic(err)
+	}
+	return string(b)
 }
 
 const templatePath = "../../../template.yaml" // backend/template.yaml, relative to this package
@@ -468,7 +537,7 @@ func (f *fakeDynamo) BatchGetItem(_ context.Context, in *dynamodb.BatchGetItemIn
 			}
 			seen[k] = true
 		}
-		if f.unprocessedOnce && len(keys) > 1 && !f.retrying(table) {
+		if (f.alwaysUnprocessed && len(keys) > 0) || (f.unprocessedOnce && len(keys) > 1 && !f.retrying(table)) {
 			last := keys[len(keys)-1]
 			keys = keys[:len(keys)-1]
 			if out.UnprocessedKeys == nil {
