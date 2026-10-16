@@ -33,6 +33,13 @@ type MemBlob struct {
 	mu      sync.Mutex
 	objects map[string][]byte
 	Puts    []PutCall
+	Gets    []GetCall
+}
+
+// GetCall records the parameters of one PresignGet call.
+type GetCall struct {
+	Key, ContentType string
+	TTL              time.Duration
 }
 
 var _ Blob = (*MemBlob)(nil)
@@ -54,7 +61,10 @@ func (m *MemBlob) PresignPut(_ context.Context, key, contentType string, size in
 	return "https://mem.test/put/" + key, nil
 }
 
-func (m *MemBlob) PresignGet(_ context.Context, key, _ string, _ time.Duration) (string, error) {
+func (m *MemBlob) PresignGet(_ context.Context, key, contentType string, ttl time.Duration) (string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.Gets = append(m.Gets, GetCall{Key: key, ContentType: contentType, TTL: ttl})
 	return "https://mem.test/get/" + key, nil
 }
 

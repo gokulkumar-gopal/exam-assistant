@@ -54,7 +54,8 @@ func (b *S3Blob) PresignGet(ctx context.Context, key, contentType string, ttl ti
 	r, err := b.presign.PresignGetObject(ctx, &s3.GetObjectInput{
 		Bucket:              aws.String(b.bucket),
 		Key:                 aws.String(key),
-		ResponseContentType: aws.String(contentType),
+		ResponseContentType:        aws.String(contentType),
+		ResponseContentDisposition: aws.String("inline"),
 	}, s3.WithPresignExpires(ttl))
 	if err != nil {
 		return "", fmt.Errorf("presign get: %w", err)

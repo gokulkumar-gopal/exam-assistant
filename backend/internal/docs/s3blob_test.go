@@ -105,6 +105,9 @@ func TestS3PresignGet(t *testing.T) {
 	if u.Query().Get("X-Amz-Expires") != "600" || u.Query().Get("X-Amz-Signature") == "" {
 		t.Errorf("url = %s", raw)
 	}
+	if u.Query().Get("response-content-type") != "application/pdf" || u.Query().Get("response-content-disposition") != "inline" {
+		t.Errorf("response overrides missing in %s", raw)
+	}
 }
 
 func TestS3HeadMissingIsNotFound(t *testing.T) {
