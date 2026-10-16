@@ -140,7 +140,7 @@ func TestPasswordLengthMeasuredInBytes(t *testing.T) {
 func in2(in auth.SignupInput, pw string) auth.SignupInput { in.Password = pw; return in }
 
 func TestSignupValidationFields(t *testing.T) {
-	svc, users, h := newSvc(t)
+	svc, users, _ := newSvc(t)
 	cases := map[string]struct {
 		mut   func(*auth.SignupInput)
 		field string
@@ -172,7 +172,6 @@ func TestSignupValidationFields(t *testing.T) {
 	if _, err := users.GetByEmail(context.Background(), "x@nowhere"); err == nil {
 		t.Error("unexpected user")
 	}
-	_ = h
 }
 
 func TestLoginRunsBcryptForUnknownEmail(t *testing.T) {

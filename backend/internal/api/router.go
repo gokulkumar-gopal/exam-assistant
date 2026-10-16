@@ -58,6 +58,9 @@ func NewRouter(deps Deps) http.Handler {
 	}))
 	if deps.Auth != nil {
 		registerAuthRoutes(rt, deps)
+		if deps.Auth.GoogleEnabled() {
+			registerGoogleRoutes(rt, deps)
+		}
 	}
 	rt.mux.HandleFunc("/", rt.fallback)
 	return wrap(deps, rt.mux)

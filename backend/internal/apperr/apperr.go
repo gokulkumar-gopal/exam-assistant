@@ -78,3 +78,8 @@ func Internal(err error) *Error {
 func MethodNotAllowed() *Error {
 	return &Error{Status: http.StatusMethodNotAllowed, Code: "method_not_allowed", Message: "That method is not allowed for this endpoint."}
 }
+
+// RoleRequired is a first Google sign-in for a new account that sent no valid role.
+func RoleRequired() *Error {
+	return &Error{Status: http.StatusUnprocessableEntity, Code: "role_required", Message: "Choose a role to finish creating your account."}
+}
