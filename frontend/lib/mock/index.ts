@@ -106,6 +106,9 @@ function seedTakeFixtures() {
     { id: "e12", title: "Take demo: 30 questions", type: "mcq", closesAt: iso(Date.now() + 2 * 24 * HOUR), maxPeeks: 0,
       createdBy: rao, questions: Array.from({ length: 30 }, (_, i) => ({ ...makeQuestion(1200 + i, ((i % 5) + 1) as Marks, "mcq"), id: `m${i + 1}` })), mine: false, unlisted: true,
       attempt: { status: "not_started", answers: {}, lastQuestionIndex: 0 }, assigned: [] },
+    { id: "e13", title: "Take demo: 2 questions", type: "mcq", closesAt: iso(Date.now() + 2 * 24 * HOUR), maxPeeks: 0,
+      createdBy: rao, questions: Array.from({ length: 2 }, (_, i) => ({ ...makeQuestion(1300 + i, 1 as Marks, "mcq"), id: `w${i + 1}` })), mine: false, unlisted: true,
+      attempt: { status: "not_started", answers: {}, lastQuestionIndex: 0 }, assigned: [] },
   );
 }
 seedExams();
@@ -443,6 +446,14 @@ export function mockFetch(method: string, rawPath: string, body: unknown, idempo
     }
     if (method === "PUT" && sub === "attempt") {
     const b = as<AttemptBody>();
+      // Test triggers (mock only), from the page URL: ?mockAutosave=fail (500 every time) | failOnce (first
+      // PUT only) | 409 (closed). Request log: globalThis.__mockAutosaveLog = [{ answers, lastQuestionIndex }].
+      const t = typeof window === "undefined" ? null : new URLSearchParams(window.location.search).get("mockAutosave");
+      const g = globalThis as unknown as { __mockAutosaveLog?: unknown[]; __mockAutosaveFailed?: boolean };
+      (g.__mockAutosaveLog ??= []).push({ answers: b.answers, lastQuestionIndex: b.lastQuestionIndex });
+      if (t === "fail") return err(500, "internal", "Something went wrong.");
+      if (t === "failOnce" && !g.__mockAutosaveFailed) { g.__mockAutosaveFailed = true; return err(500, "internal", "Something went wrong."); }
+      if (t === "409") return err(409, "exam_closed", "This exam is closed.");
       if (over(exam)) return err(409, "exam_closed", "This exam is closed.");
       if (!exam.attempt || exam.attempt.status === "submitted") return err(409, "conflict", "Already submitted.");
       exam.attempt = { ...exam.attempt, status: "in_progress", answers: b.answers, lastQuestionIndex: b.lastQuestionIndex, savedAt: st() };
