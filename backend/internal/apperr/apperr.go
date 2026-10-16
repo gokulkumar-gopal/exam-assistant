@@ -73,3 +73,8 @@ func Upstream() *Error {
 func Internal(err error) *Error {
 	return &Error{Status: http.StatusInternalServerError, Code: "internal", Message: "Something went wrong.", Err: err}
 }
+
+// MethodNotAllowed is a known route called with the wrong method. The caller sets the Allow header.
+func MethodNotAllowed() *Error {
+	return &Error{Status: http.StatusMethodNotAllowed, Code: "method_not_allowed", Message: "That method is not allowed for this endpoint."}
+}
