@@ -170,20 +170,34 @@ Resources:
           GOOGLE_CLIENT_ID: !Ref GoogleClientId
           ALLOWED_ORIGINS: !Ref AllowedOrigins
           WORKER_FUNCTION_NAME: !Sub "exam-assistant-${Stage}-worker"
+      # Least privilege, derived from what internal/store/dynamo and internal/docs call (TestIAMMatchesStoreCode).
+      # No Scan, no BatchWriteItem, no DeleteItem outside documents. Transactions (users, jobs) need Put/Update on each item's table.
       Policies:
         - Statement:
+            - Effect: Allow             # users: get, batch get, signup and Google link transactions (Put + Update)
+              Action: [dynamodb:GetItem, dynamodb:BatchGetItem, dynamodb:PutItem, dynamodb:UpdateItem]
+              Resource: !GetAtt UsersTable.Arn
+            - Effect: Allow             # documents: the only table with DeleteItem; ListReady queries the base table
+              Action: [dynamodb:GetItem, dynamodb:BatchGetItem, dynamodb:PutItem, dynamodb:UpdateItem, dynamodb:DeleteItem, dynamodb:Query]
+              Resource: !GetAtt DocumentsTable.Arn
+            - Effect: Allow             # exams: immutable once created (no UpdateItem)
+              Action: [dynamodb:GetItem, dynamodb:BatchGetItem, dynamodb:PutItem]
+              Resource: !GetAtt ExamsTable.Arn
             - Effect: Allow
-              Action: [dynamodb:GetItem, dynamodb:PutItem, dynamodb:UpdateItem, dynamodb:DeleteItem,
-                       dynamodb:Query, dynamodb:BatchGetItem, dynamodb:ConditionCheckItem]
-              Resource:
-                - !GetAtt UsersTable.Arn
-                - !GetAtt DocumentsTable.Arn
-                - !GetAtt ExamsTable.Arn
-                - !Sub "${ExamsTable.Arn}/index/*"
-                - !GetAtt AttemptsTable.Arn
-                - !Sub "${AttemptsTable.Arn}/index/*"
-                - !GetAtt JobsTable.Arn
-                - !Sub "${JobsTable.Arn}/index/*"     # includes day-index, which the usage page queries
+              Action: dynamodb:Query
+              Resource: !Sub "${ExamsTable.Arn}/index/creator-index"
+            - Effect: Allow             # attempts: ListByExam queries the base table
+              Action: [dynamodb:GetItem, dynamodb:PutItem, dynamodb:UpdateItem, dynamodb:Query]
+              Resource: !GetAtt AttemptsTable.Arn
+            - Effect: Allow
+              Action: dynamodb:Query
+              Resource: !Sub "${AttemptsTable.Arn}/index/user-index"
+            - Effect: Allow             # jobs: create-with-quota transaction (Put + Update), cancel, get questions
+              Action: [dynamodb:GetItem, dynamodb:PutItem, dynamodb:UpdateItem]
+              Resource: !GetAtt JobsTable.Arn
+            - Effect: Allow             # owner-index today; day-index is for the usage page
+              Action: dynamodb:Query
+              Resource: !Sub "${JobsTable.Arn}/index/*"
             - Effect: Allow
               Action: [s3:PutObject, s3:GetObject, s3:DeleteObject]
               Resource: !Sub "${UploadsBucket.Arn}/*"
@@ -202,6 +216,7 @@ Resources:
       CodeUri: .
       Timeout: 600                     # platform ceiling; the job's own deadline is 8 minutes (backend-spec 7.2)
       ReservedConcurrentExecutions: !If [ReserveWorker, !Ref WorkerReservedConcurrency, !Ref "AWS::NoValue"]
+      LoggingConfig: { LogGroup: !Ref WorkerLogs }
       Environment:
         Variables:                     # the worker needs the provider keys, not the session secret or Google
           MODE: worker
@@ -213,13 +228,11 @@ Resources:
       Policies:
         - Statement:
             - Effect: Allow
-              Action: dynamodb:GetItem     # reads source document rows only
+              Action: dynamodb:BatchGetItem   # GetDocs reads the source document rows; nothing else on documents
               Resource: !GetAtt DocumentsTable.Arn
             - Effect: Allow
-              Action: [dynamodb:GetItem, dynamodb:PutItem, dynamodb:UpdateItem, dynamodb:Query]   # UpdateItem also adds to the quota and usage counter items
-              Resource:
-                - !GetAtt JobsTable.Arn
-                - !Sub "${JobsTable.Arn}/index/*"
+              Action: [dynamodb:GetItem, dynamodb:PutItem, dynamodb:UpdateItem]   # claim, heartbeat, finish, questions item, spend counter; no Query, no index
+              Resource: !GetAtt JobsTable.Arn
             - Effect: Allow
               Action: s3:GetObject
               Resource: !Sub "${UploadsBucket.Arn}/*"
@@ -321,7 +334,7 @@ Outputs:
 ```
 
 **Notes on the template**
-- **Log groups are tied to their functions.** `LoggingConfig: { LogGroup: !Ref ApiLogs }` makes CloudFormation create the group before the function; without it Lambda can create the group itself on an early invoke or from a stale stack, and the stack create fails with "already exists" or the group lacks the 14-day retention. `WorkerFunction` needs the same `LoggingConfig: { LogGroup: !Ref WorkerLogs }` when it is added in D-2.1.
+- **Log groups are tied to their functions.** `LoggingConfig: { LogGroup: !Ref ApiLogs }` makes CloudFormation create the group before the function; without it Lambda can create the group itself on an early invoke or from a stale stack, and the stack create fails with "already exists" or the group lacks the 14-day retention. `WorkerFunction` has the same `LoggingConfig: { LogGroup: !Ref WorkerLogs }`.
 - **Data layer is five tables and four indexes, all on-demand.** `users` has no index (login uses the email lock item, `backend-spec.md` section 6.2). Index projections are `INCLUDE` lists, never `ALL`: an index copies a write only when a projected attribute changes, so autosaving answers or embedding questions never writes to an index. (`day-index` has one partition per UTC day, which is fine at this volume: a handful of jobs a day.) `NonKeyAttributes` must match the attribute names the store implementation writes; the key attributes are projected automatically.
 - **The jobs table holds four kinds of item:** job status items (with `day`, `model` and live usage fields; `day-index` reads these), a questions item per job (`<jobId>#questions`, written just before the job turns `done`), quota counters (`quota#<userId>#<yyyymmdd>`, `quota#global#<yyyymmdd>`, `quota#global#<yyyymm>`), and usage counters per model (`usage#<yyyymm>#<modelId>`, `usage#<yyyymmdd>#<modelId>`). All carry `ttl` (jobs 24 hours, daily quota and usage items 3 days, monthly items 40 days).
 - **`ENV: production`** is set for both stages so the session cookie always has the `Secure` flag when deployed. Only a locally run server uses `ENV=local`.
@@ -329,6 +342,7 @@ Outputs:
 - **Timeouts line up like this.** Worker function timeout 600 s is the ceiling; the job's own deadline is 8 minutes, and a job with no heartbeat for 6 minutes reads as failed to the client. The API function's 29 s matches the Function URL's practical limit; nothing long runs there.
 - **Reserved concurrency is optional and off by default.** When set, it caps how many API or worker executions run at once, which bounds LLM spend and DynamoDB load under abuse. It only works if the account's concurrency quota is high enough: AWS requires at least 100 unreserved executions to remain, and a new account's quota may be lower. Check Service Quotas first **(verify)**; if you cannot reserve, rely on the quota counters and the provider spend limit. A worker invoke throttled by its reservation is dropped (retries are 0), so that job stays `queued` until the 6-minute stale rule fails it and the user retries.
 - **Secrets are scoped per function.** `JWT_SECRET` and `GOOGLE_CLIENT_ID` exist only on the API; `LLM_API_KEY` (Anthropic) and `GEMINI_API_KEY` only on the worker. `LLM_PROVIDERS` and `LLM_MODEL` are not secret and are on both: the API needs them to list the enabled models (`GET /ai/models`), mark the default, and validate the `model` a request asks for, without ever holding a key. An empty `LLM_MODEL` means "the cheapest enabled model" and the backend must treat an empty value as unset. If a model is enabled but its key is missing, the worker fails that job with a generic message and logs it loudly. `backend-spec.md` section 11 must therefore mark each variable required per `MODE`, so config loading does not fail in a mode that does not need it.
+- **IAM is derived from the code, per function and per table.** Each statement lists only the DynamoDB actions the store code calls on that table (`backend/internal/store/dynamo/iam_template_test.go` fails when the code and the template drift): no `Scan`, no `BatchWriteItem`, `DeleteItem` only on `documents`. `TransactWriteItems` has no IAM action of its own; it needs `PutItem`/`UpdateItem` (and `ConditionCheckItem` if a check is used) on each table it touches, which is why `users` and `jobs` carry `PutItem`+`UpdateItem` for the API. `Query` on an index needs the index ARN, so exams and attempts get it on `creator-index` and `user-index` only; the jobs `index/*` grant covers `owner-index` and `day-index`. The worker gets no `Query`, no index access, and no exams, attempts or users access: it reads documents with `BatchGetItem` and reads and writes the jobs table with `GetItem`/`PutItem`/`UpdateItem`.
 - **No VPC, no API Gateway, no Cognito, no queue.** Do not add them.
 - **Public function URL.** `AuthType: NONE` means anyone with the URL can call it; the app authenticates every request itself. Keep the URL out of public docs, and know it is reachable directly, not only through Vercel. If a newly created function URL returns `403`, check its resource policy: AWS has tightened what the permission for public URLs requires **(verify)**.
 - **Memory** is 1024 MB for both because PDF page counting happens in the API function and reads the whole file. Lower it after measuring.
