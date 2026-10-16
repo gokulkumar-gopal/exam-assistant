@@ -367,7 +367,33 @@ export function mockFetch(method: string, rawPath: string, body: unknown, idempo
     if (trigger === "empty") return json(200, { models: [], serverTime: st() });
     return json(200, { models, serverTime: st() });
   }
-  if (route === "GET /ai/usage") return json(200, { serverTime: st(), ...usage });
+  if (route === "GET /ai/usage") {
+    // Test triggers (mock only), read on every poll so they can change without a reload:
+    //   ?mockUsage=empty  no jobs this month     ?mockUsage=warn  spend at 83%     ?mockUsage=full  spend at 100%
+    //   ?mockUsage=fail   500                    ?mockUsage=slow  answers after 8 s
+    //   ?mockUsage=leak   normal numbers, but the payload (wrongly) carries user, file and question text
+    // Every answer is logged in globalThis.__mockUsageLog (request count for the hidden-tab check).
+    const flag = stickyFlag("mockUsage");
+    const g = globalThis as unknown as { __mockUsageLog?: number[] };
+    (g.__mockUsageLog ??= []).push(Date.now());
+    if (flag === "fail") return err(500, "internal", "Something went wrong.");
+    const body = () => {
+      const z = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+      if (flag === "empty") {
+        return { serverTime: st(), month: { key: "2026-10", spendUsd: 0, budgetUsd: 15, jobs: 0, calls: 0, tokens: z },
+          today: { jobs: 0, calls: 0, spendUsd: 0, tokens: z }, byModel: [], running: 0, recent: [] };
+      }
+      const spend = flag === "full" ? 15 : flag === "warn" ? 12.45 : null;
+      const u = spend === null ? usage : { ...usage, month: { ...usage.month, spendUsd: spend } };
+      if (flag === "leak") {
+        return { serverTime: st(), ...u, ownerName: "Leaky Owner",
+          recent: u.recent.map((j) => ({ ...j, userName: "Leaky User", fileName: "Leaky.pdf", questionText: "Leaky question?" })) };
+      }
+      return { serverTime: st(), ...u };
+    };
+    if (flag === "slow") return new Promise<Response>((r) => setTimeout(() => r(json(200, body())), 8000));
+    return json(200, body());
+  }
 
   // Generation
   // Test triggers (mock only), read from the page URL: ?mockGen=
