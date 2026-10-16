@@ -66,7 +66,7 @@ func TestBuildWorkerWiresStoresBlobAndProviderFactory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if w.Jobs == nil || w.Docs == nil || w.Blob == nil || w.Clock == nil || w.Gens == nil {
+	if w.Jobs == nil || w.Counters == nil || w.Docs == nil || w.Blob == nil || w.Clock == nil || w.Gens == nil {
 		t.Fatalf("worker not fully wired: %+v", w)
 	}
 	want := gen.WorkerConfig{

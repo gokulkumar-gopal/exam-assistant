@@ -38,6 +38,11 @@ type UsageRecorder interface {
 // A nil Counters skips the usage counters (the spend counter is always kept). The zero value
 // is ready to use; use it through a pointer and share one per worker, because it remembers
 // which jobs it has already counted.
+//
+// The jobs counter is a display figure and can be off on edge failures: if AddUsage fails after
+// the transaction committed (deadline or network loss after send) the +1 is handed to the next
+// call and the job is counted twice; if the first call's AddUsage fails and no later call of a
+// one-call job succeeds, the job is never counted.
 type CountersRecorder struct {
 	Jobs     store.JobStore
 	Counters store.UsageStore

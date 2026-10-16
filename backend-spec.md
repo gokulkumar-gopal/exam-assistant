@@ -198,9 +198,11 @@ Table names are `<STAGE>-<name>`, for example `prod-users`. All keys are strings
 | `documents` | `ownerId` | `id` | none | every document access is owner-scoped, which also enforces privacy; `ttl` attribute enabled |
 | `exams` | `id` | none | GSI `creator-index` on `creatorId` (sort `id`), projecting `INCLUDE` title, type, totalMarks, closesAt, createdAt (not the questions) | |
 | `attempts` | `examId` | `userId` | GSI `user-index` on `userId` (sort `examId`), projecting `INCLUDE` status, scoreHalves, scoreBeforePeeksHalves, submittedAt. Autosave changes none of these, so autosaves never write to the index | |
-| `jobs` | `id` | none | GSI `owner-index` on `ownerId` (sort `id`), projecting `INCLUDE` status, createdAt, updatedAt, kind; and GSI `day-index` on `day` (sort `createdAt`), projecting `INCLUDE` status, model, kind, costMicros, calls, inTok, outTok, cacheReadTok, cacheWriteTok. Only job items have `day` | `ttl` attribute enabled. Holds three kinds of item: the job (`id` = job ID, 24 h), its questions (`id` = `<jobId>#questions`, 24 h), quota counters (`id` = `quota#<userId>#<yyyymmdd>` and `quota#global#<yyyymmdd>`, 3 days; `quota#global#<yyyymm>`, 40 days), and usage counters per model (`id` = `usage#<yyyymm>#<modelId>`, 40 days, and `usage#<yyyymmdd>#<modelId>`, 3 days) |
+| `jobs` | `id` | none | GSI `owner-index` on `ownerId` (sort `id`), projecting `INCLUDE` status, createdAt, updatedAt, kind; and GSI `day-index` on `day` (sort `createdAt`), projecting `INCLUDE` status, updatedAt, model, kind, costMicros, calls, inTok, outTok, cacheReadTok, cacheWriteTok. Only job items have `day` | `ttl` attribute enabled. Holds three kinds of item: the job (`id` = job ID, 24 h), its questions (`id` = `<jobId>#questions`, 24 h), quota counters (`id` = `quota#<userId>#<yyyymmdd>` and `quota#global#<yyyymmdd>`, 3 days; `quota#global#<yyyymm>`, 40 days), and usage counters per model (`id` = `usage#<yyyymm>#<modelId>`, 40 days, and `usage#<yyyymmdd>#<modelId>`, 3 days) |
 
 Enable the DynamoDB TTL feature on `documents` and `jobs`. Never project `ALL` into an index: every write to the base item would be paid for again in the index.
+
+`day-index` projects `updatedAt` so the usage page can count `running` jobs as non-stale (8.6) without reading the base items.
 
 ### 6.3 Access patterns
 

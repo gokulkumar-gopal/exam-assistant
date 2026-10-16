@@ -33,6 +33,11 @@ func usageValues(d store.UsageDelta) []int64 {
 // ADD, never SET or Put: concurrent workers add into the same item without losing an update.
 // The ttl is set when the item is created (40 days for the month, 3 for the day) and later
 // adds never move it. The items carry neither ownerId nor day, so no index holds them.
+//
+// Trade-off: overlapping transactions on the same two hot items (up to 3 concurrent calls per
+// job, shared by every job of the model) can be cancelled with TransactionConflict. The retry
+// makes 3 attempts; after that the call's usage is lost (logged). Plain UpdateItem ADDs would not
+// conflict, but an SDK retry of those is not idempotent, and the transaction's client token is.
 func (s *Stores) AddUsage(ctx context.Context, month, day, model string, d store.UsageDelta) error {
 	if err := store.ValidateUsageAdd(month, day, model, d); err != nil {
 		return err
