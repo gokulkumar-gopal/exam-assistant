@@ -1,6 +1,6 @@
 // Generation job (fs 6.4 flow 1-6, 9): start, poll, cancel, give up.
 import { api, ApiError } from "./api";
-import type { ExamType, JobResponse, Question } from "./types";
+import type { ExamType, JobResponse, Marks, Question, RegenerateBody } from "./types";
 
 export interface GenerateRequest {
   sourceIds: string[]; type: ExamType; counts: Record<string, number>; shuffle: boolean; model?: string;
@@ -41,6 +41,29 @@ export async function startGeneration(
 ): Promise<{ jobId: string }> {
   const { model, ...rest } = req;
   return post(model === undefined ? { ...rest } : { ...rest, model });
+}
+
+const AVOID_MAX = 60;
+const AVOID_LEN = 600;
+
+/** Body for POST /generate/regenerate: `avoid` is the text of every question now in the list
+ *  (clamped to the backend caps), `model` the one the original job used. */
+export function buildRegenerateBody(
+  current: Question[], marks: Marks, p: { sourceIds: string[]; type: ExamType }, model?: string,
+): RegenerateBody {
+  const body: RegenerateBody = {
+    marks, sourceIds: p.sourceIds, type: p.type,
+    avoid: current.slice(0, AVOID_MAX).map((q) => q.text.slice(0, AVOID_LEN)),
+  };
+  if (model) body.model = model;
+  return body;
+}
+
+export async function startRegenerate(
+  body: RegenerateBody,
+  post: (b: Record<string, unknown>) => Promise<{ jobId: string }> = (b) => api("POST", "/generate/regenerate", b),
+): Promise<{ jobId: string }> {
+  return post({ ...body });
 }
 
 export async function pollJob(jobId: string, opts: PollOpts = {}): Promise<JobResult> {
