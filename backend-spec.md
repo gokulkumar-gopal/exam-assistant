@@ -488,7 +488,7 @@ When `status` is `done`, `questions` is the final ordered list. Each question is
 - Keys (`correctIndex`, `modelAnswer`) are included only when section 9.4 allows, or for the questions listed in `attempt.revealed` (section 9.6). Otherwise they are omitted entirely.
 
 **Autosave:** `PUT /exams/{id}/attempt` with `{ answers, lastQuestionIndex }`
-- Replaces the whole answers map (idempotent). Keys must be existing question IDs; values are strings up to 5,000 characters; total body up to 200 KB.
+- Replaces the whole answers map (idempotent). Keys must be existing question IDs; values are strings up to 5,000 characters (null or non-string is `422`); the summed UTF-8 size of all values is at most 350 KB and the body at most 400 KB, else `422` (60 answers of 5,000 characters is 300 KB, which a 200 KB cap would have rejected forever; 350 KB keeps the attempt item under the 400 KB DynamoDB limit). `lastQuestionIndex` is required (`422` if missing).
 - The write is conditional on `status <> submitted`; if it fails, `409 conflict`. At or after `acceptingUntil`: `409 exam_closed` (and lazy finalize runs).
 - First save moves `not_started` to `in_progress` and sets `StartedAt`.
 - Response: `200 { savedAt, serverTime }`.
@@ -638,7 +638,7 @@ Rules for `POST /exams/{id}/reveal`:
 ## 10. Security
 
 - **Authorization on every handler.** Middleware loads the user from the cookie; each service method takes the user and checks ownership or role. Missing or foreign resources return `404`.
-- **Input limits:** JSON bodies capped at 1 MB (200 KB for autosave) using `http.MaxBytesReader`. Reject unknown fields on create endpoints. Validate everything in section 8 before touching the store.
+- **Input limits:** JSON bodies capped at 1 MB (400 KB for autosave) using `http.MaxBytesReader`. Reject unknown fields on create endpoints. Validate everything in section 8 before touching the store.
 - **Presigned URLs** are short-lived (10 minutes) and scoped to one key; the bucket blocks all public access.
 - **Secrets:** `JWT_SECRET` and `LLM_API_KEY` come from environment variables (how they are stored and injected is defined in `deployment-spec.md`). The API function needs `JWT_SECRET` but not `LLM_API_KEY`; the worker needs `LLM_API_KEY` but not `JWT_SECRET`. Never log them. Rotating is out of scope for the MVP.
 - **Open model choice:** any signed-in user may choose any enabled model for their own generation, so a user can use more of the shared budget by picking a pricier one. The monthly budget guard, the per-user and global daily limits, and the Create screen's cost notice are the controls. `GET /ai/usage` is aggregate only.
