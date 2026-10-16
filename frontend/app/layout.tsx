@@ -1,5 +1,8 @@
 import type { Metadata } from "next";
+import { Suspense } from "react";
 import "./globals.css";
+import { SessionProvider } from "@/lib/session";
+import { Shell } from "@/components/Shell";
 
 export const metadata: Metadata = {
   title: "Exam Assistant",
@@ -9,7 +12,13 @@ export const metadata: Metadata = {
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en">
-      <body>{children}</body>
+      <body>
+        <SessionProvider>
+          <Suspense fallback={null}>
+            <Shell>{children}</Shell>
+          </Suspense>
+        </SessionProvider>
+      </body>
     </html>
   );
 }

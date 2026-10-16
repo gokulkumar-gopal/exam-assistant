@@ -18,7 +18,8 @@ const iso = (ms: number) => new Date(ms).toISOString();
 const GRACE = 60_000;
 
 const state = {
-  loggedIn: true,
+  // Start signed out with NEXT_PUBLIC_MOCK_SIGNED_OUT=true (to check route guards).
+  loggedIn: process.env.NEXT_PUBLIC_MOCK_SIGNED_OUT !== "true",
   user: { ...demoUser } as User,
   docs: [...seedDocs],
   pendingUploads: {} as Record<string, { name: string; type: string; sizeBytes: number }>,
