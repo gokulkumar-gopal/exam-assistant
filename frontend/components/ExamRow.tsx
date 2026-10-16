@@ -42,7 +42,7 @@ export function ExamRow({
           <button type="button" className={QUIET} onClick={() => onDecline?.(exam)}>Decline</button>
         )}
         <a
-          href={`/exams/${id}/print`}
+          href={`/exams/${encodeURIComponent(id)}/print`}
           target="_blank"
           rel="noopener noreferrer"
           className={QUIET}
@@ -51,7 +51,7 @@ export function ExamRow({
           Print
         </a>
         {mode === "created" ? (
-          <Link href={`/exams/${id}/status`} data-primary className="btn-secondary">View status</Link>
+          <Link href={`/exams/${encodeURIComponent(id)}/status`} data-primary className="btn-secondary">View status</Link>
         ) : (
           view?.action && (
             <Link href={href} data-primary className={view.action === "View result" ? "btn-secondary" : "btn-primary"}>

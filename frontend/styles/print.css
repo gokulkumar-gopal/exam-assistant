@@ -25,6 +25,9 @@
   text-align: center;
   color: var(--muted);
   padding-bottom: 8px;
+  /* A 120-character title (wide glyphs too) wraps inside the page instead of overflowing. */
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .print-title { font-size: 18pt; font-weight: 700; line-height: 1.2; overflow-wrap: anywhere; }
@@ -83,8 +86,8 @@
   }
   .print-preview { display: block; }
   .print-root { max-width: none; width: auto; }
-  /* The cloned bottom padding keeps content clear of the fixed footer on every page. */
-  .print-sheet { padding: 0 0 9mm; margin: 0; box-shadow: none; background: #fff; box-decoration-break: clone; -webkit-box-decoration-break: clone; }
+  /* The cloned bottom padding keeps content clear of the fixed footer on every page (14 mm: a 120-character title wraps to 3 lines at most). */
+  .print-sheet { padding: 0 0 14mm; margin: 0; box-shadow: none; background: #fff; box-decoration-break: clone; -webkit-box-decoration-break: clone; }
   .print-newpage { break-before: page; page-break-before: always; }
   .print-footer {
     position: fixed;
@@ -94,6 +97,9 @@
     padding: 0;
     color: #000;
     font-size: 9pt;
+    line-height: 1.2;
     text-align: left;
+    overflow-wrap: anywhere;
+    word-break: break-word;
   }
 }

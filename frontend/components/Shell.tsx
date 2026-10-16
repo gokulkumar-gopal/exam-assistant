@@ -39,7 +39,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
     <>
       <AppBar />
       {error && (
-        <div className="page pt-3" role="alert">
+        <div className="page pt-3 print:hidden" role="alert">
           <span className="mr-3 text-sm">Couldn&apos;t load your account. Try again.</span>
           <button type="button" className="btn-secondary" onClick={() => void refresh()}>Retry</button>
         </div>
