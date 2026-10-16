@@ -39,6 +39,8 @@ type fakeDynamo struct {
 	failTx          error // returned by TransactWriteItems failTxCount times (once when 0)
 	failTxCount     int
 	upds            []*dynamodb.UpdateItemInput
+	failUpdate      error // returned by UpdateItem failUpdateCount times (once when 0), before any write
+	failUpdateCount int
 	// queryPageSize, when > 0, caps the items one Query evaluates, to exercise pagination.
 	queryPageSize int
 	indexes       map[string]indexDef
@@ -297,6 +299,15 @@ func (f *fakeDynamo) UpdateItem(_ context.Context, in *dynamodb.UpdateItemInput,
 	defer f.mu.Unlock()
 	f.calls = append(f.calls, "UpdateItem")
 	f.upds = append(f.upds, in)
+	if f.failUpdate != nil {
+		err := f.failUpdate
+		if f.failUpdateCount > 1 {
+			f.failUpdateCount--
+		} else {
+			f.failUpdate = nil
+		}
+		return nil, err
+	}
 	t, k := f.tbl(*in.TableName), keyOf(*in.TableName, in.Key)
 	if !condOK(aws.ToString(in.ConditionExpression), in.ExpressionAttributeNames, in.ExpressionAttributeValues, t[k]) {
 		return nil, failedCondition(in.ReturnValuesOnConditionCheckFailure, t[k])

@@ -1,6 +1,7 @@
 package dynamo
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -65,7 +66,7 @@ type jobItem struct {
 }
 
 // questionsItem holds the generated questions as one JSON string. DynamoDB items are
-// limited to 400 KB; 60 questions of the largest realistic size are about 160 KB
+// limited to 400 KB; 60 questions at the AI-spec 7.1 caps are about 160 KB (2-byte text; see the test for 3-byte text)
 // (TestSixtyQuestionsStayUnderTheItemLimit estimates it), and the request limits (at most
 // 60 questions) keep it there. Do not raise the question cap without re-checking.
 type questionsItem struct {
@@ -157,6 +158,9 @@ func (s *Stores) CreateJobWithQuota(ctx context.Context, j store.Job, q store.Qu
 	}
 	if err := store.ValidateQuotaCheck(q); err != nil {
 		return err
+	}
+	if j.Day != q.Day {
+		return fmt.Errorf("dynamo: job day %q differs from quota day %q", j.Day, q.Day)
 	}
 	// A limit of zero or less refuses every job. The conditions below cannot express it for an
 	// item that does not exist yet, so refuse before writing anything.
@@ -402,11 +406,14 @@ func (s *Stores) PutQuestions(ctx context.Context, jobID string, qs []store.Ques
 	if jobID == "" || strings.Contains(jobID, "#") {
 		return errors.New("dynamo: invalid job id")
 	}
-	b, err := json.Marshal(qs)
-	if err != nil {
+	// No HTML escaping: json.Marshal would turn each of < > & into 6 bytes.
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(qs); err != nil {
 		return err
 	}
-	av, err := attributevalue.MarshalMap(questionsItem{ID: jobID + questionsSuffix, Questions: string(b), TTL: s.ttlAt(store.JobItemTTL)})
+	av, err := attributevalue.MarshalMap(questionsItem{ID: jobID + questionsSuffix, Questions: strings.TrimSuffix(buf.String(), "\n"), TTL: s.ttlAt(store.JobItemTTL)})
 	if err != nil {
 		return err
 	}
@@ -494,7 +501,7 @@ func (s *Stores) AddSpend(ctx context.Context, month string, micros int64) (int6
 	if micros < 0 || len(month) != 6 {
 		return 0, errors.New("dynamo: spend must be non-negative and the month yyyymm")
 	}
-	out, err := s.api.UpdateItem(ctx, &dynamodb.UpdateItemInput{
+	in := &dynamodb.UpdateItemInput{
 		TableName:                &s.jobs,
 		Key:                      jobKey(globalID(month)),
 		UpdateExpression:         ptr("ADD spendMicros :n SET #ttl = if_not_exists(#ttl, :ttl)"),
@@ -502,6 +509,14 @@ func (s *Stores) AddSpend(ctx context.Context, month string, micros int64) (int6
 		ExpressionAttributeValues: map[string]types.AttributeValue{
 			":n": numAV(micros), ":ttl": numAV(s.ttlAt(store.QuotaMonthTTL))},
 		ReturnValues: types.ReturnValueUpdatedNew,
+	}
+	// CreateJobWithQuota writes this item in a transaction; a plain write that meets one in
+	// flight fails with TransactionConflict and the SDK does not retry it. A conflicted
+	// write applied nothing, so retrying cannot count the spend twice.
+	var out *dynamodb.UpdateItemOutput
+	err := s.retryTxnConflict(ctx, func() (err error) {
+		out, err = s.api.UpdateItem(ctx, in)
+		return err
 	})
 	if err != nil {
 		return 0, fmt.Errorf("dynamo: add spend: %w", err)

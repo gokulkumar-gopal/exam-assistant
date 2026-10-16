@@ -71,6 +71,9 @@ func (s *JobStore) CreateJobWithQuota(_ context.Context, j store.Job, q store.Qu
 	if err := store.ValidateQuotaCheck(q); err != nil {
 		return err
 	}
+	if j.Day != q.Day {
+		return fmt.Errorf("memory: job day %q differs from quota day %q", j.Day, q.Day)
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if _, ok := s.live(j.ID); ok {

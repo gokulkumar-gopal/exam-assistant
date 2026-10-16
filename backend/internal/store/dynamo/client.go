@@ -139,6 +139,11 @@ func isTxContention(err error) bool {
 	if errors.As(err, &ip) {
 		return true
 	}
+	// A plain (non-transactional) write to an item an in-flight transaction is writing.
+	var tc *types.TransactionConflictException
+	if errors.As(err, &tc) {
+		return true
+	}
 	rs, ok := cancelReasons(err)
 	if !ok {
 		return false
@@ -155,10 +160,10 @@ func isTxContention(err error) bool {
 	return conflict
 }
 
-// transact runs TransactWriteItems, retrying contention (a double-submitted signup) a
-// bounded number of times. After the cap the last error is returned as-is; it is never
-// reported as store.ErrConflict, which means a uniqueness violation.
-func (s *Stores) transact(ctx context.Context, in *dynamodb.TransactWriteItemsInput) error {
+// retryTxnConflict runs fn, retrying contention (see isTxContention) up to maxTxAttempts
+// times with a short backoff. After the cap the last error is returned as-is; it is never
+// swallowed, and never reported as store.ErrConflict, which means a uniqueness violation.
+func (s *Stores) retryTxnConflict(ctx context.Context, fn func() error) error {
 	var err error
 	for attempt := 0; attempt < maxTxAttempts; attempt++ {
 		if attempt > 0 {
@@ -166,9 +171,18 @@ func (s *Stores) transact(ctx context.Context, in *dynamodb.TransactWriteItemsIn
 				return serr
 			}
 		}
-		if _, err = s.api.TransactWriteItems(ctx, in); err == nil || !isTxContention(err) {
+		if err = fn(); err == nil || !isTxContention(err) {
 			return err
 		}
 	}
 	return err
+}
+
+// transact runs TransactWriteItems with retryTxnConflict (a double-submitted signup, or two
+// job creations touching the same counters).
+func (s *Stores) transact(ctx context.Context, in *dynamodb.TransactWriteItemsInput) error {
+	return s.retryTxnConflict(ctx, func() error {
+		_, err := s.api.TransactWriteItems(ctx, in)
+		return err
+	})
 }

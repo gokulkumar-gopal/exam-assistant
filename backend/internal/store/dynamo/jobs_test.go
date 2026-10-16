@@ -317,23 +317,9 @@ func TestStatusChangesAreConditional(t *testing.T) {
 	}
 }
 
-// DynamoDB items are limited to 400 KB. The questions item holds up to 60 questions; this
-// builds the worst realistic set (long text, four long options, a long model answer) and
-// estimates the stored size the way DynamoDB counts it: attribute name bytes plus value bytes.
-func TestSixtyQuestionsStayUnderTheItemLimit(t *testing.T) {
-	st, f := jobStores()
-	long := func(n int) string { return strings.Repeat("é", n/2) } // 2 bytes per rune
-	one := 2
-	var qs []store.Question
-	for i := 0; i < 60; i++ {
-		qs = append(qs, store.Question{ID: "01J00000000000000000000000", Marks: 5, Text: long(600),
-			Options: []string{long(200), long(200), long(200), long(200)}, CorrectIndex: &one, ModelAnswer: long(1000),
-			SourceDocID: "01J00000000000000000000001", SourceDocName: long(120)})
-	}
-	if err := st.PutQuestions(bg, "j1", qs); err != nil {
-		t.Fatal(err)
-	}
-	it := item(f, "j1#questions")
+// itemSize estimates the stored size the way DynamoDB counts it: attribute name bytes plus value bytes.
+func itemSize(t *testing.T, it map[string]types.AttributeValue) int {
+	t.Helper()
 	size := 0
 	for k, v := range it {
 		size += len(k)
@@ -346,10 +332,102 @@ func TestSixtyQuestionsStayUnderTheItemLimit(t *testing.T) {
 			t.Fatalf("unexpected attribute type %T", v)
 		}
 	}
+	return size
+}
+
+// DynamoDB items are limited to 400 KB. The questions item holds up to 60 questions at the
+// AI-spec 7.1 caps: text 600 chars; MCQ four options of 200 chars; free text a model answer
+// of 1,200 chars; each question has options OR an answer, never both. Two sets are measured:
+// realistic English (1-byte characters) and the worst case (3-byte characters, and text made
+// of < > & to prove the encoder does not HTML-escape them to 6 bytes each).
+func TestSixtyQuestionsStayUnderTheItemLimit(t *testing.T) {
 	const limit = 400 * 1024
-	t.Logf("60 worst-case questions = %d bytes (limit %d)", size, limit)
-	if size > limit/2 {
-		t.Fatalf("item size estimate %d is over half the %d byte limit", size, limit)
+	set := func(ch string, mcq bool) []store.Question {
+		one := 2
+		var qs []store.Question
+		for i := 0; i < 60; i++ {
+			q := store.Question{ID: "01J00000000000000000000000", Marks: 5, Text: strings.Repeat(ch, 600),
+				SourceDocID: "01J00000000000000000000001", SourceDocName: strings.Repeat(ch, 120)}
+			if mcq {
+				q.Options = []string{strings.Repeat(ch, 200), strings.Repeat(ch, 200), strings.Repeat(ch, 200), strings.Repeat(ch, 200)}
+				q.CorrectIndex = &one
+			} else {
+				q.ModelAnswer = strings.Repeat(ch, 1200)
+			}
+			qs = append(qs, q)
+		}
+		return qs
+	}
+	cases := []struct {
+		name string
+		ch   string
+		mcq  bool
+	}{
+		{"realistic MCQ", "a", true}, {"realistic free text", "a", false},
+		{"worst MCQ 3-byte", "語", true}, {"worst free text 3-byte", "語", false},
+		{"worst MCQ html chars", "<", true}, {"worst free text html chars", "&", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			st, f := jobStores()
+			if err := st.PutQuestions(bg, "j1", set(c.ch, c.mcq)); err != nil {
+				t.Fatal(err)
+			}
+			size := itemSize(t, item(f, "j1#questions"))
+			t.Logf("%s: %d bytes (%.0f%% of the %d byte limit)", c.name, size, 100*float64(size)/limit, limit)
+			if size >= limit {
+				t.Fatalf("item size estimate %d reaches the %d byte limit", size, limit)
+			}
+			got, err := st.GetQuestions(bg, "j1")
+			if err != nil || len(got) != 60 || got[0].Text != strings.Repeat(c.ch, 600) {
+				t.Fatalf("round trip failed: %v", err)
+			}
+		})
+	}
+}
+
+func TestCreateJobRejectsDayMismatch(t *testing.T) {
+	st, f := jobStores()
+	j := newJob("j1", "u1")
+	j.Day = "20261015"
+	err := st.CreateJobWithQuota(bg, j, quotaFor("u1"))
+	var qe *store.QuotaError
+	if err == nil || errors.As(err, &qe) || errors.Is(err, store.ErrConflict) || len(f.calls) != 0 {
+		t.Fatalf("err = %v calls = %v", err, f.calls)
+	}
+}
+
+func TestAddSpendRetriesTransactionConflict(t *testing.T) {
+	st, f := jobStores()
+	if _, err := st.AddSpend(bg, "202610", 100); err != nil {
+		t.Fatal(err)
+	}
+	f.failUpdate, f.failUpdateCount = &types.TransactionConflictException{}, 2
+	total, err := st.AddSpend(bg, "202610", 50)
+	if err != nil || total != 150 {
+		t.Fatalf("total = %d, err = %v", total, err)
+	}
+	if got := n(t, item(f, "quota#global#202610"), "spendMicros"); got != 150 {
+		t.Fatalf("stored spend = %d, want 150 (counted exactly once)", got)
+	}
+	if f.saw("UpdateItem") != 4 { // 1 + 3 attempts
+		t.Fatalf("UpdateItem calls = %d", f.saw("UpdateItem"))
+	}
+}
+
+func TestAddSpendPersistentConflictReturnsError(t *testing.T) {
+	st, f := jobStores()
+	f.failUpdate, f.failUpdateCount = &types.TransactionConflictException{}, 100
+	_, err := st.AddSpend(bg, "202610", 50)
+	var tc *types.TransactionConflictException
+	if err == nil || !errors.As(err, &tc) {
+		t.Fatalf("err = %v, want the raw conflict", err)
+	}
+	if f.saw("UpdateItem") != maxTxAttempts {
+		t.Fatalf("attempts = %d, want %d", f.saw("UpdateItem"), maxTxAttempts)
+	}
+	if item(f, "quota#global#202610") != nil {
+		t.Fatal("a failed AddSpend wrote something")
 	}
 }
 
@@ -418,7 +496,7 @@ func keys(m map[string]types.AttributeValue) []string {
 // The summary comes from what the owner-index projects (the fake projects per template.yaml),
 // so a store that read an unprojected attribute would see the zero value here.
 func TestOwnerSummaryUsesOnlyProjectedAttributes(t *testing.T) {
-	st, f := jobStores()
+	st, _ := jobStores()
 	_ = st.CreateJobWithQuota(bg, newJob("j1", "u1"), quotaFor("u1"))
 	got, err := st.ListOwnerJobs(bg, "u1")
 	if err != nil || len(got) != 1 {
@@ -428,7 +506,6 @@ func TestOwnerSummaryUsesOnlyProjectedAttributes(t *testing.T) {
 	if !reflect.DeepEqual(got[0], want) {
 		t.Fatalf("got %+v want %+v", got[0], want)
 	}
-	_ = f
 }
 
 func TestJobsTableName(t *testing.T) {

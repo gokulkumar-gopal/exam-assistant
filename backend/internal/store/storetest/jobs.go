@@ -136,10 +136,14 @@ func BudgetRefusalWhenSpendAtOrAboveBudget(t *testing.T, f JobFactory) {
 	wantQuota(t, s.CreateJobWithQuota(ctx, job("j2", "u1"), q), store.QuotaBudget) // above refuses
 	// a new month has its own counter
 	q.Month, q.Day = "202611", "20261101"
-	mustCreate(t, s, job("j3", "u1"), q)
+	j3 := job("j3", "u1")
+	j3.Day = q.Day
+	mustCreate(t, s, j3, q)
 	// a zero budget refuses everything
 	q.BudgetMicros = 0
-	wantQuota(t, s.CreateJobWithQuota(ctx, job("j4", "u1"), q), store.QuotaBudget)
+	j4 := job("j4", "u1")
+	j4.Day = q.Day
+	wantQuota(t, s.CreateJobWithQuota(ctx, j4, q), store.QuotaBudget)
 }
 
 func RefusedJobLeavesNoCounterBehind(t *testing.T, f JobFactory) {
@@ -181,7 +185,9 @@ func QuotaIsPerUserAndPerDay(t *testing.T, f JobFactory) {
 	mustCreate(t, s, job("b0", "u2"), quota("u2"))
 	q := quota("u1")
 	q.Day = "20261017"
-	mustCreate(t, s, job("c0", "u1"), q)
+	c0 := job("c0", "u1")
+	c0.Day = q.Day
+	mustCreate(t, s, c0, q)
 }
 
 func ConcurrentCreatesRespectLimit(t *testing.T, f JobFactory) {
