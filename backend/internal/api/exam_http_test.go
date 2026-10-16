@@ -119,12 +119,12 @@ func TestCreateExamErrorsAndGuards(t *testing.T) {
 	if rec := postExam(h, big, "", c, ""); rec.Code != http.StatusUnprocessableEntity {
 		t.Errorf("oversize body: %d", rec.Code)
 	}
-	for _, m := range []string{"GET", "PUT", "DELETE"} {
+	for _, m := range []string{"PUT", "DELETE"} {
 		req := httptest.NewRequest(m, "/exams", nil)
 		req.AddCookie(c)
 		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, req)
-		if rec.Code != http.StatusMethodNotAllowed || rec.Header().Get("Allow") != "POST" ||
+		if rec.Code != http.StatusMethodNotAllowed || rec.Header().Get("Allow") != "GET, HEAD, POST" ||
 			!strings.Contains(rec.Body.String(), "method_not_allowed") {
 			t.Errorf("%s: %d allow=%q %s", m, rec.Code, rec.Header().Get("Allow"), rec.Body)
 		}
@@ -140,5 +140,58 @@ func TestCreateExamErrorsAndGuards(t *testing.T) {
 	if rec.Code != http.StatusConflict || strings.Contains(rec.Body.String(), "Cells") ||
 		!strings.Contains(rec.Body.String(), `"code":"conflict"`) {
 		t.Errorf("other creator: %d %s", rec.Code, rec.Body)
+	}
+}
+
+func getList(h http.Handler, scope string, c *http.Cookie) *httptest.ResponseRecorder {
+	req := jsonReq("GET", "/exams?scope="+scope, "")
+	if c != nil {
+		req.AddCookie(c)
+	}
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	return rec
+}
+
+func TestListExamsHandler(t *testing.T) {
+	h, c, _ := newExamEnv(t)
+	if rec := getList(h, "open", nil); rec.Code != http.StatusUnauthorized {
+		t.Errorf("no session: %d", rec.Code)
+	}
+	if rec := postExam(h, examBody, "", c, ""); rec.Code != http.StatusCreated {
+		t.Fatalf("create: %s", rec.Body)
+	}
+	rec := getList(h, "open", c)
+	if rec.Code != http.StatusOK || rec.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("%d %v %s", rec.Code, rec.Header(), rec.Body)
+	}
+	var out struct {
+		ServerTime string           `json:"serverTime"`
+		Exams      []map[string]any `json:"exams"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil || out.ServerTime != authT0.UTC().Format(time.RFC3339) || len(out.Exams) != 1 {
+		t.Fatalf("%v %s", err, rec.Body)
+	}
+	if out.Exams[0]["attemptStatus"] != "not_started" || out.Exams[0]["counts"] != nil {
+		t.Fatalf("%s", rec.Body)
+	}
+	rec = getList(h, "created", c)
+	if !strings.Contains(rec.Body.String(), `"counts":{"submitted":0,"inProgress":0,"notStarted":1,"declined":0}`) ||
+		strings.Contains(rec.Body.String(), "attemptStatus") {
+		t.Fatalf("%s", rec.Body)
+	}
+	rec = getList(h, "closed", c)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"exams":[]`) {
+		t.Fatalf("empty list must be []: %s", rec.Body)
+	}
+	if rec := getList(h, "bogus", c); rec.Code != http.StatusUnprocessableEntity || !strings.Contains(rec.Body.String(), `"scope"`) {
+		t.Errorf("bad scope: %d %s", rec.Code, rec.Body)
+	}
+	req := jsonReq("DELETE", "/exams?scope=open", "")
+	req.AddCookie(c)
+	r2 := httptest.NewRecorder()
+	h.ServeHTTP(r2, req)
+	if r2.Code != http.StatusMethodNotAllowed || !strings.Contains(r2.Header().Get("Content-Type"), "json") || !strings.Contains(r2.Header().Get("Allow"), "GET") {
+		t.Errorf("405: %d %v", r2.Code, r2.Header())
 	}
 }
