@@ -50,7 +50,10 @@ export default function Page() {
   const data = view.kind === "ok" ? view.data : null;
   const title = data?.exam.title;
   useEffect(() => {
-    if (title) document.title = title; // the browser names the saved PDF after the page title
+    if (!title) return;
+    const before = document.title;
+    document.title = title; // the browser names the saved PDF after the page title
+    return () => { document.title = before; };
   }, [title]);
 
   // PrintSheet receives only this plan: key material is in it only when keyVisible is true.

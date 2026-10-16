@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "../lib/api";
 import { createAutosaver } from "../lib/autosave";
-import { autoSubmitAtZero, canSaveAndExit, submitExam, withTimeout, submitDialogTitle, unansweredIndexes, unansweredLine } from "../lib/submit";
+import { autoSubmitAtZero, awaitWithTimeout, canSaveAndExit, submitExam, withTimeout, submitDialogTitle, unansweredIndexes, unansweredLine } from "../lib/submit";
 
 beforeEach(() => { vi.useFakeTimers(); });
 afterEach(() => { vi.useRealTimers(); });
@@ -147,5 +147,22 @@ describe("autoSubmitAtZero stops autosave on every trigger", () => {
     await t(); await t();
     expect(stop).toHaveBeenCalledTimes(2);
     expect(submit).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("awaitWithTimeout", () => {
+  beforeEach(() => { vi.useFakeTimers(); });
+  afterEach(() => { vi.useRealTimers(); });
+  it("resolves when the promise settles first, swallowing a rejection", async () => {
+    await expect(awaitWithTimeout(Promise.resolve(1), 2000)).resolves.toBeUndefined();
+    await expect(awaitWithTimeout(Promise.reject(new Error("x")), 2000)).resolves.toBeUndefined();
+  });
+  it("gives up after ms when the promise hangs", async () => {
+    let done = false;
+    void awaitWithTimeout(new Promise<void>(() => undefined), 2000).then(() => { done = true; });
+    await vi.advanceTimersByTimeAsync(1999);
+    expect(done).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(done).toBe(true);
   });
 });

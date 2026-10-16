@@ -134,7 +134,7 @@ export default function Page() {
               >
                 Reveal answer
               </button>
-              {control === "disabled" && peeks.noneLeft && <span className="text-[13px] text-muted">No peeks left.</span>}
+              {control === "disabled" && peeks.hint && <span className="text-[13px] text-muted">{peeks.hint}</span>}
             </div>
           )}
           {revealed && (

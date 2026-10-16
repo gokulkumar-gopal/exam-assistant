@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  ANSWER_LABEL, applyReveal, applyRevealError, initReveal, peeksOn, peeksLeftText, revealControl,
+  ANSWER_LABEL, applyReveal, applyRevealError, revealHint, initReveal, peeksOn, peeksLeftText, revealControl,
   revealDialogBody, revealedAnswerText, storedAnswer,
 } from "../lib/reveal";
 
@@ -106,6 +106,19 @@ describe("applyRevealError", () => {
     expect(revealControl(s, "q2", false, true)).toBe("disabled");
     expect(storedAnswer(s, "q1")).toEqual({ correctIndex: 0 });
     expect(peeksOn(s, true)).toBe(true);
+  });
+  it("409 'No peeks left.' zeroes the counter and hints No peeks left.", () => {
+    const s = applyRevealError(fresh(), 409, "No peeks left.");
+    expect(s.peeksLeft).toBe(0);
+    expect(revealHint(s)).toBe("No peeks left.");
+  });
+  it("409 for any other reason keeps the last known count and shows the server's words, not 'No peeks left.'", () => {
+    const s0 = fresh();
+    const s = applyRevealError(s0, 409, "The answer is already available.");
+    expect(s.peeksLeft).toBe(s0.peeksLeft);
+    expect(revealControl(s, "q2", false, true)).toBe("disabled");
+    expect(revealHint(s)).toBe("The answer is already available.");
+    expect(revealHint(applyRevealError(s0, 409))).toBeNull();
   });
   it("403 (peeking is off) removes the control and the counter", () => {
     const s = applyRevealError(fresh(), 403);

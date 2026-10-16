@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { autosaveText, createAutosaver, keepaliveOk, shouldFlushOnEvent, type AutosaveState } from "../lib/autosave";
+import { autosaveText, createAutosaver, keepaliveOk, rejectionReason, shouldFlushOnEvent, type AutosaveState } from "../lib/autosave";
 
 const snap = { answers: { q1: "a" } as Record<string, string>, lastQuestionIndex: 0 };
 
@@ -17,6 +17,7 @@ function setup(putImpl?: (a: Record<string, string>, i: number) => Promise<void>
   });
   return { saver, put, calls, states, s };
 }
+const rejected422 = (fields?: Record<string, string>) => Object.assign(new Error("invalid"), { status: 422, fields });
 const conflict = () => Object.assign(new Error("closed"), { status: 409 });
 
 beforeEach(() => { vi.useFakeTimers(); vi.setSystemTime(new Date("2026-10-18T10:42:00")); });
@@ -78,6 +79,90 @@ describe("createAutosaver", () => {
     await vi.advanceTimersByTimeAsync(5000);
     expect(put).toHaveBeenCalledTimes(1);
     expect(await saver.flush()).toBe("closed");
+  });
+
+  it("a 422 is permanent for that snapshot: no retry, state rejected, answers untouched", async () => {
+    const { saver, put, states, s } = setup(async () => { throw rejected422({ answers: "Too long overall" }); });
+    saver.change();
+    await vi.advanceTimersByTimeAsync(500);
+    expect(states.at(-1)!.status).toBe("rejected");
+    expect(states.at(-1)!.reason).toBe("too-long");
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(put).toHaveBeenCalledTimes(1);
+    expect(s.answers).toEqual({ q1: "a" });
+  });
+
+  it("the next change after a 422 saves again and recovers", async () => {
+    let reject = true;
+    const { saver, put, states, s } = setup(async () => { if (reject) throw rejected422(); });
+    saver.change();
+    await vi.advanceTimersByTimeAsync(500);
+    expect(states.at(-1)!.status).toBe("rejected");
+    expect(states.at(-1)!.reason).toBe("other");
+    reject = false;
+    s.answers = { q1: "short" };
+    saver.change();
+    await vi.advanceTimersByTimeAsync(500);
+    expect(put).toHaveBeenCalledTimes(2);
+    expect(put).toHaveBeenLastCalledWith({ q1: "short" }, 0);
+    expect(states.at(-1)!.status).toBe("saved");
+  });
+
+  it("flush after a 422 with no new change reports rejected (Save & exit must not leave)", async () => {
+    const { saver, put } = setup(async () => { throw rejected422(); });
+    saver.change();
+    await vi.advanceTimersByTimeAsync(500);
+    expect(await saver.flush()).toBe("rejected");
+    expect(put).toHaveBeenCalledTimes(1);
+  });
+
+  it("a change made while a put is in flight survives that put being rejected (422)", async () => {
+    let release!: () => void;
+    let first = true;
+    const { saver, put, states, s } = setup(() => {
+      if (!first) return Promise.resolve();
+      first = false;
+      return new Promise<void>((_, rej) => { release = () => rej(rejected422({ answers: "Too long overall" })); });
+    });
+    saver.change();
+    await vi.advanceTimersByTimeAsync(500); // put #1 in flight
+    expect(put).toHaveBeenCalledTimes(1);
+    s.answers = { q1: "newer" };
+    saver.change();
+    release(); // put #1 comes back 422
+    await vi.advanceTimersByTimeAsync(0);
+    expect(states.some((x) => x.status === "rejected")).toBe(false);
+    await vi.advanceTimersByTimeAsync(500);
+    expect(put).toHaveBeenCalledTimes(2);
+    expect(put).toHaveBeenLastCalledWith({ q1: "newer" }, 0);
+    expect(states.at(-1)!.status).toBe("saved");
+  });
+
+  it("flush while a put is in flight and rejected sends the current text", async () => {
+    let release!: () => void;
+    let first = true;
+    const { saver, put, s } = setup(() => {
+      if (!first) return Promise.resolve();
+      first = false;
+      return new Promise<void>((_, rej) => { release = () => rej(rejected422()); });
+    });
+    saver.change();
+    await vi.advanceTimersByTimeAsync(500);
+    s.answers = { q1: "current" };
+    saver.change();
+    const f = saver.flush();
+    release();
+    expect(await f).toBe("saved");
+    expect(put).toHaveBeenLastCalledWith({ q1: "current" }, 0);
+  });
+
+  it("a 5xx still retries every 3000 ms", async () => {
+    const { saver, put } = setup(async () => { throw Object.assign(new Error("x"), { status: 500 }); });
+    saver.change();
+    await vi.advanceTimersByTimeAsync(500);
+    await vi.advanceTimersByTimeAsync(3000);
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(put).toHaveBeenCalledTimes(3);
   });
 
   it("flush saves a pending change now and resolves saved", async () => {
@@ -256,5 +341,22 @@ describe("leaving the page", () => {
     expect(keepaliveOk(JSON.stringify({ answers: { q1: "a" } }))).toBe(true);
     expect(keepaliveOk("x".repeat(70_000))).toBe(false);
     expect(keepaliveOk("é".repeat(40_000))).toBe(false); // 2 bytes each
+  });
+});
+
+describe("rejectionReason and rejected text", () => {
+  it("too-long when a field message says Too long (overall or per answer)", () => {
+    expect(rejectionReason(rejected422({ "answers[q1]": "Too long" }))).toBe("too-long");
+    expect(rejectionReason(rejected422({ answers: "Too long overall" }))).toBe("too-long");
+  });
+  it("other for any other 422", () => {
+    expect(rejectionReason(rejected422({ "answers[zz]": "Unknown question" }))).toBe("other");
+    expect(rejectionReason(rejected422())).toBe("other");
+    expect(rejectionReason(null)).toBe("other");
+  });
+  it("text per reason", () => {
+    expect(autosaveText({ status: "rejected", savedAt: 1, reason: "too-long" })).toBe("Your answers are too long to save.");
+    expect(autosaveText({ status: "rejected", savedAt: 1, reason: "other" })).toBe("Couldn't save your answers.");
+    expect(autosaveText({ status: "rejected", savedAt: null })).toBe("Couldn't save your answers.");
   });
 });

@@ -7,11 +7,11 @@ import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { api, ApiError, serverNow } from "@/lib/api";
 import { useAttempt } from "@/lib/attempt";
-import { createAutosaver, keepaliveOk, shouldFlushOnEvent, type AutosaveState } from "@/lib/autosave";
-import { autoSubmitAtZero, canSaveAndExit, submitExam, withTimeout, type SubmitPhase } from "@/lib/submit";
+import { autosaveText, createAutosaver, keepaliveOk, shouldFlushOnEvent, type AutosaveState } from "@/lib/autosave";
+import { autoSubmitAtZero, awaitWithTimeout, canSaveAndExit, submitExam, withTimeout, type SubmitPhase } from "@/lib/submit";
 import { scheduleAt } from "@/lib/timer";
 import { answersByIndex, clampIndex, takeDecision } from "@/lib/take";
-import { applyReveal, applyRevealError, initReveal, peeksOn, revealControl, type RevealedAnswer } from "@/lib/reveal";
+import { applyReveal, applyRevealError, initReveal, peeksOn, revealControl, revealHint, type RevealedAnswer } from "@/lib/reveal";
 import type { Attempt, ExamResponse, RevealResponse } from "@/lib/types";
 import { EmptyState } from "@/components/EmptyState";
 import { ExamBar } from "@/components/ExamBar";
@@ -19,9 +19,13 @@ import { Notice } from "@/components/Notice";
 
 export const CLOSED_TOAST = "This exam has closed. Your last saved answers were submitted.";
 export const TIMES_UP_TOAST = "Time's up. Your answers were submitted.";
+/** fs 8.1 errors table: 403 shows this toast and goes Home. */
+export const FORBIDDEN_TOAST = "You don't have access to that.";
 export const NOT_OPEN_TOAST = "This exam is closed";
 /** A submit request that has not answered by then counts as failed (the loop retries; submit is idempotent). */
 const SUBMIT_TIMEOUT_MS = 20_000;
+/** Longest a submit waits for a reveal already sent; after that it submits anyway. */
+const REVEAL_WAIT_MS = 2000;
 const NETWORK_TOAST = "Couldn't reach the server. Try again.";
 
 /** What a reveal attempt ended as: ok, not allowed right now (blocked), refused by the server (403/409), closed, or a failure. */
@@ -31,8 +35,8 @@ export interface PeeksApi {
   /** maxPeeks above 0, peeks not turned off, UI flag on: the counter and controls are shown. */
   on: boolean;
   left: number;
-  /** A 409 said no peeks are left (or the key is visible). */
-  noneLeft: boolean;
+  /** Text for under a disabled Reveal button (null: none). */
+  hint: string | null;
   control: (questionId: string) => "none" | "disabled" | "enabled";
   answer: (questionId: string) => RevealedAnswer | undefined;
   reveal: (questionId: string) => Promise<RevealOutcome>;
@@ -91,10 +95,14 @@ export function AttemptProvider({ children }: { children: React.ReactNode }) {
     let alive = true;
     api<ExamResponse>("GET", `/exams/${encodeURIComponent(id)}`).then(
       (r) => { if (alive) { setData(r); setError(null); } },
-      (e) => { if (alive) setError(e instanceof ApiError && (e.status === 404 || e.status === 403) ? "gone" : "failed"); },
+      (e) => {
+        if (!alive) return;
+        if (e instanceof ApiError && e.status === 403) { toast(FORBIDDEN_TOAST); router.replace("/"); return; }
+        setError(e instanceof ApiError && e.status === 404 ? "gone" : "failed");
+      },
     );
     return () => { alive = false; };
-  }, [id, tries]);
+  }, [id, tries, router]);
 
   // Decided once per load (not on re-render): what opening this exam does at this moment.
   const decision = useMemo(() => {
@@ -149,6 +157,8 @@ function Attempting({ data, children }: { data: ExamResponse; children: React.Re
   useEffect(() => { latest.current = { answers: a.answers, lastQuestionIndex: index }; });
   const initialSaved = attempt?.savedAt ? Date.parse(attempt.savedAt) : NaN;
   const [save, setSave] = useState<AutosaveState>({ status: "idle", savedAt: Number.isNaN(initialSaved) ? null : initialSaved });
+  const saveRef = useRef(save);
+  useEffect(() => { saveRef.current = save; });
   const saverRef = useRef<ReturnType<typeof createAutosaver> | null>(null);
 
   // One way out of the attempt: a toast (if any), then the result page with history replaced so Back never
@@ -183,7 +193,7 @@ function Attempting({ data, children }: { data: ExamResponse; children: React.Re
       },
       snapshot: () => latest.current,
       initialSavedAt: Number.isNaN(initialSaved) ? null : initialSaved,
-      onState: (s) => { setSave(s); if (s.status === "closed") goClosed(); },
+      onState: (s) => { saveRef.current = s; setSave(s); if (s.status === "closed") goClosed(); },
     });
     saverRef.current = saver;
     // Closing the tab or switching away: send what is pending (closing loses at most the last keystroke).
@@ -224,6 +234,7 @@ function Attempting({ data, children }: { data: ExamResponse; children: React.Re
   const [phase, setPhase] = useState<SubmitPhase>("idle");
   const zeroSkipped = useRef(false); // zero came while a manual submit was running
   const zero = useRef<ReturnType<typeof autoSubmitAtZero> | null>(null);
+  const revealing = useRef<Promise<unknown> | null>(null);
   const runZero = useCallback(async () => {
     if (finished.current) return;
     zero.current ??= autoSubmitAtZero({
@@ -234,6 +245,8 @@ function Attempting({ data, children }: { data: ExamResponse; children: React.Re
     });
     submitting.current = true;
     setPhase("submitting");
+    // A reveal already sent finishes first, like the manual submit, so the server scores with the peek.
+    if (revealing.current) await awaitWithTimeout(revealing.current, REVEAL_WAIT_MS);
     const r = await zero.current();
     submitting.current = false;
     leave(r === "ok" ? TIMES_UP_TOAST : CLOSED_TOAST);
@@ -255,7 +268,6 @@ function Attempting({ data, children }: { data: ExamResponse; children: React.Re
   const [rv, setRv] = useState(() => initReveal(exam.maxPeeks, attempt, data.keyVisible));
   const rvRef = useRef(rv);
   useEffect(() => { rvRef.current = rv; });
-  const revealing = useRef<Promise<unknown> | null>(null);
   const [revealBusy, setRevealBusy] = useState(false);
   const reveal = useCallback(async (qid: string): Promise<RevealOutcome> => {
     // Never during or after a submit, and one reveal at a time.
@@ -271,7 +283,7 @@ function Attempting({ data, children }: { data: ExamResponse; children: React.Re
     } catch (e) {
       if (e instanceof ApiError && e.status === 409 && e.code === "exam_closed") { goClosed(); return "closed"; }
       if (e instanceof ApiError && (e.status === 403 || e.status === 409)) {
-        setRv((s) => applyRevealError(s, e.status));
+        setRv((s) => applyRevealError(s, e.status, e.message));
         toast(e.message);
         return "refused";
       }
@@ -290,7 +302,7 @@ function Attempting({ data, children }: { data: ExamResponse; children: React.Re
     setPhase("submitting");
     try {
       // A reveal already sent finishes first, so the server has the peek before it scores the attempt.
-      if (revealing.current) await revealing.current.catch(() => undefined);
+      if (revealing.current) await awaitWithTimeout(revealing.current, REVEAL_WAIT_MS);
       const r = await withTimeout(submitExam(examId, latest.current.answers, latest.current.lastQuestionIndex), SUBMIT_TIMEOUT_MS);
       submitting.current = false;
       leave(r === "ok" ? null : CLOSED_TOAST);
@@ -319,6 +331,10 @@ function Attempting({ data, children }: { data: ExamResponse; children: React.Re
     // Failed: stay on the exam (the bar shows "Not saved. Retrying…" and keeps retrying), so no answer is lost.
     setExiting(false);
     if (r === "failed") toast.error(NETWORK_TOAST);
+    // "rejected": the bar says why and so does a toast; answers stay in memory and Submit still works.
+    if (r === "rejected") {
+      toast.error(autosaveText(saveRef.current.status === "rejected" ? saveRef.current : { status: "rejected", savedAt: null }));
+    }
   };
 
   const byIndex = answersByIndex(exam.questions, a.answers);
@@ -327,7 +343,7 @@ function Attempting({ data, children }: { data: ExamResponse; children: React.Re
   const peeks = useMemo<PeeksApi>(() => ({
     on: peeksOnNow,
     left: rv.peeksLeft,
-    noneLeft: rv.noPeeksLeft || rv.peeksLeft <= 0,
+    hint: revealHint(rv),
     control: (qid) => revealControl(rv, qid, submitBusy || revealBusy),
     answer: (qid) => rv.revealed[qid],
     reveal,

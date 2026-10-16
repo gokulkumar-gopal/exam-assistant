@@ -12,6 +12,8 @@ export interface RevealState {
   revealed: Record<string, RevealedAnswer>;
   /** A 409 came back (no peeks left, or the key is already visible): the button stays disabled. */
   noPeeksLeft: boolean;
+  /** Set by a 409: the text for under the button. Undefined until then (then "No peeks left." only if the count is 0). */
+  conflictNote?: string | null;
   /** A 403 came back, or the key is visible: peeking is off, nothing is shown. */
   off: boolean;
 }
@@ -68,11 +70,25 @@ export function applyReveal(s: RevealState, r: { questionId: string; correctInde
   return { ...s, revealed: { ...s.revealed, [r.questionId]: pick(r) }, peeksLeft: clampLeft(r.peeksLeft, s.maxPeeks) };
 }
 
-/** 403: peeking is off (control gone). 409: no peeks left or key visible (button disabled). Anything else: unchanged. */
-export function applyRevealError(s: RevealState, status: number): RevealState {
+export const NO_PEEKS_LEFT = "No peeks left.";
+/**
+ * 403: peeking is off (control gone). 409: no peeks left or key visible (button disabled; the backend sends the same
+ * status for both, so the server's message tells them apart: only "no peeks left" zeroes the counter and gets the
+ * "No peeks left." hint, otherwise the count stays as last known and the server's own words are the hint).
+ */
+export function applyRevealError(s: RevealState, status: number, message?: string): RevealState {
   if (status === 403) return { ...s, off: true };
-  if (status === 409) return { ...s, noPeeksLeft: true };
+  if (status === 409) {
+    if (message && /no peeks/i.test(message)) return { ...s, noPeeksLeft: true, peeksLeft: 0, conflictNote: NO_PEEKS_LEFT };
+    return { ...s, noPeeksLeft: true, conflictNote: message?.trim() ? message : null };
+  }
   return s;
+}
+
+/** Text under a disabled Reveal button, or null for none. */
+export function revealHint(s: RevealState): string | null {
+  if (s.conflictNote !== undefined) return s.conflictNote;
+  return s.peeksLeft <= 0 ? NO_PEEKS_LEFT : null;
 }
 
 /** The text to show for a revealed answer: the option label (MCQ) or the model answer. Null when there is nothing usable. */

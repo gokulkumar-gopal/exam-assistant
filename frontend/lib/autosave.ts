@@ -1,13 +1,25 @@
 // Debounced autosave with retry (fs 6.5, 8.1). No network or React here: the caller supplies `put`.
-// A rejection with status 409 (exam closed or already submitted) stops everything.
+// A rejection with status 409 (exam closed or already submitted) stops everything. A 422 (the server refuses this
+// snapshot: too long, unknown question) is permanent for that snapshot: no retry, status "rejected"; the next change
+// saves a fresh snapshot. Other failures (network, 5xx) retry every 3 s.
 
 export interface AutosaveState {
-  /** idle: nothing saved yet this session; saved: last put succeeded; retrying: last put failed; closed: 409. */
-  status: "idle" | "saved" | "retrying" | "closed";
+  /** idle: nothing saved yet this session; saved: last put succeeded; retrying: last put failed; closed: 409; rejected: 422. */
+  status: "idle" | "saved" | "retrying" | "closed" | "rejected";
+  /** With status "rejected": why (answers too long, or any other 422). */
+  reason?: RejectReason;
   /** Epoch ms of the last successful save, or null. */
   savedAt: number | null;
 }
-export type FlushResult = "saved" | "failed" | "closed";
+export type RejectReason = "too-long" | "other";
+export type FlushResult = "saved" | "failed" | "closed" | "rejected";
+
+/** Backend 422 body fields look like `answers: "Too long overall"` or `answers[id]: "Too long"`. */
+export function rejectionReason(e: unknown): RejectReason {
+  const fields = (e as { fields?: Record<string, unknown> } | null)?.fields;
+  if (fields && Object.values(fields).some((v) => typeof v === "string" && /too long/i.test(v))) return "too-long";
+  return "other";
+}
 
 export interface AutosaverOpts {
   put: (answers: Record<string, string>, lastQuestionIndex: number) => Promise<void>;
@@ -29,6 +41,7 @@ export function createAutosaver(o: AutosaverOpts) {
   let dirty = false;
   let failing = false;
   let closed = false;
+  let rejected: RejectReason | null = null; // the last put was refused (422) and nothing has changed since
   let disposed = false;
   let wantsNow = false; // an immediate change is waiting (for the timer or an in-flight put)
   let inflight: Promise<FlushResult> | null = null;
@@ -36,7 +49,9 @@ export function createAutosaver(o: AutosaverOpts) {
   let savedAt: number | null = o.initialSavedAt ?? null;
   let latest: { answers: Record<string, string>; lastQuestionIndex: number } | undefined;
 
-  const emit = (status: AutosaveState["status"]) => { if (!disposed) o.onState({ status, savedAt }); };
+  const emit = (status: AutosaveState["status"], reason?: RejectReason) => {
+    if (!disposed) o.onState(reason ? { status, savedAt, reason } : { status, savedAt });
+  };
   const clear = () => { if (timer) { clearTimeout(timer); timer = null; } };
 
   function schedule(ms: number) {
@@ -62,6 +77,7 @@ export function createAutosaver(o: AutosaverOpts) {
         await o.put(snap?.answers as Record<string, string>, snap?.lastQuestionIndex as number);
         savedAt = now();
         failing = false;
+        rejected = null;
         emit("saved");
         if (dirty && !closed) schedule(wantsNow ? 0 : debounceMs);
         return "saved";
@@ -72,6 +88,16 @@ export function createAutosaver(o: AutosaverOpts) {
           clear();
           emit("closed");
           return "closed";
+        }
+        if ((e as { status?: number } | null)?.status === 422) {
+          // A change made while this put was in flight is a newer snapshot: leave it (and its timer) alone, and
+          // report rejected only when nothing newer is pending.
+          if (dirty) return "rejected";
+          rejected = rejectionReason(e);
+          failing = false;
+          clear();
+          emit("rejected", rejected);
+          return "rejected";
         }
         failing = true;
         dirty = true;
@@ -104,13 +130,13 @@ export function createAutosaver(o: AutosaverOpts) {
      */
     flush(): Promise<FlushResult> {
       if (closed) return Promise.resolve("closed");
-      if (disposed) return Promise.resolve(dirty || failing ? "failed" : "saved");
+      if (disposed) return Promise.resolve(dirty || failing ? "failed" : rejected ? "rejected" : "saved");
       if (flushing) return flushing;
       clear();
       const p = (async (): Promise<FlushResult> => {
         while (inflight) await inflight.catch(() => undefined);
         if (closed) return "closed";
-        if (!dirty && !failing) return "saved";
+        if (!dirty && !failing) return rejected ? "rejected" : "saved";
         return attempt();
       })();
       flushing = p;
@@ -141,6 +167,7 @@ const hhmm = (ms: number) => {
 /** Header text: "Saved 10:42", "Not saved. Retrying…", or "" before the first save. */
 export function autosaveText(s: AutosaveState, fmt: (ms: number) => string = hhmm): string {
   if (s.status === "retrying") return "Not saved. Retrying…";
+  if (s.status === "rejected") return s.reason === "too-long" ? "Your answers are too long to save." : "Couldn't save your answers.";
   if (s.savedAt !== null && s.status !== "closed") return `Saved ${fmt(s.savedAt)}`;
   return "";
 }
