@@ -236,7 +236,8 @@ const over = (e: MockExam) => Date.now() >= Date.parse(e.closesAt) + GRACE;
 function finalizeOnRead(e: MockExam) {
   if (e.attempt?.status === "in_progress" && over(e)) e.attempt.status = "submitted";
 }
-const keyVisible = (e: MockExam) => e.mine || over(e);
+/** bs 9.4: visible once over; else for the creator unless they are mid-way through their own attempt (a row that is not submitted). */
+const keyVisible = (e: MockExam) => over(e) || (e.mine && (!e.attempt || e.attempt.status === "submitted"));
 /** MCQ answers are stored as the option text (bs 9.3: exact match with options[correctIndex]). */
 const isRight = (q: Question, a: string | undefined) =>
   a !== undefined && q.correctIndex !== undefined && a === q.options?.[q.correctIndex];
