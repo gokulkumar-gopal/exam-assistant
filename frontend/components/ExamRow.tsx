@@ -1,7 +1,7 @@
 "use client";
 import Link from "next/link";
 import { Pill } from "@/components/Pill";
-import { countsLine, examMeta, rowView } from "@/lib/exam-row";
+import { canDecline, countsLine, examMeta, rowView } from "@/lib/exam-row";
 import type { ExamListItem } from "@/lib/types";
 
 const QUIET = "inline-flex min-h-10 items-center rounded-lg px-2 text-[13px] text-muted underline-offset-2 hover:underline";
@@ -23,12 +23,10 @@ export function ExamRow({
   const id = encodeURIComponent(exam.id);
   const view = mode === "attempt" ? rowView(exam, nowMs) : null;
   const href = view?.action === "View result" ? `/exams/${id}/result` : `/exams/${id}/take`;
-  const canDecline =
-    mode === "attempt" && !!onDecline && exam.attemptStatus === "not_started" &&
-    exam.createdBy.id !== userId && nowMs < Date.parse(exam.closesAt);
+  const showDecline = mode === "attempt" && !!onDecline && canDecline(exam, userId, nowMs);
 
   return (
-    <li className="card flex flex-col gap-2 px-3.5 py-3 sm:flex-row sm:items-center sm:gap-3">
+    <li data-exam-id={exam.id} className="card flex flex-col gap-2 px-3.5 py-3 sm:flex-row sm:items-center sm:gap-3">
       <div className="min-w-0 flex-1">
         <div className="break-words font-semibold">{exam.title}</div>
         <div className="break-words text-[13px] text-muted">{examMeta(exam, userId, nowMs)}</div>
@@ -40,7 +38,7 @@ export function ExamRow({
         )}
       </div>
       <div className="flex flex-wrap items-center gap-1">
-        {canDecline && (
+        {showDecline && (
           <button type="button" className={QUIET} onClick={() => onDecline?.(exam)}>Decline</button>
         )}
         <a
@@ -53,10 +51,10 @@ export function ExamRow({
           Print
         </a>
         {mode === "created" ? (
-          <Link href={`/exams/${id}/status`} className="btn-secondary">View status</Link>
+          <Link href={`/exams/${id}/status`} data-primary className="btn-secondary">View status</Link>
         ) : (
           view?.action && (
-            <Link href={href} className={view.action === "View result" ? "btn-secondary" : "btn-primary"}>
+            <Link href={href} data-primary className={view.action === "View result" ? "btn-secondary" : "btn-primary"}>
               {view.action}
             </Link>
           )

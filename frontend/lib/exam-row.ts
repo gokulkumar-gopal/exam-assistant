@@ -43,3 +43,23 @@ export function countsLine(c: NonNullable<ExamListItem["counts"]> | undefined): 
   if (c.declined > 0) parts.push(`${c.declined} declined`);
   return parts.join(", ");
 }
+
+/**
+ * fs 6.1: Decline shows only on an open, not-started exam someone else assigned.
+ * Self-created, started, finished, declined, closing or missed rows never offer it.
+ */
+export function canDecline(exam: ExamListItem, userId: string | undefined, nowMs: number): boolean {
+  return (
+    userId !== undefined &&
+    exam.attemptStatus === "not_started" &&
+    exam.createdBy.id !== userId &&
+    nowMs < Date.parse(exam.closesAt)
+  );
+}
+
+/** Focus candidates after a row leaves the list: the next row, then the previous one (ids in display order). */
+export function focusCandidates(ids: string[], removedId: string): string[] {
+  const i = ids.indexOf(removedId);
+  if (i < 0) return [];
+  return [ids[i + 1], ids[i - 1]].filter((x): x is string => x !== undefined);
+}

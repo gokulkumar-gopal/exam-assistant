@@ -12,9 +12,12 @@ const VARIANTS: Record<PillVariant, string> = {
 
 export function Pill({
   variant = "neutral",
+  outline = false,
   children,
 }: {
   variant?: PillVariant;
+  /** Border and text only (transparent fill). */
+  outline?: boolean;
   children: ReactNode;
 }) {
   return (
@@ -23,6 +26,7 @@ export function Pill({
       className={cn(
         "inline-block rounded-[99px] border px-[9px] py-0.5 text-xs",
         VARIANTS[variant],
+        outline && "bg-transparent",
       )}
     >
       {children}

@@ -5,13 +5,13 @@ import { api } from "@/lib/api";
 import { generateErrorNotice, GAVE_UP_MESSAGE, pollJob, startGeneration } from "@/lib/generate";
 import { clearGenerated, setGenerated, type GeneratedResult } from "@/lib/generated";
 import { useMe } from "@/lib/session";
-import type { AiModel, Doc, DocsResponse, ExamType, Marks, ModelsResponse, Role } from "@/lib/types";
+import type { AiModel, Doc, DocsResponse, ExamType, Marks, ModelsResponse } from "@/lib/types";
 import {
   footerState, parseSources, questionCount, sourceLimitError, totalMarks, type Counts,
 } from "@/lib/totals";
 import { defaultModelId } from "@/lib/models";
 import { PEEKS_UI } from "@/lib/features";
-import { PRESET_SECONDS, parseEmails, type Deadline } from "@/lib/publish";
+import { PRESET_SECONDS, assignHelper, parseEmails, type Deadline } from "@/lib/publish";
 import type { PublishForm } from "@/components/PublishBar";
 import { Minus, Plus } from "lucide-react";
 import { ModelSelect } from "@/components/ModelSelect";
@@ -40,11 +40,6 @@ const SEG =
 const PEEK_BTN =
   "inline-flex size-10 shrink-0 items-center justify-center rounded-lg border border-line bg-card text-accent hover:bg-tint focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-card";
 const FIELD = "h-10 w-full rounded-lg border border-input bg-card px-2.5 text-base outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 md:text-sm";
-
-function assignHelper(role: Role | undefined): string {
-  // Until the role is known, show the stricter student text.
-  return role === "student" || role === undefined ? "Student emails only · up to 10 people" : "Up to 50 people";
-}
 
 function Card({ id, title, children }: { id: string; title: string; children: React.ReactNode }) {
   return (

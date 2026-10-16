@@ -47,11 +47,22 @@ export function buildPublishBody(f: {
 
 const EMAIL = /^[^\s@,;]+@[^\s@,;]+\.[^\s@,;]+$/;
 
-/** Comma-separated emails: trimmed, lowercased, deduped, checked, capped by role (student or unknown: 10, else 50). */
-export function parseEmails(raw: string, role: Role | undefined): { emails: string[]; error: string | null } {
+/** fs 6.4 helper under "Assign to" (and in the Assign dialog). The stricter student text shows until the role is known. */
+export function assignHelper(role: Role | undefined): string {
+  return role === "student" || role === undefined ? "Student emails only · up to 10 people" : "Up to 50 people";
+}
+
+/**
+ * Emails split on commas, newlines and spaces: trimmed, lowercased, deduped, checked, capped by role
+ * (student or unknown: 10, else 50). `existing` are people already on the exam: they count toward the cap
+ * (bs 8.5) but listing one again is not an extra person.
+ */
+export function parseEmails(
+  raw: string, role: Role | undefined, existing: readonly string[] = [],
+): { emails: string[]; error: string | null } {
   const emails: string[] = [];
   const seen = new Set<string>();
-  for (const part of raw.split(",")) {
+  for (const part of raw.split(/[\s,]+/)) {
     const e = part.trim().toLowerCase();
     if (!e || seen.has(e)) continue;
     seen.add(e);
@@ -60,7 +71,11 @@ export function parseEmails(raw: string, role: Role | undefined): { emails: stri
   const bad = emails.find((e) => !EMAIL.test(e));
   if (bad) return { emails, error: `${bad} doesn't look like an email address.` };
   const max = role === undefined || role === "student" ? 10 : 50;
-  if (emails.length > max) return { emails, error: `You can assign up to ${max} people.` };
+  const have = new Set(existing.map((e) => e.toLowerCase()));
+  const total = have.size + emails.filter((e) => !have.has(e)).length;
+  if (total > max) {
+    return { emails, error: have.size > 0 ? `You can assign up to ${max} people in total (${have.size} already assigned).` : `You can assign up to ${max} people.` };
+  }
   return { emails, error: null };
 }
 
