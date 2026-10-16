@@ -292,7 +292,7 @@ Resources:
       GlobalSecondaryIndexes:
         - IndexName: user-index
           KeySchema: [{ AttributeName: userId, KeyType: HASH }, { AttributeName: examId, KeyType: RANGE }]
-          Projection: { ProjectionType: INCLUDE, NonKeyAttributes: [status, scoreHalves, scoreBeforePeeksHalves] }   # never the answers
+          Projection: { ProjectionType: INCLUDE, NonKeyAttributes: [status, scoreHalves, scoreBeforePeeksHalves, submittedAt] }   # never the answers
 
   JobsTable:                           # also holds quota items (quota#...), usage counters (usage#...) and question items (<jobId>#questions)
     Type: AWS::DynamoDB::Table
