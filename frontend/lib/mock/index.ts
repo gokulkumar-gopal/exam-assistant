@@ -738,6 +738,8 @@ export function mockFetch(method: string, rawPath: string, body: unknown, idempo
     if (method === "GET" && sub === "result") {
       if (!exam.attempt) return err(404, "not_found", "That item isn't available.");
       finalizeOnRead(exam);
+      // Test trigger (mock only): ?mockResult=403 refuses the result GET (toast and Home, fs 8.1); clear with ?mockResult=.
+      if (stickyFlag("mockResult") === "403") return err(403, "forbidden", "You don't have access to that.");
       // Mock-only page-URL flag (see seedResultFixtures), honoured for e14 and e15 only: hidden | leak | fractional | unfinished.
       const flag = ["e14", "e15", "e21", "e22", "e23"].includes(exam.id) ? stickyFlag("mockResult") : null;
       const isOver = over(exam);
