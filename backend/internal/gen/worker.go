@@ -115,7 +115,8 @@ type runState struct {
 	dropped   []int
 	usage     Usage
 	cost      int64
-	calls     int
+	calls     int // calls accounted
+	invoked   int // provider calls started (the per-job cap)
 	failed    []store.FailedSource
 	failedIDs map[string]bool
 	poke      chan struct{} // capacity 1: "progress changed, write it now"
@@ -145,6 +146,17 @@ func (s *runState) addCall(u Usage, cost int64) {
 	s.usage.CacheWrite += u.CacheWrite
 	s.cost += cost
 	s.calls++
+}
+
+// allKept returns every kept question in plan order.
+func (s *runState) allKept() []store.Question {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var kept []store.Question
+	for _, qs := range s.results {
+		kept = append(kept, qs...)
+	}
+	return kept
 }
 
 func (s *runState) addFailed(f store.FailedSource) {
@@ -452,6 +464,12 @@ func (w *Worker) generate(ctx context.Context, job store.Job, plan []CallSpec, s
 	if cur, err := w.Jobs.GetJob(ctx, job.ID); err == nil && cur.CancelRequested {
 		return nil, errCancelRequested
 	}
+	// A model with no price cannot be charged to the budget: never run a job without spend accounting.
+	model, known := LookupModel(job.Model)
+	if !known {
+		log.Warn("worker: model has no price; failing the job before any call", "model", job.Model)
+		return nil, &UserError{Message: GenerateFailedMessage, Err: errors.New("unpriced model")}
+	}
 	sources, byLabel, usage, err := w.loadSources(ctx, job, st)
 	if err != nil {
 		return nil, err
@@ -463,9 +481,8 @@ func (w *Worker) generate(ctx context.Context, job store.Job, plan []CallSpec, s
 	if err != nil {
 		return nil, fmt.Errorf("generator for %q: %w", job.Model, err)
 	}
-	model, known := LookupModel(job.Model)
 	r := &jobRun{
-		w: w, log: log, job: job, model: model, known: known, g: g, sources: sources, byLabel: byLabel,
+		w: w, log: log, job: job, model: model, g: g, sources: sources, byLabel: byLabel,
 		newID: newIDSource(w.Clock.Now, w.idEntropy), st: st, budget: w.Cfg.BudgetMicros,
 		callTimeout: w.Cfg.CallTimeout, inputTokens: estimateInputTokens(sources),
 	}
@@ -483,12 +500,7 @@ func (w *Worker) generate(ctx context.Context, job store.Job, plan []CallSpec, s
 	}
 
 	// Every call has finished: the shuffles below are the only users of w.rnd.
-	var kept []store.Question
-	st.mu.Lock()
-	for _, qs := range st.results {
-		kept = append(kept, qs...)
-	}
-	st.mu.Unlock()
+	kept := st.allKept()
 	for i := range kept {
 		ShuffleOptions(&kept[i], w.rnd) // after validation (AI-spec 7.3)
 	}

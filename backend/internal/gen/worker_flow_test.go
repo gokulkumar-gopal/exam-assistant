@@ -847,3 +847,164 @@ func TestPanicInConcurrentCallFailsJobAndKeepsSpend(t *testing.T) {
 		t.Errorf("spend of the finished calls was lost: %v", e.spendList())
 	}
 }
+
+// ---- fix round 1 ----
+
+func TestJobNeverExceeds20ProviderCalls(t *testing.T) {
+	// 10 planned calls (marks 1 to 5, each 15 + 2). Every call except the very first hits
+	// max_tokens on its first attempt, then needs a shortfall follow-up: 3 calls each, 28 in all.
+	e := newWEnv(t, map[string]int{"1": 17, "2": 17, "3": 17, "4": 17, "5": 17})
+	var mu sync.Mutex
+	seen := map[[2]int]bool{}
+	first := true
+	e.gen.fn = func(ctx context.Context, in GenInput) (GenOutput, error) {
+		mu.Lock()
+		key := [2]int{in.Marks, in.Count}
+		cut := (in.Count == 15 || in.Count == 2) && !seen[key] && !first
+		seen[key] = true
+		first = false
+		mu.Unlock()
+		if cut {
+			return GenOutput{StopReason: "max_tokens", Usage: Usage{Input: 1000, Output: 100}}, nil
+		}
+		return validOut(in), nil
+	}
+	e.run(t)
+	e.wantFailed(t, GenerateFailedMessage)
+	n := e.gen.callCount()
+	if n > 20 {
+		t.Fatalf("Generate invoked %d times, the cap is 20", n)
+	}
+	if n < 20 {
+		t.Errorf("Generate invoked %d times, expected the cap to be what stopped the job", n)
+	}
+	if got := len(e.spendList()); got != n {
+		t.Errorf("spend entries = %d, want one per invocation (%d)", got, n)
+	}
+}
+
+func TestTenCallJobWithoutRetriesIsUnaffectedByTheCap(t *testing.T) {
+	e := newWEnv(t, map[string]int{"1": 16, "2": 16, "3": 16, "4": 16, "5": 16})
+	e.gen.fn = func(ctx context.Context, in GenInput) (GenOutput, error) { return validOut(in), nil }
+	e.run(t)
+	if j := e.job(t); j.Status != store.JobDone || j.Done != 80 || e.gen.callCount() != 10 {
+		t.Errorf("job = %s %q done=%d calls=%d", j.Status, j.Error, j.Done, e.gen.callCount())
+	}
+}
+
+type panicReader struct{}
+
+func (panicReader) Read([]byte) (int, error) { panic("entropy exploded") }
+
+func TestPanicInsideValidationDoesNotHoldTheLock(t *testing.T) {
+	e := newWEnv(t, map[string]int{"1": 1, "2": 1, "3": 1})
+	e.w.idEntropy = panicReader{} // fires inside validate, in the locked section
+	e.w.heartbeatInterval = 2 * time.Millisecond
+	done := make(chan error, 1)
+	go func() { done <- e.w.Run(context.Background(), e.jobID) }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run hung: the state lock was left held by a panic")
+	}
+	e.wantFailed(t, GenerateFailedMessage)
+	hb1, _ := e.jobs.snapshot()
+	time.Sleep(20 * time.Millisecond)
+	if hb2, _ := e.jobs.snapshot(); hb1 != hb2 {
+		t.Errorf("heartbeat still running after Run: %d -> %d", hb1, hb2)
+	}
+}
+
+func TestFakeGeneratorConcurrentCallsDoNotCollide(t *testing.T) {
+	labels := map[string]store.Document{"doc-1": {ID: "d1", Name: "n"}}
+	in := GenInput{Sources: []SourceFile{{Label: "doc-1"}}, Type: "mcq", Marks: 2, Count: 15, Avoid: make([]string, 15)}
+	var mu sync.Mutex
+	var all []RawQuestion
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			out, _ := FakeGenerator{}.Generate(context.Background(), in)
+			mu.Lock()
+			all = append(all, out.Questions...)
+			mu.Unlock()
+		}()
+	}
+	wg.Wait()
+	kept, dropped, _ := Validate(all, CallSpec{Type: "mcq", Marks: 2}, labels, nil)
+	if len(kept) != 120 || dropped != 0 {
+		t.Errorf("kept=%d dropped=%d, want 120 distinct questions from 8 concurrent calls", len(kept), dropped)
+	}
+}
+
+func TestInvalidOutputCallIsCharged(t *testing.T) {
+	t.Run("reported usage", func(t *testing.T) {
+		e := newWEnv(t, map[string]int{"1": 2})
+		u := Usage{Input: 1500, Output: 40}
+		e.gen.fn = seq(t,
+			func(in GenInput) (GenOutput, error) { return GenOutput{Usage: u}, ErrInvalidOutput },
+			okFn,
+		)
+		e.run(t)
+		if got := e.spendList(); len(got) != 2 || got[0] != CostMicros(haiku(), u) {
+			t.Errorf("spend = %v, want the invalid call charged its usage first", got)
+		}
+	})
+	t.Run("no usage charges counted input", func(t *testing.T) {
+		e := newWEnv(t, map[string]int{"1": 2})
+		cg := e.withCounter(7_777)
+		cg.fn = seq(t,
+			func(in GenInput) (GenOutput, error) { return GenOutput{}, ErrInvalidOutput },
+			okFn,
+		)
+		e.run(t)
+		if got := e.spendList(); len(got) != 2 || got[0] != CostMicros(haiku(), Usage{Input: 7_777}) {
+			t.Errorf("spend = %v", got)
+		}
+	})
+}
+
+func TestUnknownModelFailsBeforeAnyCall(t *testing.T) {
+	var buf bytes.Buffer
+	captureLogs(t, &buf)
+	e := newWEnv(t, map[string]int{"1": 2})
+	j := e.job(t)
+	j.ID, j.Model, j.Status = "job-mystery", "mystery-model", store.JobQueued
+	q := store.QuotaCheck{UserID: "u1", Day: "20261016", Month: "202610", MaxUser: 100, MaxRegen: 100, MaxGlobal: 100, BudgetMicros: 1 << 40}
+	if err := e.raw.CreateJobWithQuota(context.Background(), j, q); err != nil {
+		t.Fatal(err)
+	}
+	e.jobID = j.ID
+	e.run(t)
+	e.wantFailed(t, GenerateFailedMessage)
+	if e.gen.callCount() != 0 {
+		t.Errorf("calls = %d, a job with no price must not run", e.gen.callCount())
+	}
+	logs := buf.String()
+	if n := strings.Count(logs, "mystery-model"); n != 1 || !strings.Contains(logs, "level=WARN msg=\"worker: model has no price") {
+		t.Errorf("want one WARN naming the model, got %d mentions:\n%s", n, logs)
+	}
+}
+
+func TestCountTokensHasTheCallTimeout(t *testing.T) {
+	e := newWEnv(t, map[string]int{"1": 2})
+	e.w.Cfg.CallTimeout = 20 * time.Millisecond
+	cg := &blockingCounter{}
+	e.w.Gens = FixedFactory(cg)
+	e.run(t)
+	e.wantFailed(t, TooLongMessage)
+	if cg.callCount() != 0 {
+		t.Errorf("calls = %d", cg.callCount())
+	}
+}
+
+type blockingCounter struct{ testGen }
+
+func (*blockingCounter) CountTokens(ctx context.Context, _ GenInput) (int, error) {
+	<-ctx.Done()
+	return 0, ctx.Err()
+}

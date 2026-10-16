@@ -118,7 +118,7 @@ func TestLambdaRunnerNeedsFunctionName(t *testing.T) {
 	}
 }
 
-func TestFakeGeneratorIsDeterministicAndHonoursCounts(t *testing.T) {
+func TestFakeGeneratorHonoursCountsAndNeverRepeatsATextAcrossCalls(t *testing.T) {
 	g := FakeGenerator{}
 	in := GenInput{Type: "mcq", Marks: 2, Count: 3, Sources: []SourceFile{{Label: "doc-1"}, {Label: "doc-2"}}}
 	a, err := g.Generate(context.Background(), in)
@@ -127,7 +127,9 @@ func TestFakeGeneratorIsDeterministicAndHonoursCounts(t *testing.T) {
 	}
 	b, _ := g.Generate(context.Background(), in)
 	for i, q := range a.Questions {
-		if q.Text != b.Questions[i].Text || q.Marks != 2 || len(q.Options) != 4 || q.CorrectIndex == nil || q.Source == "" {
+		// Fix round 1: texts are numbered process-wide so concurrent calls never collide, which
+		// means the same input no longer gives the same text.
+		if q.Text == b.Questions[i].Text || q.Marks != 2 || len(q.Options) != 4 || q.CorrectIndex == nil || q.Source == "" {
 			t.Errorf("question %d = %+v", i, q)
 		}
 	}

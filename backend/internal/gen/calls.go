@@ -16,13 +16,21 @@ import (
 // This file is the per-job call engine: the planned calls, their retries, validation,
 // budget checks and spend accounting.
 
+// Call caps of a job (AI-spec 5.3, backend-spec 7.2 step 4): at most ten first-attempt calls
+// (five mark values, each at most two chunks) and each may be retried once, so twenty in all.
+// A planned call may need a max_tokens retry and a shortfall follow-up, so the cap is on the
+// job, counted when a call starts.
+const (
+	maxFirstAttemptCalls = 10
+	maxCallsPerJob       = 2 * maxFirstAttemptCalls
+)
+
 // jobRun is the state shared by the calls of one job.
 type jobRun struct {
 	w       *Worker
 	log     *slog.Logger
 	job     store.Job
 	model   Model
-	known   bool
 	g       Generator
 	sources []SourceFile
 	byLabel map[string]store.Document
@@ -42,8 +50,13 @@ func (r *jobRun) countInput(ctx context.Context, first CallSpec) error {
 	if !ok {
 		return nil
 	}
-	n, err := tc.CountTokens(ctx, r.input(first, first.Count, nil))
+	cctx, cancel := context.WithTimeout(ctx, r.callTimeout)
+	defer cancel()
+	n, err := tc.CountTokens(cctx, r.input(first, first.Count, nil))
 	if err != nil {
+		if ctx.Err() == nil && errors.Is(cctx.Err(), context.DeadlineExceeded) {
+			err = fmt.Errorf("counting tokens exceeded its timeout: %w", ErrTimeout)
+		}
 		return r.terminal(ctx, err)
 	}
 	limit := r.w.Cfg.MaxInputTokens
@@ -142,23 +155,7 @@ func (r *jobRun) runTask(ctx context.Context, idx int, spec CallSpec) error {
 					r.st.addFailed(store.FailedSource{DocID: d.ID, Name: d.Name, Reason: modelSkippedReason})
 				}
 			}
-			// Validation and the publish of its result are one step under the lock, so calls that
-			// finish together cannot both keep the same question.
-			r.st.mu.Lock()
-			all := r.othersLocked(idx)
-			all = append(all, textsOf(kept)...)
-			all = append(all, droppedTexts...)
-			add, n, dt := validate(res.out.Questions, CallSpec{Type: spec.Type, Marks: spec.Marks}, r.byLabel, all, r.newID)
-			if extra := len(add) - need; extra > 0 {
-				// More valid questions than asked: keep the first need (AI-spec 7.2 wants exactly the count).
-				n += extra
-				add = add[:need]
-			}
-			kept = append(kept, add...)
-			dropped += n
-			droppedTexts = append(droppedTexts, dt...)
-			r.st.results[idx], r.st.dropped[idx] = slices.Clone(kept), dropped
-			r.st.mu.Unlock()
+			add, n := r.commit(idx, spec, res.out.Questions, need, &kept, &droppedTexts, &dropped)
 			callKept, bad = len(add), n
 		}
 		r.account(idx, spec.Marks, attempt, ask, res, kind, termErr, callKept, bad)
@@ -187,6 +184,29 @@ func (r *jobRun) runTask(ctx context.Context, idx int, spec CallSpec) error {
 	}
 }
 
+// commit validates a call's output against every other call's kept questions and publishes
+// the result, in one step under the lock, so calls that finish together cannot both keep the
+// same question. The unlock is deferred: a panic in validation (it runs on untrusted model
+// output) is recovered by safeTask and must not leave the lock held.
+func (r *jobRun) commit(idx int, spec CallSpec, raw []RawQuestion, need int, kept *[]store.Question, droppedTexts *[]string, dropped *int) (added []store.Question, bad int) {
+	r.st.mu.Lock()
+	defer r.st.mu.Unlock()
+	all := r.othersLocked(idx)
+	all = append(all, textsOf(*kept)...)
+	all = append(all, *droppedTexts...)
+	add, n, dt := validate(raw, CallSpec{Type: spec.Type, Marks: spec.Marks}, r.byLabel, all, r.newID)
+	if extra := len(add) - need; extra > 0 {
+		// More valid questions than asked: keep the first need (AI-spec 7.2 wants exactly the count).
+		n += extra
+		add = add[:need]
+	}
+	*kept = append(*kept, add...)
+	*dropped += n
+	*droppedTexts = append(*droppedTexts, dt...)
+	r.st.results[idx], r.st.dropped[idx] = slices.Clone(*kept), *dropped
+	return add, n
+}
+
 func textsOf(qs []store.Question) []string {
 	out := make([]string, len(qs))
 	for i, q := range qs {
@@ -206,13 +226,18 @@ func (r *jobRun) othersLocked(idx int) []string {
 	return out
 }
 
+// others is othersLocked under the state lock (deferred unlock).
+func (r *jobRun) others(idx int) []string {
+	r.st.mu.Lock()
+	defer r.st.mu.Unlock()
+	return r.othersLocked(idx)
+}
+
 // avoidFor is the Avoid list of a call: the questions the other calls have kept so far, this
 // call's own kept questions and the texts it had dropped (AI-spec 7.4). Calls running at the
 // same time cannot see each other's questions yet; validation catches those duplicates.
 func (r *jobRun) avoidFor(idx int, kept []store.Question, droppedTexts []string) []string {
-	r.st.mu.Lock()
-	out := r.othersLocked(idx)
-	r.st.mu.Unlock()
+	out := r.others(idx)
 	out = append(out, textsOf(kept)...)
 	return append(out, droppedTexts...)
 }
@@ -241,6 +266,19 @@ func (r *jobRun) beforeCall(ctx context.Context) error {
 		r.log.Warn("worker: monthly budget used up; stopping the job", "spent_micros", spent, "budget_micros", r.budget)
 		return &UserError{Message: BudgetMessage}
 	}
+	return r.reserveCall()
+}
+
+// reserveCall counts a provider call that is about to be made and refuses the one past the
+// per-job cap. Counting happens under the state lock, so concurrent calls cannot overshoot.
+func (r *jobRun) reserveCall() error {
+	r.st.mu.Lock()
+	defer r.st.mu.Unlock()
+	if r.st.invoked >= maxCallsPerJob {
+		r.log.Warn("worker: call budget of the job exhausted", "calls", r.st.invoked, "max", maxCallsPerJob)
+		return &UserError{Message: GenerateFailedMessage}
+	}
+	r.st.invoked++
 	return nil
 }
 
@@ -309,16 +347,11 @@ func (r *jobRun) terminal(ctx context.Context, err error) error {
 // refused it before processing (bad key, rate limit), which costs nothing.
 func (r *jobRun) account(idx, marks, attempt, asked int, res callResult, kind callKind, termErr error, kept, dropped int) {
 	u := res.out.Usage
-	failed := termErr != nil || kind == callMaxTokens
+	failed := termErr != nil || kind != callOK
 	if failed && u == (Usage{}) && !errors.Is(res.err, ErrAuth) && !errors.Is(res.err, ErrRateLimited) {
 		u = Usage{Input: r.inputTokens}
 	}
-	var cost int64
-	if r.known {
-		cost = CostMicros(r.model, u)
-	} else {
-		r.log.Error("worker: unknown model; spend not recorded", "model", r.job.Model)
-	}
+	cost := CostMicros(r.model, u) // generate refuses a model with no price before any call
 	r.st.addCall(u, cost)
 
 	rctx, cancel := context.WithTimeout(context.Background(), finishTimeout)
