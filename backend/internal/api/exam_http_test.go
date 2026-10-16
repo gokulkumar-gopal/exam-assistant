@@ -78,6 +78,9 @@ func TestCreateExam201ThenReplay200(t *testing.T) {
 	if !strings.Contains(rec.Body.String(), `"unknownEmails":[]`) {
 		t.Fatalf("unknownEmails must be []: %s", rec.Body)
 	}
+	if loc := rec.Header().Get("Location"); loc != "/exams/11111111-2222-4333-8444-555555555555" {
+		t.Errorf("Location %q", loc)
+	}
 	if cc := rec.Header().Get("Cache-Control"); cc != "no-store" {
 		t.Errorf("Cache-Control %q", cc)
 	}

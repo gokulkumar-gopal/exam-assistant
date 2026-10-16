@@ -32,6 +32,7 @@ const (
 	StudentCap       = 10
 	MaxItemBytes     = 350 * 1024 // DynamoDB's item limit is 400 KB; keep a margin
 	MaxAttemptWrites = 10         // concurrent attempt-row writes
+	MaxEmailBytes    = 254        // the limit auth.validEmail applies
 	mcqOptions       = 4
 )
 
@@ -227,6 +228,9 @@ func checkEmails(in []string, role string) ([]string, string) {
 		if t == "" {
 			return nil, "Assignee emails must not be empty."
 		}
+		if len(t) > MaxEmailBytes {
+			return nil, "Assignee emails must be at most 254 characters."
+		}
 		k := auth.NormalizeEmail(t)
 		if seen[k] {
 			continue
@@ -234,12 +238,8 @@ func checkEmails(in []string, role string) ([]string, string) {
 		seen[k] = true
 		out = append(out, t)
 	}
-	capN := TeacherParentCap
-	if role == "student" {
-		capN = StudentCap
-	}
-	if len(out) > capN {
-		return nil, fmt.Sprintf("You can assign an exam to at most %d people.", capN)
+	if capN := assigneeCap(role); len(out) > capN {
+		return nil, capMessage(capN)
 	}
 	return out, ""
 }
@@ -279,7 +279,8 @@ func itemSize(e store.Exam) (int, error) {
 
 // Create validates and stores an exam, then its attempt rows. idemKey, when not empty, becomes
 // the exam ID. The exam item is written first; a crash before the rows are written is repaired
-// by a replay with the same key (backend-spec 8.5).
+// by a replay with the same key (backend-spec 8.5). Without a key the server mints a ULID, so such
+// a crash cannot be repaired; the frontend always sends a key.
 func (s *Service) Create(ctx context.Context, user store.User, in CreateInput, idemKey string) (CreateResult, error) {
 	id := idemKey
 	if id == "" {
@@ -337,9 +338,30 @@ func (s *Service) Create(ctx context.Context, user store.User, in CreateInput, i
 	if existing.CreatorID != user.ID {
 		return CreateResult{}, apperr.Conflict("That request key is already in use.")
 	}
-	if !sameContent(existing, exam) {
-		// A different body never changes the existing exam, and writes no rows.
-		return CreateResult{ID: id, UnknownEmails: []string{}, Replay: true}, nil
+	// Replay by the creator: the existing exam is never changed (edited content is ignored).
+	// Rows are completed for the replay body's assignees, but the exam may never end up with more
+	// assignees than the creator's cap, counting rows that already exist.
+	rows, err := s.attempts.ListByExam(ctx, id)
+	if err != nil {
+		return CreateResult{}, apperr.Internal(err)
+	}
+	holders := map[string]bool{}
+	for _, a := range rows {
+		holders[a.UserID] = true
+	}
+	for _, uid := range ids {
+		holders[uid] = true
+	}
+	if len(v.emails) == 0 {
+		// Practice replay: the creator's own row is the only one wanted.
+		holders = map[string]bool{}
+	} else if !contains(ids, user.ID) {
+		delete(holders, user.ID) // the creator's practice row does not count as an assignee
+	}
+	if n, capN := len(holders), assigneeCap(user.Role); n > capN {
+		return CreateResult{}, apperr.Validation("Some fields need attention.", map[string]string{
+			"assigneeEmails": capMessage(capN),
+		})
 	}
 	if err := s.writeRows(ctx, id, ids, existing.CreatedAt); err != nil {
 		return CreateResult{}, err
@@ -347,29 +369,23 @@ func (s *Service) Create(ctx context.Context, user store.User, in CreateInput, i
 	return CreateResult{ID: id, UnknownEmails: unknown, Replay: true}, nil
 }
 
-// sameContent compares what the client authored: title, type, peeks and the question content.
-// IDs, the deadline (relative deadlines drift between retries) and source fields are ignored.
-func sameContent(a, b store.Exam) bool {
-	if a.Title != b.Title || a.Type != b.Type || a.MaxPeeks != b.MaxPeeks || len(a.Questions) != len(b.Questions) {
-		return false
-	}
-	for i := range a.Questions {
-		x, y := a.Questions[i], b.Questions[i]
-		if x.Marks != y.Marks || x.Text != y.Text || x.ModelAnswer != y.ModelAnswer ||
-			len(x.Options) != len(y.Options) || (x.CorrectIndex == nil) != (y.CorrectIndex == nil) {
-			return false
-		}
-		if x.CorrectIndex != nil && *x.CorrectIndex != *y.CorrectIndex {
-			return false
-		}
-		for j := range x.Options {
-			if x.Options[j] != y.Options[j] {
-				return false
-			}
+func contains(xs []string, x string) bool {
+	for _, y := range xs {
+		if y == x {
+			return true
 		}
 	}
-	return true
+	return false
 }
+
+func assigneeCap(role string) int {
+	if role == "student" {
+		return StudentCap
+	}
+	return TeacherParentCap
+}
+
+func capMessage(n int) string { return fmt.Sprintf("You can assign an exam to at most %d people.", n) }
 
 // writeRows creates one not_started row per user, at most MaxAttemptWrites at a time.
 // A row that exists is left as it is.
@@ -398,7 +414,10 @@ func (s *Service) writeRows(ctx context.Context, examID string, userIDs []string
 	}
 	wg.Wait()
 	if first != nil {
-		return apperr.Internal(first)
+		// 503, not 500: the exam item exists and a retry with the same key repairs the rows.
+		e := apperr.Upstream()
+		e.Err = first
+		return e
 	}
 	return nil
 }

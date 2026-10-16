@@ -472,7 +472,7 @@ func TestIdempotencyKeyBecomesExamID(t *testing.T) {
 
 func TestIdempotencyKeyFormat(t *testing.T) {
 	e := newEnv(t)
-	for _, k := range []string{"1234567", strings.Repeat("a", 65), "a b", "abcdefgh!", "abcdéfgh"} {
+	for _, k := range []string{"1234567", strings.Repeat("a", 65), "a b", "abcd efgh", "abcdefgh!", "abcdéfgh"} {
 		_, err := e.svc.Create(context.Background(), e.teacher, input(1), k)
 		wantField(t, err, "Idempotency-Key")
 	}
@@ -502,7 +502,7 @@ func TestReplayBySameCreatorCompletesMissingRowsAnd200(t *testing.T) {
 	in := input(2)
 	in.AssigneeEmails = []string{"s1@x.com", "ghost@x.com"}
 	_, err := e.svc.Create(context.Background(), e.teacher, in, "key-12345")
-	wantStatus(t, err, http.StatusInternalServerError)
+	wantStatus(t, err, http.StatusServiceUnavailable)
 	if len(e.rows(t, "key-12345")) != 0 {
 		t.Fatal("rows written")
 	}
@@ -547,18 +547,182 @@ func TestReplayWithDifferentBodyReturnsExistingAndDoesNotDuplicate(t *testing.T)
 	other.Title = "Other"
 	other.AssigneeEmails = []string{"s2@x.com", "ghost@x.com"}
 	r := e.create(t, e.teacher, other, "key-12345")
-	if !r.Replay || r.ID != "key-12345" || r.UnknownEmails == nil || len(r.UnknownEmails) != 0 {
+	if !r.Replay || r.ID != "key-12345" || len(r.UnknownEmails) != 1 || r.UnknownEmails[0] != "ghost@x.com" {
 		t.Fatalf("%+v", r)
 	}
 	got := e.exam(t, "key-12345")
 	if got.Title != orig.Title || len(got.Questions) != 2 || got.TotalMarks != orig.TotalMarks {
 		t.Fatalf("exam changed: %+v", got)
 	}
-	if rows := e.rows(t, "key-12345"); len(rows) != 1 || rows[0] != "s1" {
+	if rows := e.rows(t, "key-12345"); len(rows) != 2 {
 		t.Fatalf("rows %v", rows)
 	}
 	if list, _ := e.exams.ListByCreator(context.Background(), "t1", 50); len(list) != 1 {
 		t.Fatalf("%d exams", len(list))
+	}
+}
+
+// Replays may not grow the assignee set past the creator's cap (existing rows count).
+func TestReplayCannotBypassAssigneeCap(t *testing.T) {
+	e := newEnv(t)
+	var first, second []string
+	for i := 0; i < 10; i++ {
+		a, b := fmt.Sprintf("a%d", i), fmt.Sprintf("b%d", i)
+		e.addUser(t, a, a+"@x.com", "student")
+		e.addUser(t, b, b+"@x.com", "student")
+		first, second = append(first, a+"@x.com"), append(second, b+"@x.com")
+	}
+	in := input(1)
+	in.AssigneeEmails = first
+	e.create(t, e.student, in, "student-key-1")
+	in.AssigneeEmails = second
+	_, err := e.svc.Create(context.Background(), e.student, in, "student-key-1")
+	wantField(t, err, "assigneeEmails")
+	if rows := e.rows(t, "student-key-1"); len(rows) != 10 {
+		t.Fatalf("rows %d", len(rows))
+	}
+	// the same set again is fine, and so is adding one more within the cap
+	in.AssigneeEmails = first
+	if r := e.create(t, e.student, in, "student-key-1"); !r.Replay {
+		t.Fatal("no replay")
+	}
+	// teacher: 50 existing + one more user is over the cap
+	for i := 0; i < 51; i++ {
+		e.addUser(t, fmt.Sprintf("m%d", i), fmt.Sprintf("m%d@x.com", i), "student")
+	}
+	var fifty []string
+	for i := 0; i < 50; i++ {
+		fifty = append(fifty, fmt.Sprintf("m%d@x.com", i))
+	}
+	tin := input(1)
+	tin.AssigneeEmails = fifty
+	e.create(t, e.teacher, tin, "teacher-key-1")
+	tin.AssigneeEmails = []string{"m50@x.com"}
+	_, err = e.svc.Create(context.Background(), e.teacher, tin, "teacher-key-1")
+	wantField(t, err, "assigneeEmails")
+	if len(e.rows(t, "teacher-key-1")) != 50 {
+		t.Fatal("rows added")
+	}
+}
+
+// A practice exam replayed with assignees: the creator's own row does not count towards the cap
+// and the assignees are added (the replay body names them; the cap still applies).
+func TestPracticeReplayWithAssigneesCountsOnlyAssignees(t *testing.T) {
+	e := newEnv(t)
+	e.create(t, e.student, input(1), "practice-key-1")
+	in := input(1)
+	in.AssigneeEmails = []string{"s1@x.com"}
+	r := e.create(t, e.student, in, "practice-key-1")
+	if !r.Replay || len(e.rows(t, "practice-key-1")) != 1 {
+		t.Fatalf("%+v %v", r, e.rows(t, "practice-key-1"))
+	}
+}
+
+func TestReplayWithEditedQuestionCompletesRowsKeepsOriginal(t *testing.T) {
+	e := newEnv(t)
+	d := &dropRows{AttemptStore: e.attempts}
+	d.fail.Store(true)
+	e.svc = exams.NewService(e.users, e.exams, d, e.clk)
+	in := input(2)
+	in.AssigneeEmails = []string{"s1@x.com", "ghost@x.com"}
+	_, err := e.svc.Create(context.Background(), e.teacher, in, "key-12345")
+	wantStatus(t, err, http.StatusServiceUnavailable)
+	var ae *apperr.Error
+	errors.As(err, &ae)
+	if ae.Code != "upstream_unavailable" || ae.Err == nil {
+		t.Fatalf("%+v", ae)
+	}
+	d.fail.Store(false)
+	edited := in
+	edited.Questions = append([]exams.CreateQuestion(nil), in.Questions...)
+	edited.Questions[0].Text = "EDITED"
+	r := e.create(t, e.teacher, edited, "key-12345")
+	if !r.Replay || len(r.UnknownEmails) != 1 || r.UnknownEmails[0] != "ghost@x.com" {
+		t.Fatalf("%+v", r)
+	}
+	if rows := e.rows(t, "key-12345"); len(rows) != 1 || rows[0] != "s1" {
+		t.Fatalf("rows %v", rows)
+	}
+	if got := e.exam(t, "key-12345").Questions[0].Text; got != "q0" {
+		t.Fatalf("question text %q", got)
+	}
+}
+
+func TestPeeksCapIsTenIndependentOfQuestionCount(t *testing.T) {
+	e := newEnv(t)
+	for _, tc := range []struct {
+		peeks int
+		ok    bool
+	}{{10, true}, {11, false}, {12, false}} {
+		in := input(12)
+		p := tc.peeks
+		in.MaxPeeks = &p
+		_, err := e.svc.Create(context.Background(), e.teacher, in, "")
+		if tc.ok && err != nil {
+			t.Fatal(err)
+		}
+		if !tc.ok {
+			wantField(t, err, "maxPeeks")
+		}
+	}
+}
+
+func TestParentCapIs50NotStudentCap(t *testing.T) {
+	e := newEnv(t)
+	in := input(1)
+	in.AssigneeEmails = emails(11)
+	e.create(t, e.parent, in, "")
+	in.AssigneeEmails = emails(50)
+	e.create(t, e.parent, in, "")
+}
+
+func TestAssigneeEmailLengthCapped(t *testing.T) {
+	e := newEnv(t)
+	in := input(1)
+	in.AssigneeEmails = []string{strings.Repeat("a", 250) + "@x.com"}
+	_, err := e.svc.Create(context.Background(), e.teacher, in, "")
+	wantField(t, err, "assigneeEmails")
+}
+
+func TestQuestionFieldBoundariesAndStoredForm(t *testing.T) {
+	e := newEnv(t)
+	in := input(1)
+	in.Questions[0].Options = []string{"  " + strings.Repeat("o", 500) + " ", "b", "c", "d"}
+	in.Questions[0].Text = "  <b>x</b> & y  "
+	r := e.create(t, e.teacher, in, "")
+	q := e.exam(t, r.ID).Questions[0]
+	if q.Options[0] != strings.Repeat("o", 500) || q.Text != "<b>x</b> & y" {
+		t.Fatalf("stored %q %q", q.Options[0], q.Text)
+	}
+	in.Questions[0].Options[0] = strings.Repeat("o", 501)
+	_, err := e.svc.Create(context.Background(), e.teacher, in, "")
+	wantField(t, err, "questions[0]")
+
+	free := input(1)
+	free.Type = "free"
+	free.Questions[0] = exams.CreateQuestion{Marks: 1, Text: "q", ModelAnswer: strings.Repeat("m", 4000)}
+	e.create(t, e.teacher, free, "")
+	free.Questions[0].ModelAnswer = strings.Repeat("m", 4001)
+	_, err = e.svc.Create(context.Background(), e.teacher, free, "")
+	wantField(t, err, "questions[0]")
+	ci := 1
+	free.Questions[0] = exams.CreateQuestion{Marks: 1, Text: "q", ModelAnswer: "a", CorrectIndex: &ci}
+	_, err = e.svc.Create(context.Background(), e.teacher, free, "")
+	wantField(t, err, "questions[0]")
+}
+
+// The echoed text is the same whether the address is unregistered or a not-allowed account,
+// including its case and surrounding spaces.
+func TestMixedCaseEchoIdenticalForUnknownAndNotAllowed(t *testing.T) {
+	e := newEnv(t)
+	run := func(email string) []string {
+		in := input(1)
+		in.AssigneeEmails = []string{email}
+		return e.create(t, e.student, in, "").UnknownEmails
+	}
+	a, b := run(" T1@X.com "), run(" Zz@X.com ")
+	if len(a) != 1 || len(b) != 1 || a[0] != "T1@X.com" || b[0] != "Zz@X.com" {
+		t.Fatalf("%q %q", a, b)
 	}
 }
 
