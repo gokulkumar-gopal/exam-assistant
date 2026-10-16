@@ -2,7 +2,7 @@
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { usePathname, useSearchParams } from "next/navigation";
 import { api } from "@/lib/api";
-import { generateErrorNotice, GAVE_UP_MESSAGE, pollJob, startGeneration } from "@/lib/generate";
+import { failedSourceNames, generateErrorNotice, GAVE_UP_MESSAGE, pollJob, startGeneration } from "@/lib/generate";
 import { clearGenerated, setGenerated, type GeneratedResult } from "@/lib/generated";
 import { useMe } from "@/lib/session";
 import type { AiModel, Doc, DocsResponse, ExamType, Marks, ModelsResponse } from "@/lib/types";
@@ -216,7 +216,8 @@ function CreateInner() {
         setGenerated(out);
         setResult(out);
         setResultKey((k) => k + 1);
-        finish((r.failedSources ?? []).map((name) => ({ text: `We couldn't read ${name}. Try a clearer photo or a different file.`, bad: false })), false);
+        const unreadable = failedSourceNames(r.failedSources);
+        finish(unreadable.length ? [{ text: `We couldn't read ${unreadable.join(", ")}. Try a clearer photo or a different file.`, bad: false }] : [], false);
       } else if (r.status === "failed") {
         finish([{ text: r.error, bad: true }], true);
       } else if (r.status === "gaveUp") {

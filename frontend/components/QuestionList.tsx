@@ -1,7 +1,7 @@
 "use client";
 // Generated question list (fs 6.4): edit, regenerate, delete, add, shuffle. Questions render as text only.
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { ApiError } from "@/lib/api";
+import { ApiError, errorMessageWithFields } from "@/lib/api";
 import { firstUsable, gapNotice, orderQuestions } from "@/lib/exam-order";
 import { buildRegenerateBody, GAVE_UP_MESSAGE, pollJob, startRegenerate } from "@/lib/generate";
 import { setGenerated, type GeneratedResult } from "@/lib/generated";
@@ -101,7 +101,7 @@ export function QuestionList({ result, shuffle, form, locked, onLock, onCount, o
       else if (r.status === "done") setError("Something went wrong. Try again.");
       return null;
     } catch (e) {
-      if (alive.current) setError(e instanceof ApiError ? e.message : "Something went wrong. Try again.");
+      if (alive.current) setError(e instanceof ApiError ? errorMessageWithFields(e) : "Something went wrong. Try again.");
       return null;
     } finally {
       ctrls.current.delete(c);

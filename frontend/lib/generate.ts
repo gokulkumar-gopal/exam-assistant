@@ -1,12 +1,12 @@
 // Generation job (fs 6.4 flow 1-6, 9): start, poll, cancel, give up.
 import { api, ApiError } from "./api";
-import type { ExamType, JobResponse, Marks, Question, RegenerateBody } from "./types";
+import type { ExamType, FailedSource, JobResponse, Marks, Question, RegenerateBody } from "./types";
 
 export interface GenerateRequest {
   sourceIds: string[]; type: ExamType; counts: Record<string, number>; shuffle: boolean; model?: string;
 }
 export type JobResult =
-  | { status: "done"; questions: Question[]; model: string; failedSources?: string[] }
+  | { status: "done"; questions: Question[]; model: string; failedSources?: FailedSource[] }
   | { status: "failed"; error: string }
   | { status: "cancelled" }
   | { status: "gaveUp" };
@@ -122,6 +122,17 @@ export async function pollJob(jobId: string, opts: PollOpts = {}): Promise<JobRe
   } finally {
     opts.signal?.removeEventListener("abort", onAbort);
   }
+}
+
+/** File names from a job's failedSources. Tolerates a legacy plain-string entry; skips anything without a usable name. */
+export function failedSourceNames(list: unknown): string[] {
+  if (!Array.isArray(list)) return [];
+  const names: string[] = [];
+  for (const it of list) {
+    const n = typeof it === "string" ? it : (it as { name?: unknown } | null)?.name;
+    if (typeof n === "string" && n.trim() !== "") names.push(n);
+  }
+  return names;
 }
 
 export interface ErrorNotice { text: string; retry: boolean; resetModel: boolean }

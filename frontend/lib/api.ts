@@ -15,6 +15,17 @@ export class ApiError extends Error {
   }
 }
 
+/** First string message in a 422 `fields` map (response key order), else the generic message. */
+export function errorMessageWithFields(e: { message: string; fields?: unknown }): string {
+  const f = e.fields;
+  if (f && typeof f === "object") {
+    for (const v of Object.values(f as Record<string, unknown>)) {
+      if (typeof v === "string" && v.trim() !== "") return v;
+    }
+  }
+  return e.message;
+}
+
 export type Method = "GET" | "POST" | "PUT" | "DELETE";
 export interface ApiOpts { idempotencyKey?: string; noRetry?: boolean; /** Let the request outlive the page (body must be under 64 KB). */ keepalive?: boolean }
 

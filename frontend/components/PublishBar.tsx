@@ -3,7 +3,7 @@
 import { useRef, useState, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
-import { ApiError, isNetworkError, NETWORK_TOAST } from "@/lib/api";
+import { ApiError, errorMessageWithFields, isNetworkError, NETWORK_TOAST } from "@/lib/api";
 import { clearGenerated } from "@/lib/generated";
 import { buildPublishBody, keyMissing, makePublisher, type Deadline } from "@/lib/publish";
 import type { ExamType, Question } from "@/lib/types";
@@ -73,7 +73,7 @@ export function PublishBar({
       if (r.unknownEmails?.length) setTimeout(() => doneBtn.current?.focus(), 0);
       else router.push("/");
     } catch (e) {
-      if (e instanceof ApiError && !isNetworkError(e)) setError(e.message);
+      if (e instanceof ApiError && !isNetworkError(e)) setError(errorMessageWithFields(e));
       else toast.error(NETWORK_TOAST);
       onLock(false);
       setTimeout(() => btn.current?.focus(), 0);
