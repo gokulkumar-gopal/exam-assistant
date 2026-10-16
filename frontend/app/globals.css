@@ -1,0 +1,224 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+
+/* No dark mode (frontend-plan Global Constraints). Keep `dark:` utilities that
+   ship inside shadcn components inert instead of media-query driven. */
+@custom-variant dark (&:is(.dark *));
+
+/* Design tokens, frontend-spec section 3. No new colours. */
+:root {
+  --bg: #faf7ff;
+  --card: #ffffff;
+  --ink: #1b1340;
+  --muted: #6a6490;
+  --line: #e6defa;
+  --tint: #f3ecff;
+  --accent: #6d28d9;
+  --accent2: #ff4f8b;
+  --grad: linear-gradient(135deg, #6d28d9 0%, #d946ef 60%, #ff4f8b 100%);
+  --bg-grad: linear-gradient(180deg, #efe4ff 0, #faf7ff 320px);
+
+  --ok: #047857;
+  --ok-bg: #d1fae5;
+  --ok-border: #6ee7b7;
+  --warn: #c2410c;
+  --warn-bg: #ffedd5;
+  --warn-border: #fdba74;
+  --bad: #e11d48;
+  --bad-bg: #ffe4e6;
+  --bad-border: #fda4af;
+
+  --mark-1: #0d9488;
+  --mark-2: #2563eb;
+  --mark-3: #7c3aed;
+  --mark-4: #ea580c;
+  --mark-5: #e11d48;
+
+  --file-pdf: #ff5a5f;
+  --file-jpg: #0d9488;
+  --file-png: #f59e0b;
+  --file-txt: #2563eb;
+
+  --font-stack: "Helvetica Neue", Helvetica, Arial, sans-serif;
+  --radius-card: 10px;
+  --radius-btn: 8px;
+  --radius-pill: 99px;
+  --radius-badge: 6px;
+}
+
+@theme inline {
+  /* Spec tokens as Tailwind keys */
+  --color-bg: var(--bg);
+  --color-card: var(--card);
+  --color-ink: var(--ink);
+  --color-muted: var(--muted);
+  --color-line: var(--line);
+  --color-tint: var(--tint);
+  --color-accent: var(--accent);
+  --color-accent2: var(--accent2);
+  --color-ok: var(--ok);
+  --color-ok-bg: var(--ok-bg);
+  --color-ok-border: var(--ok-border);
+  --color-warn: var(--warn);
+  --color-warn-bg: var(--warn-bg);
+  --color-warn-border: var(--warn-border);
+  --color-bad: var(--bad);
+  --color-bad-bg: var(--bad-bg);
+  --color-bad-border: var(--bad-border);
+  --color-mark-1: var(--mark-1);
+  --color-mark-2: var(--mark-2);
+  --color-mark-3: var(--mark-3);
+  --color-mark-4: var(--mark-4);
+  --color-mark-5: var(--mark-5);
+  --color-file-pdf: var(--file-pdf);
+  --color-file-jpg: var(--file-jpg);
+  --color-file-png: var(--file-png);
+  --color-file-txt: var(--file-txt);
+
+  /* Gradients are exposed as bg-grad / bg-bg-grad (background-image) */
+  --background-image-grad: var(--grad);
+  --background-image-bg-grad: var(--bg-grad);
+
+  /* Helvetica only. --font-mono is deliberately aliased to the same stack so
+     any stray `font-mono` still renders Helvetica (fs 1.1). */
+  --font-sans: "Helvetica Neue", Helvetica, Arial, sans-serif;
+  --font-mono: "Helvetica Neue", Helvetica, Arial, sans-serif;
+
+  --radius-card: 10px;
+  --radius-btn: 8px;
+  --radius-pill: 99px;
+  --radius-badge: 6px;
+
+  /* shadcn semantic names mapped onto the spec tokens (no new colours) */
+  --color-background: var(--bg);
+  --color-foreground: var(--ink);
+  --color-card-foreground: var(--ink);
+  --color-popover: var(--card);
+  --color-popover-foreground: var(--ink);
+  --color-primary: var(--accent);
+  --color-primary-foreground: #ffffff;
+  --color-secondary: var(--card);
+  --color-secondary-foreground: var(--ink);
+  --color-destructive: var(--bad);
+  --color-border: var(--line);
+  --color-input: var(--line);
+  --color-ring: var(--accent);
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 10px;
+  --radius-xl: 14px;
+}
+
+@layer base {
+  * {
+    border-color: var(--line);
+    outline-color: var(--accent);
+  }
+  html {
+    font-family: var(--font-stack);
+  }
+  body {
+    font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
+    font-size: 15px;
+    line-height: 1.45;
+    color: var(--ink);
+    background-color: var(--bg);
+    background-image: var(--bg-grad);
+    background-repeat: no-repeat;
+    min-height: 100vh;
+    -webkit-font-smoothing: antialiased;
+  }
+  /* Form controls do not inherit font by default in browsers. */
+  button,
+  input,
+  select,
+  textarea,
+  table {
+    font-family: inherit;
+    font-size: inherit;
+  }
+  h1 {
+    font-size: 24px;
+    letter-spacing: -0.3px;
+    font-weight: 700;
+  }
+  h2 {
+    font-size: 13px;
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+    font-weight: 700;
+    color: var(--accent);
+  }
+  main {
+    padding-bottom: 120px;
+  }
+  :focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+  :disabled,
+  [aria-disabled="true"] {
+    opacity: 0.4;
+    cursor: not-allowed;
+  }
+  .tabular {
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+@layer components {
+  .page {
+    max-width: 880px;
+    margin-inline: auto;
+    padding-inline: 16px;
+  }
+  @media (min-width: 640px) {
+    .page {
+      padding-inline: 20px;
+    }
+  }
+
+  .card {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+  }
+
+  .btn-primary,
+  .btn-secondary {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    min-height: 40px;
+    padding: 0 16px;
+    border-radius: 8px;
+    font-weight: 600;
+    cursor: pointer;
+    text-decoration: none;
+  }
+  .btn-primary {
+    background: var(--grad);
+    color: #fff;
+    border: 0;
+    box-shadow: 0 4px 14px rgba(109, 40, 217, 0.28);
+  }
+  .btn-secondary {
+    background: var(--card);
+    color: var(--ink);
+    border: 1px solid var(--line);
+  }
+  .btn-secondary:hover:not(:disabled) {
+    background: var(--tint);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition: none !important;
+    animation-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
