@@ -465,3 +465,44 @@ func TestAssignUnknownByteIdenticalOverHTTP(t *testing.T) {
 		t.Errorf("body %s", b1)
 	}
 }
+
+func TestStatusOverHTTP(t *testing.T) {
+	e := newDeclEnv(t, false)
+	e.newExam(t, e.teacher, "stat-key-1", `"asha@example.com"`)
+	get := func(path string, c *http.Cookie) *httptest.ResponseRecorder {
+		return e.do("GET", path, "", "", c, "")
+	}
+	if rec := get("/exams/stat-key-1/status", nil); rec.Code != http.StatusUnauthorized {
+		t.Errorf("no session: %d", rec.Code)
+	}
+	rec := get("/exams/stat-key-1/status", e.teacher)
+	if rec.Code != http.StatusOK || rec.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("creator: %d %v %s", rec.Code, rec.Header(), rec.Body)
+	}
+	var out struct {
+		ServerTime string `json:"serverTime"`
+		Exam       struct{ ID string }
+		Counts     map[string]int
+		Attempts   []map[string]any
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil || out.Exam.ID != "stat-key-1" || out.Counts["notStarted"] != 1 ||
+		len(out.Attempts) != 1 || out.Attempts[0]["email"] != "asha@example.com" || out.Attempts[0]["status"] != "not_started" ||
+		out.ServerTime != authT0.UTC().Format(time.RFC3339) {
+		t.Fatalf("%v %s", err, rec.Body)
+	}
+	if rec := get("/exams/stat-key-1/status", e.student); rec.Code != http.StatusForbidden || errCode(t, rec) != "forbidden" {
+		t.Errorf("assignee: %d %s", rec.Code, rec.Body)
+	}
+	unrelated := get("/exams/stat-key-1/status", e.other)
+	missing := get("/exams/no-such-exam/status", e.other)
+	if unrelated.Code != http.StatusNotFound || missing.Code != http.StatusNotFound ||
+		unrelated.Body.String() != missing.Body.String() ||
+		unrelated.Header().Get("Content-Type") != missing.Header().Get("Content-Type") ||
+		unrelated.Header().Get("Cache-Control") != missing.Header().Get("Cache-Control") {
+		t.Errorf("404s differ: %d %q vs %d %q", unrelated.Code, unrelated.Body, missing.Code, missing.Body)
+	}
+	r405 := e.do("POST", "/exams/stat-key-1/status", "", "application/json", e.teacher, "")
+	if r405.Code != http.StatusMethodNotAllowed || !strings.Contains(r405.Header().Get("Content-Type"), "json") || !strings.Contains(r405.Header().Get("Allow"), "GET") {
+		t.Errorf("405: %d %v", r405.Code, r405.Header())
+	}
+}
