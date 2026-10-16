@@ -12,6 +12,9 @@ interface MockExam {
   id: string; title: string; type: ExamType; closesAt: string; maxPeeks: number;
   createdBy: { id: string; name: string }; questions: Question[]; mine: boolean;
   attempt: Attempt | null; assigned: string[];
+  counts?: { submitted: number; inProgress: number; notStarted: number; declined: number };
+  /** Mock only: closesAt is re-set to 20 s ago on each list call so the "Closing…" row stays visible. */
+  closingDemo?: boolean;
 }
 interface MockJob { polls: number; marks?: Marks; type: ExamType; counts: Record<string, number>; model: string; trigger: string | null }
 
@@ -47,7 +50,24 @@ function seedExams() {
       attempt: { status: "submitted", answers: { q31: "1", q32: "0", q33: "2", q34: "3" }, lastQuestionIndex: 3 }, assigned: [] },
     { id: "e4", title: "My class test", type: "mcq", closesAt: iso(now + 2 * 24 * HOUR), maxPeeks: 0,
       createdBy: { id: demoUser.id, name: demoUser.name }, questions: mk(4, "mcq"), mine: true,
-      attempt: null, assigned: ["a@x.com", "b@x.com"] },
+      attempt: null, assigned: ["a@x.com", "b@x.com"], counts: { submitted: 12, inProgress: 3, notStarted: 5, declined: 1 } },
+    { id: "e5", title: "Closing now: Cell division", type: "mcq", closesAt: iso(now - 20_000), maxPeeks: 0,
+      createdBy: rao, questions: mk(5, "mcq"), mine: false, closingDemo: true,
+      attempt: { status: "in_progress", answers: {}, lastQuestionIndex: 0 }, assigned: [] },
+    { id: "e6", title: "Missed: Chemistry basics", type: "mcq", closesAt: iso(now - 5 * 24 * HOUR), maxPeeks: 0,
+      createdBy: rao, questions: mk(6, "mcq"), mine: false,
+      attempt: { status: "not_started", answers: {}, lastQuestionIndex: 0 }, assigned: [] },
+    { id: "e7", title: "Essay: Ecosystems", type: "free", closesAt: iso(now - 24 * HOUR), maxPeeks: 0,
+      createdBy: { id: demoUser.id, name: demoUser.name }, questions: mk(7, "free"), mine: true,
+      attempt: { status: "submitted", answers: {}, lastQuestionIndex: 0 }, assigned: ["a@x.com"],
+      counts: { submitted: 1, inProgress: 0, notStarted: 0, declined: 0 } },
+    { id: "e8", title: "Declined: Geography", type: "mcq", closesAt: iso(now + 3 * HOUR), maxPeeks: 0,
+      createdBy: rao, questions: mk(8, "mcq"), mine: false,
+      attempt: { status: "declined", answers: {}, lastQuestionIndex: 0 }, assigned: [] },
+    { id: "e9", title: "Not started, closes in 20 minutes", type: "mcq", closesAt: iso(now + 20 * 60_000), maxPeeks: 0,
+      createdBy: { id: demoUser.id, name: demoUser.name }, questions: mk(9, "mcq"), mine: true,
+      attempt: { status: "not_started", answers: {}, lastQuestionIndex: 0 }, assigned: [],
+      counts: { submitted: 0, inProgress: 0, notStarted: 1, declined: 0 } },
   ];
 }
 seedExams();
@@ -78,8 +98,8 @@ function listItem(e: MockExam, scope: string): ExamListItem {
     acceptingUntil: acceptingUntil(e), totalMarks: totalMarks(e), type: e.type,
   };
   if (scope === "created") {
-    const n = e.assigned.length;
-    return { ...base, counts: { submitted: 1, inProgress: 0, notStarted: Math.max(0, n - 1), declined: 0 } };
+    const n = Math.max(1, e.assigned.length);
+    return { ...base, counts: e.counts ?? { submitted: 0, inProgress: 0, notStarted: n, declined: 0 } };
   }
   const status = (over(e) && e.attempt?.status !== "submitted" ? "missed" : e.attempt?.status) as AttemptStatus;
   const g = e.attempt?.status === "submitted" ? grade(e) : null;
@@ -309,15 +329,27 @@ export function mockFetch(method: string, rawPath: string, body: unknown, idempo
   }
   if (route === "GET /exams") {
     const scope = query.get("scope") ?? "open";
-    const list = state.exams.filter((e) => {
-      if (scope === "created") return e.mine;
-      if (!e.attempt) return false;
-      const isClosed = over(e) || e.attempt.status === "submitted";
-      return scope === "closed" ? isClosed : !isClosed;
-    });
-    return json(200, { serverTime: st(), exams: list.map((e) => listItem(e, scope)) });
+    // Test triggers (mock only), from the page URL: ?mockHome=empty | slow (2.5 s per list)
+    // | failOpen | failClosed | failCreated (that list answers 500).
+    const trigger = typeof window === "undefined" ? null : new URLSearchParams(window.location.search).get("mockHome");
+    const reply = (): Response => {
+      if (trigger === `fail${scope[0].toUpperCase()}${scope.slice(1)}`) return err(500, "internal", "Something went wrong.");
+      if (trigger === "empty") return json(200, { serverTime: st(), exams: [] });
+      for (const e of state.exams) if (e.closingDemo) e.closesAt = iso(Date.now() - 20_000);
+      const list = state.exams.filter((e) => {
+        if (scope === "created") return e.mine;
+        if (!e.attempt || e.attempt.status === "declined") return false;
+        const isClosed = over(e) || e.attempt.status === "submitted";
+        return scope === "closed" ? isClosed : !isClosed;
+      });
+      // created: newest first (the store prepends new exams); others: soonest deadline first.
+      if (scope === "open") list.sort((a, b) => Date.parse(a.closesAt) - Date.parse(b.closesAt));
+      if (scope === "closed") list.sort((a, b) => Date.parse(b.closesAt) - Date.parse(a.closesAt));
+      return json(200, { serverTime: st(), exams: list.slice(0, scope === "created" ? 50 : undefined).map((e) => listItem(e, scope)) });
+    };
+    if (trigger === "slow") return new Promise((res) => setTimeout(() => res(reply()), 2500));
+    return reply();
   }
-
   const exam = state.exams.find((e) => e.id === id);
   if (seg[0] === "exams" && seg.length >= 2) {
     if (!exam) return err(404, "not_found", "That item isn't available.");
