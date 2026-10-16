@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/gokulkumar/exam-assistant/backend/internal/clock"
+	"github.com/gokulkumar/exam-assistant/backend/internal/store/memory"
 	"io"
 	"log/slog"
 	"net/http"
@@ -264,5 +266,11 @@ func TestLocalServerServesCreateExam(t *testing.T) {
 	code, body := do(t, c, "POST", srv.URL+"/exams", "application/json", exam)
 	if code != 201 || !strings.Contains(string(body), `"unknownEmails":[]`) {
 		t.Fatalf("create exam %d %s", code, body)
+	}
+}
+
+func TestNewExamServiceWiresTheLazyFinalizer(t *testing.T) {
+	if !newExamService(memory.NewUserStore(), clock.Real{}).HasFinalizer() {
+		t.Fatal("the lazy finalizer is not wired: expired attempts would never be graded")
 	}
 }

@@ -57,6 +57,8 @@ func buildAPIDeps(_ context.Context, cfg config.Config, awsCfg aws.Config) (api.
 		return api.Deps{}, errors.New("WORKER_FUNCTION_NAME is required in api mode")
 	}
 	var runner gen.JobRunner = gen.LambdaRunner{Client: lambda.NewFromConfig(awsCfg), FunctionName: cfg.WorkerFunctionName}
+	examSvc := exams.NewService(stores, stores, stores, clk)
+	examSvc.SetFinalizer(exams.NewFinalizer(stores)) // lazy finalize (backend-spec 9.2)
 	deps := api.Deps{
 		Logger:         slog.Default(),
 		Clock:          clk,
@@ -65,7 +67,7 @@ func buildAPIDeps(_ context.Context, cfg config.Config, awsCfg aws.Config) (api.
 		Sessions:       auth.NewSessions([]byte(cfg.JWTSecret), cfg.Env),
 		Docs:           docs.NewService(stores, docs.NewS3Blob(awsCfg, cfg.S3Bucket), clk),
 		Jobs:           stores,
-		Exams:          exams.NewService(stores, stores, stores, clk),
+		Exams:          examSvc,
 		Runner:         runner,
 		Gen:            gen.NewService(stores, stores, runner, clk, models, def.ID, cfg.GenLimits()),
 		Models:         models,

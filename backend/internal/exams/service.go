@@ -19,7 +19,7 @@ type Service struct {
 	clk      clock.Clock
 	log      *slog.Logger
 	maxPend  int
-	fin      Finalizer // lazy finalize hook; nil means none (wired in B-4.4)
+	fin      Finalizer // lazy finalize hook (exams.NewFinalizer in cmd); nil means none
 }
 
 // NewService builds a Service.
@@ -30,3 +30,6 @@ func NewService(users store.UserStore, exams store.ExamStore, attempts store.Att
 func newID(clk clock.Clock) string {
 	return ulid.MustNew(ulid.Timestamp(clk.Now()), rand.Reader).String()
 }
+
+// HasFinalizer reports whether the lazy-finalize hook is wired (checked by the cmd wiring tests).
+func (s *Service) HasFinalizer() bool { return s.fin != nil }

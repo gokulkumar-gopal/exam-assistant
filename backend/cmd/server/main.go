@@ -98,6 +98,14 @@ func hasProviderKey(cfg config.Config) bool {
 		(slices.Contains(cfg.Providers, gen.ProviderGemini) && cfg.GeminiAPIKey != "")
 }
 
+// newExamService builds the in-memory exam service with the lazy finalizer (backend-spec 9.2).
+func newExamService(users *memory.UserStore, clk clock.Clock) *exams.Service {
+	attempts := memory.NewAttemptStore()
+	svc := exams.NewService(users, memory.NewExamStore(), attempts, clk)
+	svc.SetFinalizer(exams.NewFinalizer(attempts))
+	return svc
+}
+
 // buildHandler wires the local server: in-memory stores, the Docs service on an in-memory
 // blob served at /local-blob (baseURL is where browsers reach this server), and the
 // in-process job runner. The generator is chosen by pickFactory.
@@ -129,6 +137,7 @@ func buildHandler(cfg config.Config, logger *slog.Logger, baseURL string, fakeLL
 	if err != nil {
 		return nil, err
 	}
+	examSvc := newExamService(users, clk)
 	apiHandler := api.NewRouter(api.Deps{
 		Logger:         logger,
 		Clock:          clk,
@@ -137,7 +146,7 @@ func buildHandler(cfg config.Config, logger *slog.Logger, baseURL string, fakeLL
 		Sessions:       auth.NewSessions([]byte(cfg.JWTSecret), cfg.Env),
 		Docs:           docs.NewService(docStore, blob, clk),
 		Jobs:           jobs,
-		Exams:          exams.NewService(users, memory.NewExamStore(), memory.NewAttemptStore(), clk),
+		Exams:          examSvc,
 		Runner:         runner,
 		Gen:            gen.NewService(jobs, docStore, runner, clk, models, defModel.ID, cfg.GenLimits()),
 		Models:         models,

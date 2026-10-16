@@ -122,12 +122,25 @@ func validateAutosave(exam store.Exam, in AutosaveInput) error {
 		return apperr.Validation("The question position is required.",
 			map[string]string{"lastQuestionIndex": "Required"})
 	}
+	if err := checkAnswers(exam, in.Answers); err != nil {
+		return err
+	}
+	if i := *in.LastQuestionIndex; i < 0 || i >= len(exam.Questions) {
+		return apperr.Validation("The question position is out of range.",
+			map[string]string{"lastQuestionIndex": "Out of range"})
+	}
+	return nil
+}
+
+// checkAnswers validates an answers map against the exam: known question ids, 5,000 characters
+// per answer and 350 KB in all. Shared by autosave and submit.
+func checkAnswers(exam store.Exam, answers map[string]string) error {
 	known := make(map[string]bool, len(exam.Questions))
 	for _, q := range exam.Questions {
 		known[q.ID] = true
 	}
 	total := 0
-	for id, v := range in.Answers {
+	for id, v := range answers {
 		if !known[id] {
 			return apperr.Validation("Answers refer to a question that is not in this exam.",
 				map[string]string{"answers": "Unknown question"})
@@ -140,10 +153,6 @@ func validateAutosave(exam store.Exam, in AutosaveInput) error {
 	}
 	if total > MaxAutosaveBytes {
 		return apperr.Validation("Your answers are too long to save.", map[string]string{"answers": "Too long overall"})
-	}
-	if i := *in.LastQuestionIndex; i < 0 || i >= len(exam.Questions) {
-		return apperr.Validation("The question position is out of range.",
-			map[string]string{"lastQuestionIndex": "Out of range"})
 	}
 	return nil
 }

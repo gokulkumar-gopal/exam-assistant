@@ -498,7 +498,7 @@ When `status` is `done`, `questions` is the final ordered list. Each question is
 - If `answers` is present, store them first. Then finalize (grade, set `submitted`). `SubmittedAt` is the earlier of now and `closesAt`.
 - Accepted until `acceptingUntil` (`closesAt` + 60 seconds). After that: `409 exam_closed`; an expired in-progress attempt is auto-submitted by lazy finalize instead.
 - **The client's auto-submit at zero sends its final answers in this call** (it does not autosave first), so the grace window cannot lose them.
-- Idempotent: an already-submitted attempt returns its existing result.
+- Idempotent: an attempt the client already submitted returns its existing result, even after the deadline; an attempt the server auto-finalized (`autoSubmitted`) is `409 exam_closed` instead, because the late request's answers were not graded.
 - Response: `200 { status: "submitted", score, scoreBeforePeeks, maxScore, submittedAt, autoSubmitted, serverTime }`. `score` and `scoreBeforePeeks` are `null` for free-text exams.
 
 **Reveal an answer (later priority, section 9.6):** `POST /exams/{id}/reveal` with `{ questionId }`

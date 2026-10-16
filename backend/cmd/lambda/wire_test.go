@@ -65,6 +65,9 @@ func TestBuildAPIDepsPopulatesEverything(t *testing.T) {
 	if !deps.Auth.GoogleEnabled() || len(deps.AllowedOrigins) != 1 {
 		t.Errorf("deps = %+v", deps)
 	}
+	if !deps.Exams.HasFinalizer() {
+		t.Error("the lazy finalizer is not wired: expired attempts would never be graded")
+	}
 	if deps.Jobs == nil || deps.Gen == nil {
 		t.Error("generation dependencies are not wired")
 	}
