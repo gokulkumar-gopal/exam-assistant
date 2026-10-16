@@ -4,6 +4,7 @@ import type {
   Attempt, AttemptStatus, ExamListItem, ExamType, Marks, Question, ResultQuestion, User,
   AssignBody, AttemptBody, CreateExamBody, GenerateBody, GoogleBody, RegenerateBody, RevealBody, SignupBody, SubmitBody, UploadUrlBody,
 } from "../types";
+import { consumeUploadFailure } from "./s3";
 import { demoUser, docs as seedDocs, makeQuestion, models, rao, usage } from "./fixtures";
 
 interface MockExam {
@@ -151,12 +152,14 @@ export function mockFetch(method: string, rawPath: string, body: unknown): Respo
     return json(200, { documents: state.docs, serverTime: st() });
   }
   if (route === "POST /documents/upload-url") {
+    if (consumeUploadFailure("presign")) return err(500, "internal", "Something went wrong. Try again.");
     const b = as<UploadUrlBody>();
     const docId = `d${++state.seq}`;
     state.pendingUploads[docId] = { name: b.name, type: b.type, sizeBytes: b.sizeBytes };
     return json(201, { docId, uploadUrl: `mock://s3/${docId}`, headers: { "Content-Type": b.type } });
   }
   if (route === "POST /documents/:id/complete") {
+    if (consumeUploadFailure("complete")) return err(500, "internal", "Something went wrong. Try again.");
     const p = state.pendingUploads[id];
     if (!p) return err(409, "conflict", "The upload didn't finish. Try again.");
     const typeMap: Record<string, "PDF" | "JPG" | "PNG" | "TXT"> = {

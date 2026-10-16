@@ -4,29 +4,20 @@ import { useRouter } from "next/navigation";
 import { api, ApiError } from "@/lib/api";
 import type { Doc, DocsResponse } from "@/lib/types";
 import {
-  deleteTitle, filterAndSortDocs, generateHref, pruneSelection, type DocSort,
+  addDoc, deleteTitle, filterAndSortDocs, generateHref, pruneSelection, type DocSort,
 } from "@/lib/documents";
 import { DocRow } from "@/components/DocRow";
 import { EmptyState } from "@/components/EmptyState";
 import { SelectionBar } from "@/components/SelectionBar";
+import { UploadSheet, useUploads } from "@/components/UploadSheet";
+import { UploadRow } from "@/components/UploadRow";
+import { DropZone } from "@/components/DropZone";
 import { Input } from "@/components/ui/input";
 import {
   AlertDialog, AlertDialogCancel, AlertDialogContent, AlertDialogDescription,
   AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
-
-// F-1.4 SLOT: replace this handler with the upload sheet trigger (Take photo / Choose file /
-// Choose from photos). F-1.3 only renders the button; there is no upload code here.
-function onUpload() {}
-
-function UploadButton() {
-  return (
-    <button type="button" className="btn-primary" onClick={onUpload}>
-      Upload
-    </button>
-  );
-}
 
 export default function Page() {
   const router = useRouter();
@@ -38,6 +29,8 @@ export default function Page() {
   const [confirming, setConfirming] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
+
+  const up = useUploads((doc) => setDocs((d) => (d ? addDoc(d, doc) : d)));
 
   const load = useCallback(async () => {
     setLoadError(false);
@@ -98,6 +91,14 @@ export default function Page() {
     setConfirming(true);
   }
 
+  const uploadList = up.items.length > 0 && (
+    <ul className="mb-2 flex flex-col gap-2" aria-label="Uploads">
+      {up.items.map((it) => (
+        <UploadRow key={it.id} item={it} onRetry={up.retry} onDismiss={up.dismiss} />
+      ))}
+    </ul>
+  );
+
   let body: React.ReactNode;
   if (loadError) {
     body = (
@@ -109,8 +110,8 @@ export default function Page() {
   } else if (docs === null) {
     body = <div className="text-muted" role="status">Loading…</div>;
   } else if (docs.length === 0) {
-    body = (
-      <EmptyState action={<UploadButton />}>
+    body = uploadList || (
+      <EmptyState action={<UploadSheet onFiles={up.add} />}>
         No documents yet. Upload your first file to get started.
       </EmptyState>
     );
@@ -136,6 +137,7 @@ export default function Page() {
             <option value="name">Name</option>
           </select>
         </div>
+        {uploadList}
         {visible.length === 0 ? (
           <EmptyState>No documents match your search.</EmptyState>
         ) : (
@@ -156,8 +158,9 @@ export default function Page() {
           <h1>Documents</h1>
           <p className="text-[13px] text-muted">Only you can see these.</p>
         </div>
-        {docs && docs.length > 0 && <UploadButton />}
+        {docs && (docs.length > 0 || up.items.length > 0) && <UploadSheet onFiles={up.add} />}
       </div>
+      {docs && <DropZone onFiles={up.add} />}
       {body}
       <SelectionBar count={ids.length} onDelete={openConfirm} onGenerate={() => router.push(generateHref(ids))} />
       <AlertDialog open={confirming} onOpenChange={(o) => { if (!deleting) setConfirming(o); }}>

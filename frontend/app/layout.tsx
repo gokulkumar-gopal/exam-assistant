@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { Suspense } from "react";
 import "./globals.css";
 import { SessionProvider } from "@/lib/session";
+import { Toaster } from "@/components/ui/sonner";
 import { Shell } from "@/components/Shell";
 
 export const metadata: Metadata = {
@@ -18,6 +19,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             <Shell>{children}</Shell>
           </Suspense>
         </SessionProvider>
+        <Toaster />
       </body>
     </html>
   );

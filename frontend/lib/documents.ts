@@ -41,3 +41,8 @@ export function generateHref(ids: string[]): string {
 export function deleteTitle(n: number): string {
   return `Delete ${n} ${n === 1 ? "document" : "documents"}?`;
 }
+
+/** Put a finished upload at the top of the list (replacing any row with the same id). */
+export function addDoc(docs: Doc[], doc: Doc): Doc[] {
+  return [doc, ...docs.filter((d) => d.id !== doc.id)];
+}

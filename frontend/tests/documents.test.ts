@@ -76,3 +76,11 @@ describe("selection helpers", () => {
     expect(deleteTitle(2)).toBe("Delete 2 documents?");
   });
 });
+
+describe("addDoc", () => {
+  it("prepends and never duplicates an id", async () => {
+    const { addDoc } = await import("../lib/documents");
+    expect(ids(addDoc([A, B], C))).toEqual(["c", "a", "b"]);
+    expect(ids(addDoc([A, B], { ...B, name: "new" }))).toEqual(["b", "a"]);
+  });
+});
