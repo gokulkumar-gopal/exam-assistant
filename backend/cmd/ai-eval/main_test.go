@@ -76,7 +76,7 @@ func TestReportContainsPerFileRows(t *testing.T) {
 func TestRefusesToRunWithoutExplicitModelFlag(t *testing.T) {
 	dir := goldenDir(t, "a.txt")
 	code, _, errOut := runEval(t, fakeDeps(), env("AI_EVAL", "1"), "-dir", dir)
-	if code == 0 || !strings.Contains(errOut, "-model") {
+	if code == 0 || !strings.Contains(errOut, "-model is required") {
 		t.Fatalf("want a -model error, got exit %d: %q", code, errOut)
 	}
 	code, _, errOut = runEval(t, fakeDeps(), env("AI_EVAL", "1"), "-model", "no-such-model", "-dir", dir)
@@ -207,4 +207,136 @@ type refusingGen struct{}
 
 func (refusingGen) Generate(context.Context, gen.GenInput) (gen.GenOutput, error) {
 	return gen.GenOutput{StopReason: gen.StopRefusal}, nil
+}
+
+// bigGen reports a large usage per call so a few calls reach the spend cap.
+type bigGen struct {
+	in     int64
+	onCall func()
+}
+
+func (g bigGen) Generate(ctx context.Context, in gen.GenInput) (gen.GenOutput, error) {
+	if g.onCall != nil {
+		g.onCall()
+	}
+	out, err := gen.FakeGenerator{}.Generate(ctx, in)
+	out.Usage.Input = g.in
+	return out, err
+}
+
+func depsOf(g gen.Generator) deps {
+	return deps{newFactory: func(string, func(string) string) (gen.GeneratorFactory, error) {
+		return gen.FixedFactory(g), nil
+	}}
+}
+
+func TestMaxUSDDefaultsToFiveAndAboveFifteenNeedsOverride(t *testing.T) {
+	dir := goldenDir(t, "a.txt")
+	code, out, errOut := runEval(t, fakeDeps(), env("AI_EVAL", "1"), "-model", testModel, "-dir", dir)
+	if code != 0 || !strings.Contains(out, "cap USD 5.00") {
+		t.Fatalf("default cap must be 5: exit %d err %s\n%s", code, errOut, out)
+	}
+	code, out, errOut = runEval(t, fakeDeps(), env("AI_EVAL", "1"), "-model", testModel, "-dir", dir, "-max-usd", "16")
+	if code == 0 || !strings.Contains(errOut, "-allow-high-cap") || out != "" {
+		t.Fatalf("16 must be rejected: exit %d err %q out %q", code, errOut, out)
+	}
+	code, out, _ = runEval(t, fakeDeps(), env("AI_EVAL", "1"), "-model", testModel, "-dir", dir, "-max-usd", "16", "-allow-high-cap")
+	if code != 0 || !strings.Contains(out, "cap USD 16.00") {
+		t.Fatalf("override must allow 16: exit %d\n%s", code, out)
+	}
+	if code, _, _ = runEval(t, fakeDeps(), env("AI_EVAL", "1"), "-model", testModel, "-dir", dir, "-max-usd", "0"); code == 0 {
+		t.Error("a zero cap must be rejected")
+	}
+}
+
+func TestCapStopsRunAndKeepsPaidRows(t *testing.T) {
+	dir := goldenDir(t, "a.txt", "b.txt", "c.txt", "d.txt")
+	csvPath := filepath.Join(t.TempDir(), "out.csv")
+	// 1M input tokens per call on haiku is 1 USD; a job is 3 calls. Cap 5: a.txt costs 3, b.txt hits the cap in its third call.
+	d := depsOf(bigGen{in: 1_000_000})
+	code, out, errOut := runEval(t, d, env("AI_EVAL", "1"), "-model", testModel, "-dir", dir, "-types", "mcq", "-csv", csvPath)
+	if code == 0 {
+		t.Fatalf("a stopped run must exit non-zero:\n%s", out)
+	}
+	for _, f := range []string{"a.txt", "b.txt"} {
+		if !strings.Contains(out, f) {
+			t.Errorf("paid row for %s missing:\n%s", f, out)
+		}
+	}
+	for _, f := range []string{"c.txt", "d.txt"} {
+		if strings.Contains(out, f) {
+			t.Errorf("%s must not run after the cap:\n%s", f, out)
+		}
+	}
+	if !strings.Contains(errOut, "stopped at cap after 2 of 4 files") {
+		t.Errorf("stop line missing: %q", errOut)
+	}
+	raw, err := os.ReadFile(csvPath)
+	if err != nil || !strings.Contains(string(raw), "a.txt") || !strings.Contains(string(raw), "b.txt") || strings.Contains(string(raw), "c.txt") {
+		t.Errorf("CSV must hold the partial rows: %v\n%s", err, raw)
+	}
+}
+
+func TestCancelledContextReturnsPartialRows(t *testing.T) {
+	dir := goldenDir(t, "a.txt", "b.txt", "c.txt")
+	files, err := goldenFiles(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	var once sync.Once
+	f := gen.FixedFactory(bigGen{in: 10, onCall: func() { once.Do(cancel) }})
+	m, _ := gen.LookupModel(testModel)
+	rows, stop := evaluate(ctx, f, m, files, []string{"mcq", "free"}, 5, "medium")
+	if len(rows) == 0 || len(rows) >= 6 || stop == "" {
+		t.Fatalf("want some but not all rows and a stop reason, got %d rows, stop %q", len(rows), stop)
+	}
+}
+
+func TestFirstPassBranches(t *testing.T) {
+	dir := goldenDir(t, "a.txt")
+	run1 := func(g gen.Generator) string {
+		code, out, errOut := runEval(t, depsOf(g), env("AI_EVAL", "1"), "-model", testModel, "-dir", dir, "-types", "mcq")
+		if code != 0 {
+			t.Fatalf("exit %d: %s", code, errOut)
+		}
+		return out
+	}
+	if out := run1(&flakyGen{mode: "max_tokens"}); !strings.Contains(out, " 0% ") {
+		t.Errorf("a cut-off first call keeps nothing first pass:\n%s", out)
+	}
+	if out := run1(&flakyGen{mode: "invalid"}); !strings.Contains(out, " 0% ") {
+		t.Errorf("invalid JSON on the first call keeps nothing first pass:\n%s", out)
+	}
+	if out := run1(&flakyGen{mode: "auth"}); !strings.Contains(out, "n/a") {
+		t.Errorf("a failed job has an unknown first-pass figure:\n%s", out)
+	}
+}
+
+// flakyGen fails the first call of each mark value in one way, then behaves.
+type flakyGen struct {
+	mode string
+	seen sync.Map
+}
+
+func (g *flakyGen) Generate(ctx context.Context, in gen.GenInput) (gen.GenOutput, error) {
+	if _, again := g.seen.LoadOrStore(in.Marks, true); !again {
+		switch g.mode {
+		case "max_tokens":
+			return gen.GenOutput{StopReason: gen.StopMaxTokens}, nil
+		case "invalid":
+			return gen.GenOutput{}, gen.ErrInvalidOutput
+		case "auth":
+			return gen.GenOutput{}, gen.ErrAuth
+		}
+	}
+	return gen.FakeGenerator{}.Generate(ctx, in)
+}
+
+func TestHeaderShowsEffortAndSpend(t *testing.T) {
+	dir := goldenDir(t, "a.txt")
+	_, out, _ := runEval(t, fakeDeps(), env("AI_EVAL", "1", "LLM_EFFORT", "high"), "-model", "claude-sonnet-5-5", "-dir", dir)
+	if !strings.Contains(out, "effort high") || !strings.Contains(out, "spent USD") {
+		t.Errorf("header lacks effort or spend:\n%s", out)
+	}
 }
