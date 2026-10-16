@@ -1,6 +1,7 @@
 "use client";
 import { useRef, useState } from "react";
-import { api, ApiError } from "@/lib/api";
+import { api, ApiError, isNetworkError, NETWORK_TOAST } from "@/lib/api";
+import { toast } from "sonner";
 import type { ExamListItem } from "@/lib/types";
 import { Button } from "@/components/ui/button";
 import {
@@ -45,6 +46,8 @@ export function DeclineDialog({
         onOpenChange(false);
         // A response without a message gets the client's generic text (code "internal"); use ours instead.
         onStale(e.code === "internal" ? GENERIC_STALE : e.message);
+      } else if (isNetworkError(e)) {
+        toast.error(NETWORK_TOAST);
       } else {
         setError("Couldn't decline this exam. Try again.");
       }

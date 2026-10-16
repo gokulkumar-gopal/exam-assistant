@@ -27,6 +27,12 @@ export interface ApiDeps {
   reach?: Reachability;
 }
 
+/** fs 8.1: a write that fails this way toasts this text and keeps the user's input. */
+export const NETWORK_TOAST = "Couldn't reach the server. Try again.";
+/** fs 8.1 "502, 503, 504, or network error". */
+export const isNetworkError = (e: unknown): boolean =>
+  e instanceof ApiError && (e.status === 0 || e.status === 502 || e.status === 503 || e.status === 504);
+
 const RETRY_DELAYS = [1000, 2000, 4000];
 const RETRYABLE = new Set([502, 503, 504]);
 const NO_REDIRECT_PATHS = ["/login", "/signup"];
@@ -61,7 +67,7 @@ export function createApi(deps: ApiDeps = {}) {
       try {
         res = await mockFetch(method, path, body, opts?.idempotencyKey);
       } catch {
-        throw new ApiError(0, "network", "Couldn't reach the server. Try again.");
+        throw new ApiError(0, "network", NETWORK_TOAST);
       }
     } else {
       const headers: Record<string, string> = {};
@@ -76,7 +82,7 @@ export function createApi(deps: ApiDeps = {}) {
           body: body === undefined ? undefined : JSON.stringify(body),
         });
       } catch {
-        throw new ApiError(0, "network", "Couldn't reach the server. Try again.");
+        throw new ApiError(0, "network", NETWORK_TOAST);
       }
     }
     if (res.status === 204) return undefined as T;

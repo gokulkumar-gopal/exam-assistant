@@ -5,7 +5,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import { toast } from "sonner";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
-import { api, ApiError, serverNow } from "@/lib/api";
+import { api, ApiError, NETWORK_TOAST, serverNow } from "@/lib/api";
 import { useAttempt } from "@/lib/attempt";
 import { autosaveText, createAutosaver, keepaliveOk, shouldFlushOnEvent, type AutosaveState } from "@/lib/autosave";
 import { autoSubmitAtZero, awaitWithTimeout, canSaveAndExit, submitExam, withTimeout, type SubmitPhase } from "@/lib/submit";
@@ -25,7 +25,6 @@ export const NOT_OPEN_TOAST = "This exam is closed";
 const SUBMIT_TIMEOUT_MS = 20_000;
 /** Longest a submit waits for a reveal already sent; after that it submits anyway. */
 const REVEAL_WAIT_MS = 2000;
-const NETWORK_TOAST = "Couldn't reach the server. Try again.";
 
 /** What a reveal attempt ended as: ok, not allowed right now (blocked), refused by the server (403/409), closed, or a failure. */
 export type RevealOutcome = "ok" | "blocked" | "refused" | "closed" | "failed";

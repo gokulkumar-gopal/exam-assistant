@@ -141,3 +141,13 @@ describe("api client reachability (fs 8.1 'Can't reach the server. Retrying…')
     expect(seen).toEqual([]);
   });
 });
+
+describe("isNetworkError (fs 8.1 write failures toast)", () => {
+  it("is true for network, 502, 503 and 504 only", async () => {
+    const { isNetworkError, NETWORK_TOAST } = await import("../lib/api");
+    for (const s of [0, 502, 503, 504]) expect(isNetworkError(new ApiError(s, "x", "m"))).toBe(true);
+    for (const s of [400, 401, 403, 404, 409, 422, 500]) expect(isNetworkError(new ApiError(s, "x", "m"))).toBe(false);
+    expect(isNetworkError(new Error("x"))).toBe(false);
+    expect(NETWORK_TOAST).toBe("Couldn't reach the server. Try again.");
+  });
+});
