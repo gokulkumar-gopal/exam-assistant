@@ -19,6 +19,9 @@ const examBodyCap = 1 << 21
 // validation error of the 8.0 body rule.
 const autosaveBodyCap = 400 << 10
 
+// revealBodyCap bounds the one-field body of POST /exams/{id}/reveal.
+const revealBodyCap = 4 << 10
+
 // registerExamRoutes serves the exam endpoints (backend-spec 8.5).
 func registerExamRoutes(rt *routeTable, deps Deps) {
 	rt.handle("POST", "/exams", RequireUser(deps, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -141,6 +144,26 @@ func registerExamRoutes(rt *routeTable, deps Deps) {
 			ServerTime string `json:"serverTime"`
 			exams.ResultView
 		}{deps.Clock.Now().UTC().Format(time.RFC3339), res})
+	})))
+	rt.handle("POST", "/exams/{id}/reveal", RequireUser(deps, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var in struct {
+			QuestionID string `json:"questionId"`
+		}
+		if err := Decode(w, r, &in, revealBodyCap); err != nil {
+			WriteError(w, r, err)
+			return
+		}
+		u, _ := UserFrom(r.Context())
+		res, err := deps.Exams.Reveal(r.Context(), u, r.PathValue("id"), in.QuestionID)
+		if err != nil {
+			WriteError(w, r, err)
+			return
+		}
+		w.Header().Set("Cache-Control", "no-store")
+		WriteJSON(w, http.StatusOK, struct {
+			exams.RevealView
+			ServerTime string `json:"serverTime"`
+		}{res, deps.Clock.Now().UTC().Format(time.RFC3339)})
 	})))
 	rt.handle("POST", "/exams/{id}/submit", RequireUser(deps, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var in exams.SubmitInput

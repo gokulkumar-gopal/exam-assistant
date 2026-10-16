@@ -58,6 +58,9 @@ func RunAttemptStoreSuite(t *testing.T, f AttemptFactory) {
 	t.Run("ErrorsDistinguishSubmittedFromDeclined", func(t *testing.T) { ErrorsDistinguishSubmittedFromDeclined(t, f) })
 	t.Run("ConcurrentFirstSavesAndRevealAllSucceed", func(t *testing.T) { ConcurrentFirstSavesAndRevealAllSucceed(t, f) })
 	t.Run("RevealRaceNeverExceedsMax", func(t *testing.T) { RevealRaceNeverExceedsMax(t, f) })
+	t.Run("RevealRefusedOnSubmittedAndNeverChangesGradedRow", func(t *testing.T) { RevealRefusedOnSubmittedAndNeverChangesGradedRow(t, f) })
+	t.Run("SubmitRefusesStaleRevealed", func(t *testing.T) { SubmitRefusesStaleRevealed(t, f) })
+	t.Run("RevealSubmitRaceNeverLosesAPeek", func(t *testing.T) { RevealSubmitRaceNeverLosesAPeek(t, f) })
 }
 
 func PutExamConflictOnExistingID(t *testing.T, f ExamFactory) {
@@ -414,6 +417,75 @@ func RevealRaceNeverExceedsMax(t *testing.T, f AttemptFactory) {
 	got, _ := s.GetAttempt(ctx, "e1", "u1")
 	if charged.Load() != 3 || conflicts.Load() != 17 || len(got.Revealed) != 3 {
 		t.Fatalf("charged %d conflicts %d revealed %v", charged.Load(), conflicts.Load(), got.Revealed)
+	}
+}
+
+func RevealRefusedOnSubmittedAndNeverChangesGradedRow(t *testing.T, f AttemptFactory) {
+	s := f(t)
+	_, _ = s.PutAttemptIfAbsent(ctx, att("e1", "u1"))
+	_, err := s.Reveal(ctx, "e1", "u1", "q1", 3, T0)
+	noErr(t, err)
+	sub := att("e1", "u1")
+	sub.Revealed = []string{"q1"}
+	two := 2
+	sub.ScoreHalves, sub.ScoreBeforePeeksHalves = &two, &two
+	noErr(t, s.Submit(ctx, sub))
+	for _, q := range []string{"q2", "q1"} { // new and already revealed: both refused once submitted
+		_, err = s.Reveal(ctx, "e1", "u1", q, 3, T0)
+		is(t, err, store.ErrSubmitted)
+	}
+	got, _ := s.GetAttempt(ctx, "e1", "u1")
+	if got.Status != store.AttemptSubmitted || !reflect.DeepEqual(got.Revealed, []string{"q1"}) || *got.ScoreHalves != 2 {
+		t.Fatalf("a reveal changed a graded row: %+v", got)
+	}
+}
+
+// Submit carries the revealed list it graded against; a reveal that landed after the read makes
+// the write lose with ErrConflict (the row stays unsubmitted) so the caller can regrade.
+func SubmitRefusesStaleRevealed(t *testing.T, f AttemptFactory) {
+	s := f(t)
+	_, _ = s.PutAttemptIfAbsent(ctx, att("e1", "u1"))
+	stale := att("e1", "u1")
+	stale.Revealed = []string{}
+	_, err := s.Reveal(ctx, "e1", "u1", "q1", 3, T0)
+	noErr(t, err)
+	is(t, s.Submit(ctx, stale), store.ErrConflict)
+	if got, _ := s.GetAttempt(ctx, "e1", "u1"); got.Status != store.AttemptInProgress {
+		t.Fatalf("stale submit applied: %+v", got)
+	}
+	fresh := att("e1", "u1")
+	fresh.Revealed = []string{"q1"}
+	noErr(t, s.Submit(ctx, fresh))
+	// A submit that does not state its revealed list (nil) is unchecked.
+	_, _ = s.PutAttemptIfAbsent(ctx, att("e2", "u1"))
+	_, err = s.Reveal(ctx, "e2", "u1", "q1", 3, T0)
+	noErr(t, err)
+	noErr(t, s.Submit(ctx, att("e2", "u1")))
+}
+
+// Whatever the interleaving, a submitted row's revealed list is exactly the list it was graded
+// against: either the reveal won and the submit lost (ErrConflict, regraded by the caller), or
+// the submit won and the reveal was refused.
+func RevealSubmitRaceNeverLosesAPeek(t *testing.T, f AttemptFactory) {
+	for i := 0; i < 50; i++ {
+		s := f(t)
+		_, _ = s.PutAttemptIfAbsent(ctx, att("e1", "u1"))
+		noErr(t, s.Save(ctx, "e1", "u1", map[string]string{}, 0, T0))
+		sub := att("e1", "u1")
+		sub.Revealed = []string{}
+		var wg sync.WaitGroup
+		var revErr, subErr error
+		wg.Add(2)
+		go func() { defer wg.Done(); _, revErr = s.Reveal(ctx, "e1", "u1", "q1", 3, T0) }()
+		go func() { defer wg.Done(); subErr = s.Submit(ctx, sub) }()
+		wg.Wait()
+		got, _ := s.GetAttempt(ctx, "e1", "u1")
+		switch {
+		case subErr == nil && errors.Is(revErr, store.ErrSubmitted) && len(got.Revealed) == 0 && got.Status == store.AttemptSubmitted:
+		case errors.Is(subErr, store.ErrConflict) && revErr == nil && len(got.Revealed) == 1 && got.Status == store.AttemptInProgress:
+		default:
+			t.Fatalf("iteration %d: submit %v reveal %v row %+v", i, subErr, revErr, got)
+		}
 	}
 }
 

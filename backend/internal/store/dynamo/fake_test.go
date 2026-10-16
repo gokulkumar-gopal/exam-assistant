@@ -22,7 +22,7 @@ import (
 // joined by OR (OR binds loosest, no parentheses); update expressions made of SET (values
 // ":v" or "if_not_exists(a, :v)"), ADD (numbers) and REMOVE clauses; key conditions
 // "pk = :v" on the table or on a GSI (projected per the INCLUDE lists in template.yaml).
-// Also: "x <> :v", "size(x) < :v", "NOT contains(x, :v)" and SET list_append(x, :v).
+// Also: "x <> :v", "size(x) < :v", "size(x) = :v", "NOT contains(x, :v)" and SET list_append(x, :v).
 // Anything else panics,
 // so a new expression shape forces the fake to be extended.
 type fakeDynamo struct {
@@ -203,6 +203,15 @@ func termOK(term string, names map[string]string, vals map[string]types.Attribut
 			panic("unbound value " + parts[1])
 		}
 		return ok && n < num(want)
+	case strings.HasPrefix(term, "size(") && strings.Contains(term, ") = "):
+		parts := strings.SplitN(term, ") = ", 2)
+		a := resolve(strings.TrimPrefix(parts[0], "size("), names)
+		n, ok := listLen(item[a], item[a] != nil)
+		want, bound := vals[strings.TrimSpace(parts[1])]
+		if !bound {
+			panic("unbound value " + parts[1])
+		}
+		return ok && n == num(want)
 	case strings.Contains(term, " <> "):
 		parts := strings.SplitN(term, " <> ", 2)
 		got, ok := item[resolve(strings.TrimSpace(parts[0]), names)]

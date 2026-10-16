@@ -111,6 +111,9 @@ type AttemptStore interface {
 	// Submit writes the final state of a (Status, Answers, LastQuestionIndex, scores,
 	// SubmittedAt, SavedAt, AutoSubmitted; StartedAt only if the stored one is unset; never
 	// Revealed). ErrNotFound if missing; ErrPrecondition if already submitted or declined.
+	// If a.Revealed is non-nil it is the peeks the score was computed from: when the stored list
+	// has a different length (a Reveal landed after the caller read the row) nothing is written
+	// and the error is ErrConflict, so the caller re-reads and regrades. nil skips the check.
 	Submit(ctx context.Context, a Attempt) error
 	// Decline moves a not_started attempt to declined; idempotent when already declined.
 	// ErrNotFound if missing; ErrPrecondition from in_progress or submitted.

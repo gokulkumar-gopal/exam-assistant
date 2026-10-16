@@ -342,7 +342,14 @@ func (s *Stores) Submit(ctx context.Context, a store.Attempt) error {
 		add("startedAt", "if_not_exists(startedAt, :sta)", nil)
 		vals[":sta"] = sv(fmtTime(*a.StartedAt))
 	}
-	_, ok, old, err := s.condUpdate(ctx, a.ExamID, a.UserID, "attribute_exists(examId) AND #st <> :sub AND #st <> :dec", "SET "+set, statusName, vals, false)
+	cond := "attribute_exists(examId) AND #st <> :sub AND #st <> :dec"
+	if a.Revealed != nil {
+		// The score was computed from this many peeks: a reveal that landed after the read must
+		// make this write lose, or its peek would go unpenalised.
+		cond += " AND size(revealed) = :nrev"
+		vals[":nrev"], _ = attributevalue.Marshal(len(a.Revealed))
+	}
+	_, ok, old, err := s.condUpdate(ctx, a.ExamID, a.UserID, cond, "SET "+set, statusName, vals, false)
 	if err != nil {
 		return fmt.Errorf("dynamo: submit attempt: %w", err)
 	}
@@ -352,7 +359,10 @@ func (s *Stores) Submit(ctx context.Context, a store.Attempt) error {
 	if len(old) == 0 {
 		return store.ErrNotFound
 	}
-	return precondErr(statusOf(old))
+	if st := statusOf(old); st == store.AttemptSubmitted || st == store.AttemptDeclined {
+		return precondErr(st)
+	}
+	return fmt.Errorf("%w: revealed changed since it was graded", store.ErrConflict)
 }
 
 func (s *Stores) Decline(ctx context.Context, examID, userID string) error {
@@ -426,11 +436,11 @@ func (s *Stores) Reveal(ctx context.Context, examID, userID, questionID string, 
 		if err != nil {
 			return store.RevealResult{}, err
 		}
+		if a.Status != store.AttemptNotStarted && a.Status != store.AttemptInProgress {
+			return store.RevealResult{}, precondErr(a.Status) // a submitted attempt is never touched, not even by a repeat
+		}
 		if slices.Contains(a.Revealed, questionID) {
 			return store.RevealResult{Revealed: a.Revealed}, nil
-		}
-		if a.Status != store.AttemptNotStarted && a.Status != store.AttemptInProgress {
-			return store.RevealResult{}, precondErr(a.Status)
 		}
 		if len(a.Revealed) >= max {
 			return store.RevealResult{}, fmt.Errorf("%w: no peeks left", store.ErrConflict)

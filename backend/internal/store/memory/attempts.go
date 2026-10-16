@@ -154,6 +154,9 @@ func (s *AttemptStore) Submit(_ context.Context, in store.Attempt) error {
 	if err != nil {
 		return err
 	}
+	if in.Revealed != nil && len(in.Revealed) != len(a.Revealed) {
+		return store.ErrConflict // a peek landed after the score was computed
+	}
 	a.Status = store.AttemptSubmitted
 	a.Answers = maps.Clone(in.Answers)
 	a.LastQuestionIndex = in.LastQuestionIndex
