@@ -99,6 +99,24 @@ func TestCreateExam201ThenReplay200(t *testing.T) {
 	}
 }
 
+// Questions edited from generation output carry the generated id and display fields: all are
+// accepted, ids are replaced, and any other unknown question field is still a 422.
+func TestCreateExamQuestionEchoAndStrictness(t *testing.T) {
+	h, c, es := newExamEnv(t)
+	key := "22222222-3333-4444-8555-666666666666"
+	if rec := postExam(h, examBody, key, c, ""); rec.Code != http.StatusCreated {
+		t.Fatalf("echoed id: %d %s", rec.Code, rec.Body)
+	}
+	x, err := es.GetExam(context.Background(), key)
+	if err != nil || x.Questions[0].ID == "client" || x.Questions[0].ID == "" {
+		t.Fatalf("stored %+v err %v", x, err)
+	}
+	bad := strings.Replace(examBody, `"id":"client",`, `"id":"client","bogus":1,`, 1)
+	if rec := postExam(h, bad, "", c, ""); rec.Code != http.StatusUnprocessableEntity {
+		t.Errorf("unknown question field: %d", rec.Code)
+	}
+}
+
 func TestCreateExamErrorsAndGuards(t *testing.T) {
 	h, c, _ := newExamEnv(t)
 	if rec := postExam(h, examBody, "", nil, ""); rec.Code != http.StatusUnauthorized {

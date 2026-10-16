@@ -157,9 +157,8 @@ while :; do
 	sleep 2
 	waited=$((waited + 2))
 done
-# Keep the questions array for the exam. The server mints its own question ids and rejects
-# unknown fields, so the generated ids are dropped.
-questions=$(printf '%s' "$resp" | sed -n 's/.*"questions":\(\[{.*}\]\),"[A-Za-z]*":.*/\1/p' | sed 's/"id":"[^"]*",//g')
+# Keep the questions array for the exam, ids included: the server ignores client ids and mints its own.
+questions=$(printf '%s' "$resp" | sed -n 's/.*"questions":\(\[{.*}\]\),"[A-Za-z]*":.*/\1/p')
 case $questions in "[{"*) ;; *) fail "done but no questions: $resp" ;; esac
 ok
 
