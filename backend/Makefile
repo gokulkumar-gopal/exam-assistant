@@ -17,7 +17,7 @@ LOCAL_ENV = \
 
 SERVER_BIN ?= $(or $(TMPDIR),/tmp)/exam-assistant-server
 
-.PHONY: build test run smoke ai-eval
+.PHONY: build test run smoke ai-eval build-ApiFunction build-WorkerFunction check-env deploy destroy
 
 build:
 	go build ./...
@@ -36,3 +36,27 @@ smoke:
 ai-eval:
 	@echo "ai-eval: cmd/ai-eval does not exist yet (added in task B-2.11)." >&2
 	@exit 1
+
+# SAM calls these (BuildMethod: makefile) with ARTIFACTS_DIR set; both functions
+# are the same binary.
+build-ApiFunction build-WorkerFunction:
+	GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -tags lambda.norpc -o $(ARTIFACTS_DIR)/bootstrap ./cmd/lambda
+
+# The leading + makes make run this test even under `make -n`.
+check-env:
+	+@test -f .env.deploy.$(STAGE) || { echo "Missing backend/.env.deploy.$(STAGE). See deployment-spec.md section 8.1."; exit 1; }
+
+deploy: check-env
+	sam build
+	./scripts/write-samconfig.sh $(STAGE)
+	sam deploy --config-file .samconfig.$(STAGE).toml \
+	  --stack-name exam-assistant-$(STAGE) --region $(AWS_REGION) \
+	  --capabilities CAPABILITY_IAM --resolve-s3 --no-confirm-changeset --no-fail-on-empty-changeset
+	@aws cloudformation describe-stacks --stack-name exam-assistant-$(STAGE) --region $(AWS_REGION) \
+	  --query "Stacks[0].Outputs" --output table
+
+# Empties the bucket first (a non-empty bucket blocks stack deletion), then deletes the stack.
+# STAGE=prod needs CONFIRM=yes. The guard is a make-time $(error), so it also fires under -n.
+destroy:
+	$(if $(filter prod,$(STAGE)),$(if $(filter yes,$(CONFIRM)),,$(error Refusing to destroy prod. Re-run with CONFIRM=yes to proceed)))aws s3 rm s3://exam-assistant-$(STAGE)-$$(aws sts get-caller-identity --query Account --output text) --recursive
+	sam delete --stack-name exam-assistant-$(STAGE) --region $(AWS_REGION)

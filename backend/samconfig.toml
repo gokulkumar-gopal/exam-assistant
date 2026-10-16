@@ -1,0 +1,17 @@
+# Deploy settings that are safe to commit; nothing sensitive belongs here.
+# Sensitive values are written to a generated, gitignored per-stage file by
+# `make deploy` (see deployment-spec.md 8.2). Stack name and region are passed
+# on the command line.
+
+[default.global.parameters]
+stack_name = "exam-assistant-dev"
+
+[default.build.parameters]
+cached = false
+parallel = true
+
+[default.deploy.parameters]
+capabilities = "CAPABILITY_IAM"
+resolve_s3 = true
+confirm_changeset = false
+fail_on_empty_changeset = false

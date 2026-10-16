@@ -1,0 +1,12 @@
+# environment files (the example file stays tracked)
+.env*
+!.env.example
+backend/.env.deploy.*
+backend/.samconfig.*.toml
+backend/.aws-sam
+frontend/.next/
+frontend/.env.local
+node_modules/
+
+# local agent workflow state
+.superpowers/
