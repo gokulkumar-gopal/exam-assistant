@@ -140,9 +140,37 @@ function seedResultFixtures() {
       attempt: { status: "submitted", answers: freeAnswers, lastQuestionIndex: 3 }, assigned: [] },
   );
 }
+/**
+ * Print-view fixtures (unlisted; open by URL, created by the demo user so the key is visible by default).
+ * Page-URL flag (?mockKey=...) applies to e16 to e18:
+ *   /exams/e16/print                60 MCQ questions of 1 to 5 marks (one is `<b>x</b>` markup, one very long)
+ *   /exams/e17/print                free text, 1 to 5 marks, multi-line and very long text, `<b>x</b>` model answer
+ *   /exams/e18/print                small MCQ exam
+ *   /exams/e16/print?mockKey=hidden key hidden (nothing key-related in the payload, available after tomorrow)
+ *   /exams/e16/print?mockKey=leak   key hidden, but the payload (wrongly) still carries the key fields
+ */
+function seedPrintFixtures() {
+  const long = "A very long question that keeps going so that it must wrap across several lines on the printed page and never be clipped at the edge of the sheet: " + "lorem ipsum dolor sit amet ".repeat(12);
+  const sixty: Question[] = Array.from({ length: 60 }, (_, i) => ({ ...makeQuestion(1600 + i, ((i % 5) + 1) as Marks, "mcq"), id: `p${i + 1}` }));
+  sixty[1] = { ...sixty[1], text: "<b>x</b> stays literal", options: ["<b>x</b>", "<i>y</i>", "Option C", "Option D"], correctIndex: 0 };
+  sixty[6] = { ...sixty[6], text: long };
+  const free: Question[] = [1, 2, 3, 4, 5, 3, 2, 5].map((m, i) => ({ ...makeQuestion(1700 + i, m as Marks, "free"), id: `f${i + 1}` }));
+  free[1] = { ...free[1], text: "<b>Explain</b> osmosis.\nGive one example.", modelAnswer: "<i>Water</i> moves across a membrane." };
+  free[2] = { ...free[2], text: long };
+  const make = (id: string, title: string, type: ExamType, questions: Question[]): MockExam => ({
+    id, title, type, closesAt: iso(Date.now() + 2 * 24 * HOUR), maxPeeks: 0,
+    createdBy: { id: demoUser.id, name: demoUser.name }, questions, mine: true, unlisted: true, attempt: null, assigned: [],
+  });
+  state.exams.push(
+    make("e16", "Print demo: 60 questions", "mcq", sixty),
+    make("e17", "Print demo: free text", "free", free),
+    make("e18", "Print demo: small multiple choice", "mcq", Array.from({ length: 5 }, (_, i) => ({ ...makeQuestion(1800 + i, ((i % 3) + 1) as Marks, "mcq"), id: `s${i + 1}` }))),
+  );
+}
 seedExams();
 seedTakeFixtures();
 seedResultFixtures();
+seedPrintFixtures();
 
 const json = (status: number, body: unknown, headers: Record<string, string> = {}) =>
   new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json", ...headers } });
@@ -492,12 +520,14 @@ export function mockFetch(method: string, rawPath: string, body: unknown, idempo
         exam.closesAt = iso(Date.now() + closeIn * 1000);
       }
       if (exam.closingDemo) exam.closesAt = iso(Date.now() - 20_000); // stay inside the grace window
-      const vis = keyVisible(exam);
+      // Mock-only page-URL flag for the print fixtures (see seedPrintFixtures): hidden | leak.
+      const keyFlag = ["e16", "e17", "e18"].includes(exam.id) ? stickyFlag("mockKey") : null;
+      const vis = keyFlag === "hidden" || keyFlag === "leak" ? false : keyVisible(exam);
       return json(200, {
         serverTime: st(),
         exam: { id: exam.id, title: exam.title, type: exam.type, totalMarks: totalMarks(exam), closesAt: exam.closesAt,
           acceptingUntil: acceptingUntil(exam), maxPeeks: exam.maxPeeks, createdBy: exam.createdBy,
-          questions: keyedQuestions(exam, vis).map((q) => { const c = { ...q }; delete c.sourceDocId; delete c.sourceDocName; return c; }) },
+          questions: keyedQuestions(exam, vis || keyFlag === "leak").map((q) => { const c = { ...q }; delete c.sourceDocId; delete c.sourceDocName; return c; }) },
         attempt: exam.attempt, keyVisible: vis, acceptingUntil: acceptingUntil(exam),
       });
     }
