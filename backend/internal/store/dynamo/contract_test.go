@@ -1,6 +1,7 @@
 package dynamo
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -37,4 +38,13 @@ func TestExamStoreContract(t *testing.T) {
 
 func TestAttemptStoreContract(t *testing.T) {
 	storetest.RunAttemptStoreSuite(t, func(t *testing.T) store.AttemptStore { s, _ := newStores(); return s })
+}
+
+func TestUsageStoreContract(t *testing.T) {
+	storetest.RunUsageStoreSuite(t, func(t *testing.T) storetest.UsageJobStore {
+		s, _ := newStores()
+		s.Now = func() time.Time { return storetest.T0 }
+		s.sleep = func(context.Context, time.Duration) error { return nil }
+		return s
+	})
 }

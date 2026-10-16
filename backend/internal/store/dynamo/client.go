@@ -59,6 +59,7 @@ var (
 	_ store.JobStore     = (*Stores)(nil)
 	_ store.ExamStore    = (*Stores)(nil)
 	_ store.AttemptStore = (*Stores)(nil)
+	_ store.UsageStore   = (*Stores)(nil)
 )
 
 // New returns Stores over api using tables "<stage>-users", "<stage>-documents" and "<stage>-jobs".

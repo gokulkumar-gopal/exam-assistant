@@ -62,11 +62,12 @@ func buildWorker(cfg config.Config, awsCfg aws.Config) (*gen.Worker, error) {
 	}
 	stores := dynamo.New(dynamodb.NewFromConfig(awsCfg), cfg.Stage)
 	return &gen.Worker{
-		Jobs:  stores,
-		Docs:  stores,
-		Blob:  docs.NewS3Blob(awsCfg, cfg.S3Bucket),
-		Gens:  providers.New(cfg),
-		Clock: clock.Real{},
+		Jobs:     stores,
+		Counters: stores,
+		Docs:     stores,
+		Blob:     docs.NewS3Blob(awsCfg, cfg.S3Bucket),
+		Gens:     providers.New(cfg),
+		Clock:    clock.Real{},
 		Cfg: gen.WorkerConfig{
 			MaxPerCall: cfg.GenMaxPerCall, Effort: cfg.LLMEffort, PromptVersion: prompt.PromptVersion,
 			CallTimeout: time.Duration(cfg.LLMTimeoutSeconds) * time.Second, MaxTotalBytes: cfg.GenMaxTotalBytes,

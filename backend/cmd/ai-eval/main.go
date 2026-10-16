@@ -248,7 +248,7 @@ func evaluate(ctx context.Context, factory gen.GeneratorFactory, m gen.Model, fi
 	jobs, docStore, blob := memory.NewJobStore(clk), memory.NewDocStore(clk), docs.NewMemBlob()
 	var cur *tracker
 	w := &gen.Worker{
-		Jobs: jobs, Docs: docStore, Blob: blob, Clock: clk,
+		Jobs: jobs, Counters: jobs, Docs: docStore, Blob: blob, Clock: clk,
 		Gens: func(id string) (gen.Generator, error) {
 			g, err := factory(id)
 			if err != nil {

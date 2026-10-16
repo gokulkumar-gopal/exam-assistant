@@ -107,10 +107,14 @@ type JobFinish struct {
 	Usage         JobUsage
 }
 
-// JobSummary is the owner-index projection of a job.
+// JobSummary is an index projection of a job. The owner-index fills ID, Status, Kind and the
+// times; the day-index (RecentToday) also fills Model and the token, cost and call totals
+// of Usage, and leaves the rest of Usage zero.
 type JobSummary struct {
 	ID, Status, Kind     string
 	CreatedAt, UpdatedAt time.Time
+	Model                string
+	Usage                JobUsage
 }
 
 // Question is one generated question (backend-spec 6.1).

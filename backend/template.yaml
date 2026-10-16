@@ -206,7 +206,7 @@ Resources:
           Projection: { ProjectionType: INCLUDE, NonKeyAttributes: [status, createdAt, updatedAt, kind] }
         - IndexName: day-index                              # the AI usage page lists today's jobs without a Scan
           KeySchema: [{ AttributeName: day, KeyType: HASH }, { AttributeName: createdAt, KeyType: RANGE }]
-          Projection: { ProjectionType: INCLUDE, NonKeyAttributes: [status, model, kind, costMicros, calls, inTok, outTok, cacheReadTok, cacheWriteTok] }
+          Projection: { ProjectionType: INCLUDE, NonKeyAttributes: [status, updatedAt, model, kind, costMicros, calls, inTok, outTok, cacheReadTok, cacheWriteTok] }
 
 Outputs:
   FunctionUrl:
