@@ -420,7 +420,7 @@ func (w *Worker) generate(ctx context.Context, job store.Job, st *runState) ([]s
 					st.addFailed(store.FailedSource{DocID: d.ID, Name: d.Name, Reason: modelSkippedReason})
 				}
 			}
-			callKept, bad := validate(out.Questions, CallSpec{Type: job.Request.Type, Marks: m}, byLabel, avoid, newID)
+			callKept, bad, _ := validate(out.Questions, CallSpec{Type: job.Request.Type, Marks: m}, byLabel, avoid, newID)
 			dropped += bad
 			if extra := len(callKept) - n; extra > 0 {
 				// More valid questions than asked: keep the first n (AI-spec 7.2 wants exactly the count).
@@ -442,9 +442,6 @@ func (w *Worker) generate(ctx context.Context, job store.Job, st *runState) ([]s
 				return nil, &UserError{Message: ShortfallMessage}
 			}
 		}
-	}
-	if len(kept) == 0 {
-		return nil, errors.New("generator returned no usable questions")
 	}
 	return kept, nil
 }

@@ -980,7 +980,7 @@ func TestFakeGeneratorOutputSurvivesValidation(t *testing.T) {
 			out, _ := FakeGenerator{}.Generate(context.Background(), GenInput{
 				Sources: []SourceFile{{Label: "doc-1"}, {Label: "doc-2"}}, Type: typ, Marks: 3, Count: 15, Avoid: avoid,
 			})
-			kept, dropped := Validate(out.Questions, CallSpec{Type: typ, Marks: 3}, labels, avoid)
+			kept, dropped, _ := Validate(out.Questions, CallSpec{Type: typ, Marks: 3}, labels, avoid)
 			if len(kept) != 15 || dropped != 0 {
 				t.Fatalf("%s call %d: kept=%d dropped=%d", typ, call, len(kept), dropped)
 			}

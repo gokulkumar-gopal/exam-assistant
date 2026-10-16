@@ -41,12 +41,35 @@ type CallSpec struct {
 	Marks int
 }
 
+// htmlElements are the element names whose opening tags are rejected (AI-spec 7.1 "no HTML
+// tags"). A bare "<name" that is not one of these (List<String>, "a<b and c>d") is text.
+var htmlElements = []string{
+	"a", "abbr", "address", "area", "article", "aside", "audio", "b", "base", "bdi", "bdo", "big",
+	"blockquote", "body", "br", "button", "canvas", "caption", "center", "cite", "code", "col",
+	"colgroup", "data", "datalist", "dd", "del", "details", "dfn", "dialog", "div", "dl", "dt",
+	"em", "embed", "fieldset", "figcaption", "figure", "font", "footer", "form", "frame",
+	"frameset", "h1", "h2", "h3", "h4", "h5", "h6", "head", "header", "hr", "html", "i", "iframe",
+	"img", "input", "ins", "kbd", "label", "legend", "li", "link", "main", "map", "mark", "marquee",
+	"math", "menu", "meta", "meter", "nav", "noscript", "object", "ol", "optgroup", "option",
+	"output", "p", "param", "picture", "pre", "progress", "q", "rp", "rt", "ruby", "s", "samp",
+	"script", "section", "select", "slot", "small", "source", "span", "strike", "strong", "style",
+	"sub", "summary", "sup", "svg", "table", "tbody", "td", "template", "textarea", "tfoot", "th",
+	"thead", "time", "title", "tr", "track", "tt", "u", "ul", "var", "video", "wbr",
+}
+
 var (
-	// htmlTag matches an opening, closing or self-closing tag, or a comment or doctype:
-	// "<b>", "</div>", "<br/>", `<img src=x>`, "<!-- x -->". A bare "<" in "3 < 5" is not one.
-	htmlTag = regexp.MustCompile(`(?s)</?[A-Za-z][A-Za-z0-9:-]*(?:\s[^<>]*)?/?>|<![^>]*>|<\?[^>]*\?>`)
-	// Entities such as &lt; are plain text and are kept as they are (AI-spec 7.1 asks only for
-	// "no HTML tags or Markdown fences"); nothing here decodes them.
+	// htmlTag matches, case-insensitively:
+	//   - a closing tag: "</name>" or "</name ...>";
+	//   - an opening or self-closing tag whose name is in htmlElements and which is followed
+	//     by ">" or "/>" (optional whitespace before it: "<SCRIPT >", "<br />"), or by whitespace (a space, tab or newline) and, before the
+	//     closing ">", at least one attr= pair: "<b>", "<br/>", "<img src=x>", "<IMG\nSRC=x>";
+	//   - a comment, doctype or CDATA ("<!...>") or a processing instruction ("<?...?>").
+	// Letter inequalities such as "a<b and c>d" or "x<5 and y>3" are not tags. So is "<i and b>c":
+	// "<i" is an element name but has neither ">" right after it nor an attr= pair.
+	htmlTag = regexp.MustCompile(`(?is)</[a-z][a-z0-9:-]*(?:\s[^<>]*)?>` +
+		`|<(?:` + strings.Join(htmlElements, "|") + `)(?:\s*/?>|\s[^<>]*?[a-z_:][a-z0-9_:.-]*\s*=[^<>]*>)` +
+		`|<![^>]*>|<\?[^>]*\?>`)
+	// Entities such as &lt; are plain text and are kept as they are; nothing here decodes them.
 )
 
 // plainOK reports whether s has no HTML tag and no Markdown code fence.
@@ -60,17 +83,19 @@ func cleanField(s string) string { return strings.TrimSpace(CleanText(s)) }
 // Validate applies the per-question checks of AI-spec 7.1 to one call's output and returns the
 // questions that passed, in input order, with new ULIDs, SourceDocID and SourceDocName mapped
 // from labels, and cleaned text. dropped is the number of questions removed (each counted
-// once). avoid holds texts of questions already in the job or the exam: a question that
-// duplicates one, or an earlier kept question of this call, is dropped (the first one stays).
+// once) and droppedTexts their cleaned texts in input order (a dropped question with no text
+// has none), so a follow-up call can put them in Avoid (AI-spec 7.4). avoid holds texts of
+// questions already in the job or the exam: a question that duplicates one, or an earlier kept
+// question of this call, is dropped (the first one stays).
 //
 // Control and invisible characters are stripped, not grounds for dropping. A question whose
 // shape does not match req.Type (an MCQ with a model answer, free text with options or a
 // correctIndex) fails the "correct type" check. The model's own ids are never read.
-func Validate(raw []RawQuestion, req CallSpec, labels map[string]store.Document, avoid []string) (kept []store.Question, dropped int) {
+func Validate(raw []RawQuestion, req CallSpec, labels map[string]store.Document, avoid []string) (kept []store.Question, dropped int, droppedTexts []string) {
 	return validate(raw, req, labels, avoid, func() string { return ulid.Make().String() })
 }
 
-func validate(raw []RawQuestion, req CallSpec, labels map[string]store.Document, avoid []string, newID func() string) (kept []store.Question, dropped int) {
+func validate(raw []RawQuestion, req CallSpec, labels map[string]store.Document, avoid []string, newID func() string) (kept []store.Question, dropped int, droppedTexts []string) {
 	idx := newDupIndex(len(avoid) + len(raw))
 	for _, a := range avoid {
 		idx.add(a)
@@ -82,13 +107,16 @@ func validate(raw []RawQuestion, req CallSpec, labels map[string]store.Document,
 		}
 		if !ok {
 			dropped++
+			if t := cleanField(r.Text); t != "" {
+				droppedTexts = append(droppedTexts, t)
+			}
 			continue
 		}
 		idx.add(c.Text)
 		q, _ := c.toQuestion(labels, newID) // the label was checked
 		kept = append(kept, q)
 	}
-	return kept, dropped
+	return kept, dropped, droppedTexts
 }
 
 // checkQuestion returns the cleaned question and whether it passes every check except
@@ -113,7 +141,7 @@ func checkQuestion(r RawQuestion, req CallSpec, labels map[string]store.Document
 		seen := map[string]bool{}
 		for _, o := range r.Options {
 			o = cleanField(o)
-			key := strings.ToLower(o)
+			key := strings.ToLower(strings.ToUpper(o)) // Unicode case folding, no extra dependency
 			if o == "" || utf8.RuneCountInString(o) > maxOptionRunes || !plainOK(o) || seen[key] {
 				return r, false
 			}
