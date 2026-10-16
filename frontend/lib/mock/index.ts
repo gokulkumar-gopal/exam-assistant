@@ -98,7 +98,7 @@ function keyedQuestions(e: MockExam, visible: boolean): Question[] {
   });
 }
 
-export function mockFetch(method: string, rawPath: string, body: unknown, idempotencyKey?: string): Response {
+export function mockFetch(method: string, rawPath: string, body: unknown, idempotencyKey?: string, resumed = false): Response | Promise<Response> {
   const [path, qs = ""] = rawPath.split("?");
   const query = new URLSearchParams(qs);
   const as = <T>() => (body ?? {}) as T;
@@ -271,9 +271,19 @@ export function mockFetch(method: string, rawPath: string, body: unknown, idempo
     const q = typeof window === "undefined" ? new URLSearchParams() : new URLSearchParams(window.location.search);
     const trigger = q.get("mockPublish");
     const g = globalThis as unknown as { __mockPublishLog?: { key: string | null; body: unknown; id?: string }[] };
-    const entry: { key: string | null; body: unknown; id?: string } = { key: idempotencyKey ?? null, body };
-    (g.__mockPublishLog ??= []).push(entry);
-    const call = ++state.publishCalls;
+    const entry: { key: string | null; body: unknown; id?: string } =
+      (resumed && g.__mockPublishLog?.[g.__mockPublishLog.length - 1]) || { key: idempotencyKey ?? null, body };
+    if (!resumed) (g.__mockPublishLog ??= []).push(entry);
+    const call = resumed ? state.publishCalls : ++state.publishCalls;
+    // ?mockPublish=slow (3 s then succeed) or slowFail (3 s, then a network failure on the first call only).
+    if (trigger?.startsWith("slow") && !resumed) {
+      return new Promise((res, rej) => setTimeout(() => {
+        try {
+          if (trigger === "slowFail" && call === 1) throw new TypeError("mock network failure");
+          res(mockFetch(method, rawPath, body, idempotencyKey, true));
+        } catch (e) { rej(e); }
+      }, 3000));
+    }
     if (trigger === "failOnce" && call === 1) throw new TypeError("mock network failure");
     if (trigger === "422") return err(422, "validation", "The closing time must be at least 1 minute from now.", { closesAt: "too soon" });
     if (trigger === "403") return err(403, "forbidden", "You can't assign exams to that account.");

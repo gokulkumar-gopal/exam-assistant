@@ -18,12 +18,14 @@ interface Props {
   regenerating: boolean;
   /** Another regenerate or add is in flight. */
   locked: boolean;
+  /** A publish is in flight or done: nothing may change. */
+  frozen: boolean;
   onSave: (q: Question) => void;
   onRegenerate: () => void;
   onDelete: () => void;
 }
 
-export function QuestionCard({ index, question, type, regenerating, locked, onSave, onRegenerate, onDelete }: Props) {
+export function QuestionCard({ index, question, type, regenerating, locked, frozen, onSave, onRegenerate, onDelete }: Props) {
   const [editing, setEditing] = useState(false);
   const [text, setText] = useState(question.text);
   const [options, setOptions] = useState<string[]>(question.options ?? []);
@@ -65,7 +67,7 @@ export function QuestionCard({ index, question, type, regenerating, locked, onSa
     setEditing(false);
   };
 
-  const busy = regenerating;
+  const busy = regenerating || frozen;
   return (
     <li className="card p-4" aria-busy={regenerating || undefined}>
       <div className="mb-2 flex flex-wrap items-center gap-x-3 gap-y-1">
@@ -82,7 +84,7 @@ export function QuestionCard({ index, question, type, regenerating, locked, onSa
         )}
       </div>
       {editing ? (
-        <div className="flex flex-col gap-3">
+        <fieldset disabled={frozen} className="m-0 flex min-w-0 flex-col gap-3 border-0 p-0">
           <div>
             <label htmlFor={`${id}-text`} className="mb-1 block font-semibold">Question {index}</label>
             <textarea id={`${id}-text`} className={FIELD} rows={3} value={text} onChange={(e) => setText(e.target.value)} />
@@ -126,7 +128,7 @@ export function QuestionCard({ index, question, type, regenerating, locked, onSa
             <button type="button" className="btn-primary" onClick={save}>Save</button>
             <button type="button" className="btn-secondary" onClick={() => { refocus.current = true; setEditing(false); setError(null); }}>Cancel</button>
           </div>
-        </div>
+        </fieldset>
       ) : (
         <>
           <p className="whitespace-pre-wrap break-words font-semibold">{index}. {question.text}</p>

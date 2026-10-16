@@ -19,7 +19,7 @@ export interface PublishForm {
 }
 
 export function PublishBar({
-  questions, type, form, marksOk, target, pending, extra, onChangeQuestion, onPublished,
+  questions, type, form, marksOk, target, pending, locked, onLock, extra, onChangeQuestion, onPublished,
 }: {
   questions: Question[]; // in the order shown, which is the order published
   type: ExamType;
@@ -27,6 +27,9 @@ export function PublishBar({
   marksOk: boolean;
   target: number;
   pending: boolean;
+  /** Publish in flight or done; the page locks every control while true. */
+  locked: boolean;
+  onLock: (locked: boolean) => void;
   extra?: ReactNode;
   onChangeQuestion: (q: Question) => void;
   onPublished: () => void;
@@ -48,13 +51,13 @@ export function PublishBar({
     : form.assignError ? "Fix the Assign to list to publish."
     : missing > 0 ? "Every question needs an answer in the answer key."
     : null;
-  const locked = busy || done !== null;
   const disabled = hint !== null || pending || locked;
 
   const publish = async () => {
     if (inflight.current || disabled || !form.deadline) return;
     inflight.current = true;
     setBusy(true);
+    onLock(true);
     setError(null);
     try {
       const body = buildPublishBody({
@@ -72,6 +75,7 @@ export function PublishBar({
     } catch (e) {
       if (e instanceof ApiError && e.status !== 0) setError(e.message);
       else toast.error("Couldn't reach the server. Try again.");
+      onLock(false);
       setTimeout(() => btn.current?.focus(), 0);
     } finally {
       inflight.current = false;
@@ -81,6 +85,7 @@ export function PublishBar({
 
   return (
     <>
+      {busy && <p role="status" className="mt-4 text-[13px] text-muted">Publishing…</p>}
       {showKey && <AnswerKeyReview questions={questions} type={type} disabled={locked} onChange={onChangeQuestion} />}
       <div aria-live="polite">
         {error && <div className="mt-4"><Notice tone="bad">{error}</Notice></div>}

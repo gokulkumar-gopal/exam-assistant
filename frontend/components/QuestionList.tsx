@@ -18,10 +18,14 @@ interface Props {
   result: GeneratedResult;
   shuffle: boolean;
   form: PublishForm;
+  /** A publish is in flight or done (owned by the page, which also locks the form). */
+  locked: boolean;
+  onLock: (locked: boolean) => void;
+  onCount: (n: number) => void;
   onRegenerateAll: () => void;
 }
 
-export function QuestionList({ result, shuffle, form, onRegenerateAll }: Props) {
+export function QuestionList({ result, shuffle, form, locked, onLock, onCount, onRegenerateAll }: Props) {
   const { params, model } = result;
   const [questions, setQuestions] = useState<Question[]>(result.questions);
   // Held in state so the shuffled order is stable across renders.
@@ -58,6 +62,8 @@ export function QuestionList({ result, shuffle, form, onRegenerateAll }: Props) 
     // Still not focused (or nothing usable): the list heading.
     if (!el || document.activeElement !== el) headingRef.current?.focus();
   }, [questions]);
+
+  useEffect(() => { onCount(questions.length); }, [questions.length, onCount]);
 
   // Unsaved changes: warn while generated and unpublished. This must not cancel jobs.
   const published = useRef(false);
@@ -152,7 +158,7 @@ export function QuestionList({ result, shuffle, form, onRegenerateAll }: Props) 
           <Notice>
             <span className="flex flex-wrap items-center gap-x-3 gap-y-1">
               <span>You deleted {params.target - total} marks. Add a {gap.k}-mark question?</span>
-              <button type="button" className="btn-secondary" onClick={() => void add(gap.k)} disabled={pending !== null}>
+              <button type="button" className="btn-secondary" onClick={() => void add(gap.k)} disabled={pending !== null || locked}>
                 {pending === "add" ? "Adding…" : "Add"}
               </button>
             </span>
@@ -169,6 +175,7 @@ export function QuestionList({ result, shuffle, form, onRegenerateAll }: Props) 
             type={params.type}
             regenerating={pending === q.id}
             locked={pending !== null}
+            frozen={locked}
             onSave={(nq) => { update(questionsRef.current.map((x) => (x.id === nq.id ? nq : x))); announce("Question saved."); }}
             onRegenerate={() => void regenerate(q)}
             onDelete={() => {
@@ -187,9 +194,11 @@ export function QuestionList({ result, shuffle, form, onRegenerateAll }: Props) 
         marksOk={fs.generateEnabled}
         target={params.target}
         pending={pending !== null}
+        locked={locked}
+        onLock={onLock}
         onChangeQuestion={(nq) => update(questionsRef.current.map((x) => (x.id === nq.id ? nq : x)))}
         onPublished={() => { published.current = true; }}
-        extra={<button type="button" className="btn-secondary" onClick={onRegenerateAll} disabled={pending !== null}>Regenerate all</button>}
+        extra={<button type="button" className="btn-secondary" onClick={onRegenerateAll} disabled={pending !== null || locked}>Regenerate all</button>}
       />
     </section>
   );

@@ -10,6 +10,7 @@ import {
   footerState, parseSources, questionCount, sourceLimitError, totalMarks, type Counts,
 } from "@/lib/totals";
 import { defaultModelId } from "@/lib/models";
+import { PEEKS_UI } from "@/lib/features";
 import { PRESET_SECONDS, parseEmails, type Deadline } from "@/lib/publish";
 import type { PublishForm } from "@/components/PublishBar";
 import { Minus, Plus } from "lucide-react";
@@ -76,6 +77,8 @@ function CreateInner() {
   const [closes, setCloses] = useState("86400");
   const [closesAt, setClosesAt] = useState("");
   const [assign, setAssign] = useState("");
+  const [listCount, setListCount] = useState(0); // questions currently in the list
+  const [publishLocked, setPublishLocked] = useState(false); // publish in flight or done
   const [peeksEdited, setPeeksEdited] = useState<number | null>(null); // null: follows the default
 
   // Page state only. undefined means "send no model" (models failed, empty, or not loaded).
@@ -235,7 +238,8 @@ function CreateInner() {
 
   const assignees = useMemo(() => parseEmails(assign, user?.role), [assign, user?.role]);
   // Peeks default to 3 for a personal practice exam and 0 when people are assigned, until the user edits it.
-  const maxPeeks = peeksEdited ?? (assignees.emails.length === 0 ? 3 : 0);
+  const peeksCap = result ? Math.min(10, listCount) : 10;
+  const maxPeeks = Math.min(peeksEdited ?? (assignees.emails.length === 0 ? 3 : 0), peeksCap);
   // The deadline is the server's to compute (preset) or the user's chosen time (picker); never the device clock.
   const deadline: Deadline | null = useMemo(() => {
     if (closes !== "custom") return PRESET_SECONDS.includes(Number(closes)) ? { closesInSeconds: Number(closes) } : null;
@@ -246,7 +250,7 @@ function CreateInner() {
     title, deadline, assigneeEmails: assignees.emails, assignError: assignees.error, maxPeeks,
   };
 
-  const generateEnabled = fs.generateEnabled && !limitError && !running;
+  const generateEnabled = fs.generateEnabled && !limitError && !running && !publishLocked;
 
   const onCancel = useCallback(() => {
     runId.current++; // ignore anything the in-flight run still reports
@@ -263,7 +267,7 @@ function CreateInner() {
     <main className="page pt-5">
       <h1>Create exam</h1>
       <p className="mb-4 text-[13px] text-muted">Pick sources, set the marks, generate.</p>
-      <fieldset disabled={running} className="m-0 min-w-0 border-0 p-0">
+      <fieldset disabled={running || publishLocked} className="m-0 min-w-0 border-0 p-0">
       <div className="grid grid-cols-1 items-start gap-4 min-[720px]:grid-cols-[260px_minmax(0,1fr)]">
         <SourcesCard
           docs={docs}
@@ -272,7 +276,7 @@ function CreateInner() {
           error={limitError}
           loadError={loadError}
           onRetry={() => void load()}
-          disabled={running}
+          disabled={running || publishLocked}
         />
         <div className="flex flex-col gap-4">
           <Card id="type-h" title="Question type">
@@ -320,7 +324,7 @@ function CreateInner() {
               />
             ))}
             <label className="mt-2 flex min-h-10 cursor-pointer items-center gap-2.5">
-              <Checkbox checked={shuffle} onCheckedChange={(v) => setShuffle(v === true)} disabled={running} />
+              <Checkbox checked={shuffle} onCheckedChange={(v) => setShuffle(v === true)} disabled={running || publishLocked} />
               <span>Shuffle order (default: low to high marks)</span>
             </label>
           </Card>
@@ -361,6 +365,7 @@ function CreateInner() {
                   {assignHelper(user?.role)}. Leave empty for a personal practice exam.
                 </p>
               </div>
+              {PEEKS_UI && (
               <div>
                 <span id="peeks-l" className="mb-1 block font-semibold">Peeks allowed</span>
                 <div role="group" aria-labelledby="peeks-l" className="flex items-center gap-2.5">
@@ -368,12 +373,13 @@ function CreateInner() {
                     <Minus className="size-4" aria-hidden />
                   </button>
                   <span className="w-[26px] text-center font-semibold tabular-nums" aria-live="polite">{maxPeeks}</span>
-                  <button type="button" className={PEEK_BTN} aria-label="Increase peeks allowed" disabled={maxPeeks >= 10} onClick={() => setPeeksEdited(Math.min(10, maxPeeks + 1))}>
+                  <button type="button" className={PEEK_BTN} aria-label="Increase peeks allowed" disabled={maxPeeks >= peeksCap} onClick={() => setPeeksEdited(Math.min(peeksCap, maxPeeks + 1))}>
                     <Plus className="size-4" aria-hidden />
                   </button>
                 </div>
                 <p className="mt-1 text-[13px] text-muted">Takers can reveal an answer mid-exam for half marks. 0 turns it off.</p>
               </div>
+              )}
             </div>
           </Card>
           {models.length > 0 && (
@@ -398,6 +404,9 @@ function CreateInner() {
             result={result}
             shuffle={shuffle}
             form={publishForm}
+            locked={publishLocked}
+            onLock={setPublishLocked}
+            onCount={setListCount}
             onRegenerateAll={() => void onGenerate(result)}
           />
         )}

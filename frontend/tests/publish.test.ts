@@ -98,7 +98,7 @@ describe("buildPublishBody", () => {
   ];
   it("strips ids, sends the deadline as given and no key-visibility field", () => {
     const b = buildPublishBody({
-      title: " Quiz ", type: "mcq", deadline: { closesInSeconds: 3600 }, assigneeEmails: ["a@x.com"], maxPeeks: 9, questions: qs,
+      title: " Quiz ", type: "mcq", deadline: { closesInSeconds: 3600 }, assigneeEmails: ["a@x.com"], maxPeeks: 1, questions: qs,
     });
     expect(b).toEqual({
       title: "Quiz", type: "mcq", closesInSeconds: 3600, assigneeEmails: ["a@x.com"], maxPeeks: 1,
@@ -114,6 +114,14 @@ describe("buildPublishBody", () => {
     expect(b.closesAt).toBe("2026-10-20T12:00:00.000Z");
     expect("closesInSeconds" in b).toBe(false);
     expect(b.questions[0]).toEqual({ marks: 1, text: "Why?", modelAnswer: "Because.", sourceDocId: "", sourceDocName: "" });
+  });
+});
+
+describe("buildPublishBody peeks gate", () => {
+  const f = { title: "t", type: "free" as const, deadline: { closesInSeconds: 3600 }, assigneeEmails: [], maxPeeks: 2, questions: [{ id: "q", marks: 1 as const, text: "x", modelAnswer: "y" }] };
+  it("sends maxPeeks when the peeks UI is on and omits it when off", () => {
+    expect(buildPublishBody(f, true).maxPeeks).toBe(2);
+    expect("maxPeeks" in buildPublishBody(f, false)).toBe(false);
   });
 });
 

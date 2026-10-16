@@ -1,5 +1,6 @@
 // Publishing an exam (fs 6.4, bs 8.5): the request body, assignee parsing, and an idempotent publisher.
 import { api as sharedApi } from "./api";
+import { PEEKS_UI } from "./features";
 import type { CreateExamBody, CreateExamResponse, ExamType, NewQuestion, Question, Role } from "./types";
 
 export type PublishBody = CreateExamBody;
@@ -26,7 +27,7 @@ const clip = (s: string | undefined) => (s ?? "").slice(0, 120);
 
 export function buildPublishBody(f: {
   title: string; type: ExamType; deadline: Deadline; assigneeEmails: string[]; maxPeeks: number; questions: Question[];
-}): PublishBody {
+}, peeksUi: boolean = PEEKS_UI): PublishBody {
   const questions: NewQuestion[] = f.questions.map((q) => {
     const out: NewQuestion = { marks: q.marks, text: q.text, sourceDocId: clip(q.sourceDocId), sourceDocName: clip(q.sourceDocName) };
     if (f.type === "mcq") {
@@ -37,9 +38,10 @@ export function buildPublishBody(f: {
     }
     return out;
   });
+  // With peeks cut, maxPeeks is omitted and the server applies its default.
   return {
     title: f.title.trim(), type: f.type, ...f.deadline, assigneeEmails: f.assigneeEmails,
-    maxPeeks: Math.max(0, Math.min(f.maxPeeks, f.questions.length)), questions,
+    ...(peeksUi ? { maxPeeks: f.maxPeeks } : {}), questions,
   };
 }
 
