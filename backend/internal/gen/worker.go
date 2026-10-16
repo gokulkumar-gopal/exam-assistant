@@ -431,6 +431,9 @@ func (w *Worker) plan(job store.Job) []CallSpec {
 			counts[m] = n
 		}
 	}
+	if job.Kind == store.KindRegenerate {
+		counts = map[int]int{job.Request.Marks: 1} // one question of the given marks (backend-spec 7.6)
+	}
 	plan := PlanCalls(counts, w.Cfg.MaxPerCall)
 	for i := range plan {
 		plan[i].Type = job.Request.Type

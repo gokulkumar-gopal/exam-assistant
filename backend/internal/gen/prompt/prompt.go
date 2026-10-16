@@ -14,12 +14,12 @@ import (
 
 // PromptVersion is stored on every job (AI-spec 11). Bump it when System, Instruction or
 // Schema change in a way that can change the output.
-const PromptVersion = "2026-10-v1"
+const PromptVersion = "2026-10-v2"
 
 // maxAvoidRunes bounds one Avoid item, and maxAvoidItems the whole list, so a long exam
 // cannot blow up the per-call part of the request.
 const (
-	maxAvoidRunes = 300
+	maxAvoidRunes = 600
 	maxAvoidItems = 200
 )
 

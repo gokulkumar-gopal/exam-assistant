@@ -226,3 +226,35 @@ func TestFactoryGeneratorsAreTokenCounters(t *testing.T) {
 		}
 	}
 }
+
+// Regenerate sends the exam's question texts as Avoid: the recorded request body of each
+// adapter must carry them, cleaned and quoted under the Avoid heading, and nothing else of them.
+func TestAvoidReachesBothAdaptersRequestBody(t *testing.T) {
+	ant, gem := newRecorder(t), newRecorder(t)
+	f := newFactory(bothCfg(), overrides{AnthropicBaseURL: ant.srv.URL, GeminiBaseURL: gem.srv.URL})
+	avoid := []string{"What is osmosis?", "Define\ndiffusion in cells"}
+	for _, tc := range []struct {
+		model string
+		rec   *recorder
+	}{{"claude-sonnet-5-5", ant}, {"gemini-3.1-flash-lite", gem}} {
+		g, err := f(tc.model)
+		if err != nil {
+			t.Fatal(err)
+		}
+		in := input(tc.model)
+		in.Avoid = avoid
+		if _, err := g.Generate(context.Background(), in); err != nil {
+			t.Fatal(err)
+		}
+		raw, _ := json.Marshal(tc.rec.last(t).Body)
+		body := string(raw)
+		for _, want := range []string{"Avoid list", "What is osmosis?", "Define diffusion in cells"} {
+			if !strings.Contains(body, want) {
+				t.Errorf("%s: request body lacks %q", tc.model, want)
+			}
+		}
+		if strings.Contains(body, "an old question") {
+			t.Errorf("%s: body carries a stale avoid text", tc.model)
+		}
+	}
+}

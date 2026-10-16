@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/gokulkumar/exam-assistant/backend/internal/config"
 	"github.com/gokulkumar/exam-assistant/backend/internal/docs"
+	"github.com/gokulkumar/exam-assistant/backend/internal/gen"
 )
 
 func localCfg() config.Config {
@@ -214,3 +216,40 @@ func TestBaseURLFromAddr(t *testing.T) {
 }
 
 func itoa(n int) string { b, _ := json.Marshal(n); return string(b) }
+
+func TestPickFactory(t *testing.T) {
+	logger := slog.New(slog.NewJSONHandler(io.Discard, nil))
+	cfg := localCfg() // Providers: anthropic, no keys
+
+	if _, err := pickFactory(cfg, logger, false)("claude-haiku-4-5"); !errors.Is(err, gen.ErrGeneratorsNotConfigured) {
+		t.Errorf("no key, no flag: err = %v, want ErrGeneratorsNotConfigured", err)
+	}
+	g, err := pickFactory(cfg, logger, true)("claude-haiku-4-5")
+	if _, ok := g.(gen.FakeGenerator); !ok || err != nil {
+		t.Errorf("-fake-llm: %T, %v", g, err)
+	}
+
+	cfg.LLMAPIKey = "sk-ant-test"
+	g, err = pickFactory(cfg, logger, false)("claude-haiku-4-5")
+	if err != nil || g == nil {
+		t.Fatalf("key set: %v, %v", g, err)
+	}
+	if _, ok := g.(gen.FakeGenerator); ok {
+		t.Error("key set: got the fake generator")
+	}
+	// -fake-llm still wins over a key.
+	if g, _ := pickFactory(cfg, logger, true)("claude-haiku-4-5"); g == nil {
+		t.Error("-fake-llm with a key: nil generator")
+	} else if _, ok := g.(gen.FakeGenerator); !ok {
+		t.Errorf("-fake-llm with a key: %T", g)
+	}
+	// A key of a provider that is not enabled does not count.
+	cfg.LLMAPIKey, cfg.GeminiAPIKey = "", "gem-key"
+	if _, err := pickFactory(cfg, logger, false)("claude-haiku-4-5"); !errors.Is(err, gen.ErrGeneratorsNotConfigured) {
+		t.Errorf("gemini key but gemini not enabled: err = %v", err)
+	}
+	cfg.Providers = []string{"gemini"}
+	if g, err := pickFactory(cfg, logger, false)("gemini-3.1-flash-lite"); err != nil || g == nil {
+		t.Errorf("gemini key and enabled: %v, %v", g, err)
+	}
+}

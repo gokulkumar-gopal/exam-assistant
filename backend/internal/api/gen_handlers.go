@@ -8,6 +8,9 @@ import (
 
 const genBodyCap = 1 << 16
 
+// regenBodyCap leaves room for 60 avoid strings of 600 characters, which can be 4 bytes each.
+const regenBodyCap = 1 << 19
+
 // registerGenRoutes serves the generation endpoints (backend-spec 8.4).
 func registerGenRoutes(rt *routeTable, deps Deps) {
 	rt.handle("POST", "/generate", RequireUser(deps, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -18,6 +21,22 @@ func registerGenRoutes(rt *routeTable, deps Deps) {
 		}
 		u, _ := UserFrom(r.Context())
 		id, err := deps.Gen.Create(r.Context(), u, in)
+		if err != nil {
+			WriteError(w, r, err)
+			return
+		}
+		w.Header().Set("Location", "/generate/"+id)
+		WriteJSON(w, http.StatusAccepted, map[string]string{"jobId": id})
+	})))
+
+	rt.handle("POST", "/generate/regenerate", RequireUser(deps, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var in gen.RegenerateRequest
+		if err := Decode(w, r, &in, regenBodyCap); err != nil {
+			WriteError(w, r, err)
+			return
+		}
+		u, _ := UserFrom(r.Context())
+		id, err := deps.Gen.Regenerate(r.Context(), u, in)
 		if err != nil {
 			WriteError(w, r, err)
 			return
