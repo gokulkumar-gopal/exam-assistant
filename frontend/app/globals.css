@@ -142,13 +142,6 @@
     letter-spacing: -0.3px;
     font-weight: 700;
   }
-  h2 {
-    font-size: 13px;
-    text-transform: uppercase;
-    letter-spacing: 0.6px;
-    font-weight: 700;
-    color: var(--accent);
-  }
   main {
     padding-bottom: 120px;
   }
@@ -167,6 +160,15 @@
 }
 
 @layer components {
+  /* Section label (h2 in fs 3 typography). Opt-in so dialog titles are unaffected. */
+  .h-section {
+    font-size: 13px;
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+    font-weight: 700;
+    color: var(--accent);
+  }
+
   .page {
     max-width: 880px;
     margin-inline: auto;
@@ -191,6 +193,7 @@
     justify-content: center;
     gap: 8px;
     min-height: 40px;
+    min-width: 40px;
     padding: 0 16px;
     border-radius: 8px;
     font-weight: 600;
