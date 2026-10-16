@@ -646,7 +646,7 @@ export function mockFetch(method: string, rawPath: string, body: unknown, idempo
     }
     if (method === "POST" && sub === "reveal") {
     const b = as<RevealBody>();
-      // Test triggers (mock only), sticky from the page URL: ?mockReveal=403 (peeking off) | 409 (no peeks left,
+      // Test triggers (mock only), sticky from the page URL: ?mockReveal=403 (peeking off) | visible (409, key already visible) | 409 (no peeks left,
       // for a question not yet revealed) | closed (409 exam_closed) | fail (network failure) | slow (2 s).
       // Log: globalThis.__mockRevealLog = [{ questionId }] (one entry per request that reached the mock).
       const t = stickyFlag("mockReveal");
@@ -655,6 +655,7 @@ export function mockFetch(method: string, rawPath: string, body: unknown, idempo
       if (t === "fail") throw new TypeError("mock network failure");
       if (t === "403") return err(403, "forbidden", "Peeking is turned off for this exam.");
       if (t === "closed") return err(409, "exam_closed", "This exam is closed.");
+      if (t === "visible") return err(409, "conflict", "The answer is already available.");
       if (t === "409" && !(exam.attempt?.revealed ?? []).some((r) => r.questionId === b.questionId)) return err(409, "conflict", "No peeks left.");
       if (exam.maxPeeks === 0) return err(403, "forbidden", "Peeking is off for this exam.");
       if (keyVisible(exam) || !exam.attempt) return err(409, "conflict", "The answer is already available.");
