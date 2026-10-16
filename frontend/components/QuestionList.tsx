@@ -2,7 +2,7 @@
 // Generated question list (fs 6.4): edit, regenerate, delete, add, shuffle. Questions render as text only.
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { ApiError } from "@/lib/api";
-import { gapNotice, orderQuestions } from "@/lib/exam-order";
+import { firstUsable, gapNotice, orderQuestions } from "@/lib/exam-order";
 import { buildRegenerateBody, GAVE_UP_MESSAGE, pollJob, startRegenerate } from "@/lib/generate";
 import { setGenerated, type GeneratedResult } from "@/lib/generated";
 import { footerState } from "@/lib/totals";
@@ -33,8 +33,13 @@ export function QuestionList({ result, shuffle, title, onRegenerateAll, onPublis
   const ctrls = useRef<Set<AbortController>>(new Set());
   const alive = useRef(true);
   const headingRef = useRef<HTMLHeadingElement>(null);
-  const focusAfter = useRef<string | null>(null); // data-focus value (or "heading") to focus after the next commit
+  const focusAfter = useRef<string[] | null>(null); // data-focus candidates, best first; the heading is the final fallback
   const [say, setSay] = useState({ n: 0, text: "" });
+  /** Focus may move after an async action only if the user has not moved it elsewhere meanwhile. */
+  const focusIsFree = (started: Element | null) => {
+    const a = document.activeElement;
+    return !a || a === document.body || a === started || !a.isConnected;
+  };
   const announce = (text: string) => setSay((s) => ({ n: s.n + 1, text }));
 
   const update = useCallback((next: Question[]) => {
@@ -45,11 +50,14 @@ export function QuestionList({ result, shuffle, title, onRegenerateAll, onPublis
 
   // Cards unmount when deleted or replaced; move focus to a named control after the commit.
   useLayoutEffect(() => {
-    const target = focusAfter.current;
-    if (!target) return;
+    const targets = focusAfter.current;
+    if (!targets) return;
     focusAfter.current = null;
-    if (target === "heading") { headingRef.current?.focus(); return; }
-    document.querySelector<HTMLElement>(`[data-focus="${CSS.escape(target)}"]`)?.focus();
+    const find = (k: string) => document.querySelector<HTMLButtonElement>(`[data-focus="${CSS.escape(k)}"]`);
+    const el = firstUsable(targets.map(find), (e) => e !== null && !e.disabled);
+    el?.focus();
+    // Still not focused (or nothing usable): the list heading.
+    if (!el || document.activeElement !== el) headingRef.current?.focus();
   }, [questions]);
 
   // Unsaved changes: warn while generated and unpublished. This must not cancel jobs.
@@ -98,6 +106,7 @@ export function QuestionList({ result, shuffle, title, onRegenerateAll, onPublis
     if (pending) return;
     setPending(q.id);
     setError(null);
+    const started = document.activeElement;
     const nq = await request(q.marks);
     if (!alive.current) return;
     setPending(null);
@@ -105,7 +114,7 @@ export function QuestionList({ result, shuffle, title, onRegenerateAll, onPublis
     const cur = questionsRef.current;
     // The card may have been deleted while the job ran.
     if (cur.some((x) => x.id === q.id)) {
-      focusAfter.current = `${nq.id}:regen`;
+      if (focusIsFree(started)) focusAfter.current = [`${nq.id}:regen`, `${nq.id}:edit`];
       update(cur.map((x) => (x.id === q.id ? nq : x)));
       announce("Question replaced.");
     }
@@ -115,11 +124,12 @@ export function QuestionList({ result, shuffle, title, onRegenerateAll, onPublis
     if (pending) return;
     setPending("add");
     setError(null);
+    const started = document.activeElement;
     const nq = await request(k as Marks);
     if (!alive.current) return;
     setPending(null);
     if (nq) {
-      focusAfter.current = `${nq.id}:edit`;
+      if (focusIsFree(started)) focusAfter.current = [`${nq.id}:edit`];
       update([...questionsRef.current, nq]);
       announce("Question added.");
     }
@@ -163,8 +173,8 @@ export function QuestionList({ result, shuffle, title, onRegenerateAll, onPublis
             onSave={(nq) => { update(questionsRef.current.map((x) => (x.id === nq.id ? nq : x))); announce("Question saved."); }}
             onRegenerate={() => void regenerate(q)}
             onDelete={() => {
-              const near = shown[i + 1] ?? shown[i - 1];
-              focusAfter.current = near ? `${near.id}:edit` : "heading";
+              const near = [shown[i + 1], shown[i - 1]].filter(Boolean).flatMap((n) => [`${n.id}:edit`, `${n.id}:regen`, `${n.id}:del`]);
+              focusAfter.current = near;
               update(questionsRef.current.filter((x) => x.id !== q.id));
               announce("Question deleted.");
             }}

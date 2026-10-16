@@ -77,7 +77,7 @@ export function QuestionCard({ index, question, type, regenerating, locked, onSa
             <button type="button" data-focus={`${question.id}:regen`} className={TXT_BTN} onClick={onRegenerate} disabled={busy || locked}>
               {regenerating ? "Regenerating…" : "Regenerate"}<span className="sr-only"> question {index}</span>
             </button>
-            <button type="button" className={TXT_BTN} onClick={onDelete} disabled={busy}>Delete<span className="sr-only"> question {index}</span></button>
+            <button type="button" data-focus={`${question.id}:del`} className={TXT_BTN} onClick={onDelete} disabled={busy}>Delete<span className="sr-only"> question {index}</span></button>
           </div>
         )}
       </div>

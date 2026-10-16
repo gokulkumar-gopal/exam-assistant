@@ -30,3 +30,9 @@ export function gapNotice(target: number, total: number): { k: number } | null {
   const gap = target - total;
   return gap > 0 ? { k: Math.min(gap, 5) } : null;
 }
+
+/** First item that `usable` accepts, else null. Used to pick a focus target that is present and enabled. */
+export function firstUsable<T>(items: T[], usable: (t: T) => boolean): T | null {
+  for (const t of items) if (usable(t)) return t;
+  return null;
+}

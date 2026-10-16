@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { gapNotice, orderQuestions } from "../lib/exam-order";
+import { firstUsable, gapNotice, orderQuestions } from "../lib/exam-order";
 import type { Marks, Question } from "../lib/types";
 
 const mk = (marks: Marks[]): Question[] => marks.map((m, i) => ({ id: `q${i}`, marks: m, text: `t${i}` }));
@@ -38,5 +38,15 @@ describe("gapNotice", () => {
     expect(gapNotice(30, 20)).toEqual({ k: 5 });
     expect(gapNotice(30, 30)).toBeNull();
     expect(gapNotice(30, 35)).toBeNull();
+  });
+});
+
+describe("firstUsable", () => {
+  it("skips unusable targets and returns null when none work", () => {
+    const disabled = new Set(["b:edit", "b:regen"]);
+    const ok = (k: string) => !disabled.has(k);
+    expect(firstUsable(["b:edit", "b:regen", "b:del", "a:edit"], ok)).toBe("b:del");
+    expect(firstUsable(["b:edit", "b:regen"], ok)).toBeNull();
+    expect(firstUsable([], ok)).toBeNull();
   });
 });
