@@ -15,10 +15,13 @@ const (
 	ProviderAnthropic = "anthropic"
 )
 
-// Model is one catalog row. Prices are USD per million tokens.
+// Model is one catalog row. Prices are USD per million tokens. SupportsEffort is true for
+// the models that accept output_config.effort; Haiku 4.5 rejects it with a 400 (AI-spec 3.2)
+// and Gemini has no such setting, so for those no effort is sent or recorded.
 type Model struct {
 	ID, Name, Provider, Tier string
 	InPerMTok, OutPerMTok    float64
+	SupportsEffort           bool
 }
 
 // Usage is the token counts of one or more provider calls.
@@ -26,10 +29,10 @@ type Usage struct{ Input, Output, CacheRead, CacheWrite int64 }
 
 // catalog is the fixed list from AI-spec 3.2, cheapest first.
 var catalog = []Model{
-	{"gemini-3.1-flash-lite", "Gemini 3.1 Flash-Lite", ProviderGemini, "cheapest", 0.25, 1.5},
-	{"claude-haiku-4-5", "Claude Haiku 4.5", ProviderAnthropic, "cheap", 1, 5},
-	{"claude-sonnet-5-5", "Claude Sonnet 5.5", ProviderAnthropic, "balanced", 2, 10},
-	{"claude-opus-5-5", "Claude Opus 5.5", ProviderAnthropic, "most capable", 4, 20},
+	{"gemini-3.1-flash-lite", "Gemini 3.1 Flash-Lite", ProviderGemini, "cheapest", 0.25, 1.5, false},
+	{"claude-haiku-4-5", "Claude Haiku 4.5", ProviderAnthropic, "cheap", 1, 5, false},
+	{"claude-sonnet-5-5", "Claude Sonnet 5.5", ProviderAnthropic, "balanced", 2, 10, true},
+	{"claude-opus-5-5", "Claude Opus 5.5", ProviderAnthropic, "most capable", 4, 20, true},
 }
 
 // Catalog returns every model, cheapest first. The slice is a copy.
