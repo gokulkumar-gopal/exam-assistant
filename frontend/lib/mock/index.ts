@@ -82,6 +82,8 @@ function seedExams() {
  *                    decides per question by `options`), resume state (answers + last index 4), a question
  *                    whose text and options are `<b>x</b>` markup, and a deadline tomorrow 6:00 PM local.
  *   /exams/e12/take  30 MCQ questions, never started (dots wrap at 375 px).
+ *   /exams/e19/take  peeks demo (MCQ, 2 peeks); /exams/e20/take free text, 1 peek. Mock e1 allows 3 peeks.
+ *                    Flag ?mockReveal=403|409|closed|fail|slow (see the reveal route).
  * Other cases reuse seeded exams: e6 is closed and never started (redirect to result), e5 is inside the
  * 60 s grace window, any unknown id is a 404.
  */
@@ -109,6 +111,20 @@ function seedTakeFixtures() {
     { id: "e13", title: "Take demo: 2 questions", type: "mcq", closesAt: iso(Date.now() + 2 * 24 * HOUR), maxPeeks: 0,
       createdBy: rao, questions: Array.from({ length: 2 }, (_, i) => ({ ...makeQuestion(1300 + i, 1 as Marks, "mcq"), id: `w${i + 1}` })), mine: false, unlisted: true,
       attempt: { status: "not_started", answers: {}, lastQuestionIndex: 0 }, assigned: [] },
+    // Peeks demos (also the mock e1): 2 peeks allowed, markup must stay literal.
+    { id: "e19", title: "Peeks demo: multiple choice", type: "mcq", closesAt: iso(Date.now() + 2 * 24 * HOUR), maxPeeks: 2,
+      createdBy: rao, questions: [
+        { id: "k1", marks: 2, text: "Which part makes ATP?", options: ["Nucleus", "<b>Mitochondria</b>", "Ribosome", "Golgi"], correctIndex: 1 },
+        { id: "k2", marks: 2, text: "Second question", options: ["One", "Two", "Three", "Four"], correctIndex: 2 },
+        { id: "k3", marks: 1, text: "Third question", options: ["Red", "Green", "Blue", "Black"], correctIndex: 0 },
+      ], mine: false, unlisted: true,
+      attempt: { status: "not_started", answers: {}, lastQuestionIndex: 0, revealed: [], peeksLeft: 2 }, assigned: [] },
+    { id: "e20", title: "Peeks demo: free text", type: "free", closesAt: iso(Date.now() + 2 * 24 * HOUR), maxPeeks: 1,
+      createdBy: rao, questions: [
+        { id: "k4", marks: 3, text: "Explain photosynthesis.", modelAnswer: "<i>Light</i> energy becomes chemical energy.\nIt happens in chloroplasts." },
+        { id: "k5", marks: 2, text: "What is osmosis?", modelAnswer: "Water moves across a membrane." },
+      ], mine: false, unlisted: true,
+      attempt: { status: "not_started", answers: {}, lastQuestionIndex: 0, revealed: [], peeksLeft: 1 }, assigned: [] },
   );
 }
 /**
@@ -596,6 +612,16 @@ export function mockFetch(method: string, rawPath: string, body: unknown, idempo
     }
     if (method === "POST" && sub === "reveal") {
     const b = as<RevealBody>();
+      // Test triggers (mock only), sticky from the page URL: ?mockReveal=403 (peeking off) | 409 (no peeks left,
+      // for a question not yet revealed) | closed (409 exam_closed) | fail (network failure) | slow (2 s).
+      // Log: globalThis.__mockRevealLog = [{ questionId }] (one entry per request that reached the mock).
+      const t = stickyFlag("mockReveal");
+      if (!resumed) ((globalThis as unknown as { __mockRevealLog?: unknown[] }).__mockRevealLog ??= []).push({ questionId: b.questionId });
+      if (t === "slow" && !resumed) return new Promise((res) => setTimeout(() => res(mockFetch(method, rawPath, body, idempotencyKey, true)), 2000));
+      if (t === "fail") throw new TypeError("mock network failure");
+      if (t === "403") return err(403, "forbidden", "Peeking is turned off for this exam.");
+      if (t === "closed") return err(409, "exam_closed", "This exam is closed.");
+      if (t === "409" && !(exam.attempt?.revealed ?? []).some((r) => r.questionId === b.questionId)) return err(409, "conflict", "No peeks left.");
       if (exam.maxPeeks === 0) return err(403, "forbidden", "Peeking is off for this exam.");
       if (keyVisible(exam) || !exam.attempt) return err(409, "conflict", "The answer is already available.");
       if (over(exam)) return err(409, "exam_closed", "This exam is closed.");
@@ -605,6 +631,7 @@ export function mockFetch(method: string, rawPath: string, body: unknown, idempo
       if (left <= 0) return err(409, "conflict", "No peeks left.");
       const revealed = exam.attempt.revealed ?? [];
       if (!revealed.some((r) => r.questionId === q.id)) {
+        if (exam.attempt.status === "not_started") exam.attempt.status = "in_progress"; // a reveal starts the attempt (bs 9.6)
         revealed.push({ questionId: q.id, correctIndex: q.correctIndex, modelAnswer: q.modelAnswer });
         exam.attempt.revealed = revealed;
         exam.attempt.peeksLeft = left - 1;

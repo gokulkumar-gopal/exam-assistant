@@ -1,18 +1,22 @@
 "use client";
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useAttemptScreen } from "@/components/AttemptProvider";
 import { closesText, metaText } from "@/lib/take";
 import { DotNav } from "@/components/DotNav";
 import { EmptyState } from "@/components/EmptyState";
 import { OptionGroup } from "@/components/OptionCard";
+import { Notice } from "@/components/Notice";
+import { RevealDialog } from "@/components/RevealDialog";
+import { ANSWER_LABEL, answerNoticeText, revealedAnswerText } from "@/lib/reveal";
 
 /** Backend-spec 8.5: autosave answers are strings of up to 5,000 characters. */
 const MAX_ANSWER = 5000;
 const reviewHref = (id: string) => `/exams/${encodeURIComponent(id)}/review`;
 
 export default function Page() {
-  const { exam, answers, byIndex, index, setAnswer, goTo, takeFocusQuestion } = useAttemptScreen();
+  const { exam, answers, byIndex, index, setAnswer, goTo, takeFocusQuestion, peeks } = useAttemptScreen();
+  const [revealFor, setRevealFor] = useState<string | null>(null); // question id the open dialog is for
   const questions = exam.questions;
   const total = questions.length;
   const q = questions[index];
@@ -74,6 +78,22 @@ export default function Page() {
   };
   const closes = closesText(exam.closesAt);
 
+  // Reveal (fs 6.5). Everything shown comes from the revealed answer the provider holds, never from the question.
+  const control = peeks.control(q.id);
+  const revealed = peeks.on ? peeks.answer(q.id) : undefined;
+  const revealedText = revealed ? revealedAnswerText(q.options && q.options.length > 0 ? "mcq" : "free", q.options, revealed) : null;
+  const revealedIndex = revealed && revealedText !== null && q.options && q.options.length > 0 ? revealed.correctIndex : undefined;
+  const confirmReveal = async () => {
+    if (revealFor === null) return;
+    await peeks.reveal(revealFor);
+    setRevealFor(null);
+  };
+  // When the dialog closes: the answer if there is one, else the button, else (it is gone or disabled) the question heading.
+  const afterReveal = () => {
+    const el = document.getElementById("reveal-notice") ?? document.getElementById("reveal-btn");
+    return el instanceof HTMLButtonElement && el.disabled ? document.getElementById(headingId) : el ?? document.getElementById(headingId);
+  };
+
   return (
     <>
       <main className="page pt-5">
@@ -88,6 +108,7 @@ export default function Page() {
               value={answers[q.id]}
               labelledBy={headingId}
               onChange={(text) => setAnswer(q.id, text)}
+              revealedIndex={revealedIndex}
             />
           ) : (
             <div key={q.id}>
@@ -100,6 +121,28 @@ export default function Page() {
                 onChange={(e) => setAnswer(q.id, e.target.value, { typing: true })}
                 className="min-h-[120px] w-full resize-y rounded-[10px] border border-line bg-card px-3.5 py-2.5 text-[15px]"
               />
+            </div>
+          )}
+          {control !== "none" && (
+            <div className="mt-3 flex flex-wrap items-center gap-x-3">
+              <button
+                id="reveal-btn"
+                type="button"
+                className="inline-flex min-h-10 min-w-10 items-center justify-center rounded-lg px-2.5 text-[13px] font-semibold text-accent hover:bg-tint focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-50"
+                disabled={control === "disabled"}
+                onClick={() => setRevealFor(q.id)}
+              >
+                Reveal answer
+              </button>
+              {control === "disabled" && peeks.noneLeft && <span className="text-[13px] text-muted">No peeks left.</span>}
+            </div>
+          )}
+          {revealed && (
+            <div id="reveal-notice" tabIndex={-1} className="mt-3 outline-none">
+              <Notice>
+                <p className="font-semibold">{ANSWER_LABEL}</p>
+                {revealedText !== null && <p className="whitespace-pre-wrap break-words">{answerNoticeText(revealedText)}</p>}
+              </Notice>
             </div>
           )}
           <div className="mt-6 flex items-center justify-between gap-3">
@@ -121,6 +164,16 @@ export default function Page() {
           </a>
         </div>
       </main>
+      {peeks.on && (
+        <RevealDialog
+          open={revealFor !== null}
+          onOpenChange={(o) => { if (!o) setRevealFor(null); }}
+          peeksLeft={peeks.left}
+          busy={peeks.busy}
+          onConfirm={() => void confirmReveal()}
+          finalFocus={afterReveal}
+        />
+      )}
     </>
   );
 }

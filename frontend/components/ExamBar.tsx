@@ -1,6 +1,7 @@
 "use client";
 // Exam header (fs 4, 6.5): title, autosave state, peeks, timer, Save & exit.
 import { Button } from "@/components/ui/button";
+import { PeeksCounter } from "@/components/PeeksCounter";
 import { Timer } from "@/components/Timer";
 import { autosaveText, type AutosaveState } from "@/lib/autosave";
 import { cn } from "@/lib/utils";
@@ -8,6 +9,7 @@ import { cn } from "@/lib/utils";
 export interface ExamBarProps {
   title: string;
   save: AutosaveState;
+  /** Peeks left, shown as "💡 N left". Undefined hides the counter (peeks off or maxPeeks 0). */
   peeksLeft?: number;
   closesAtIso: string;
   /** serverTime minus device time, fixed once per load. */
@@ -31,7 +33,7 @@ export function ExamBar({ title, save, peeksLeft, closesAtIso, offsetMs, exiting
           <span aria-hidden="true" className={cn("order-4 shrink-0 whitespace-nowrap text-[13px] max-[480px]:mr-auto min-[481px]:order-none", failing ? "text-bad" : "text-muted")}>{text}</span>
         )}
         <span role="status" className="sr-only">{failing ? text : ""}</span>
-        {peeksLeft !== undefined && <span className="order-4 text-sm min-[481px]:order-none">💡 {peeksLeft} left</span>}
+        {peeksLeft !== undefined && <PeeksCounter left={peeksLeft} className="order-4 text-sm min-[481px]:order-none" />}
         <Timer closesAtIso={closesAtIso} offsetMs={offsetMs} className="order-2 min-[481px]:order-none" />
         <Button variant="outline" className="order-4 max-[480px]:ml-auto min-[481px]:order-none" onClick={onSaveExit} disabled={exiting || exitDisabled} aria-busy={exiting || undefined}>Save &amp; exit</Button>
       </div>

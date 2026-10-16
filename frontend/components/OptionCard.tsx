@@ -6,6 +6,9 @@ import { useRef } from "react";
 import { optionLetter } from "@/lib/take";
 import { cn } from "@/lib/utils";
 
+/** Marker on the option the user revealed. */
+export const REVEALED_OPTION_LABEL = "Revealed answer";
+
 export interface OptionCardProps {
   index: number;
   text: string;
@@ -14,9 +17,11 @@ export interface OptionCardProps {
   onSelect: () => void;
   onKeyDown: (e: React.KeyboardEvent<HTMLButtonElement>) => void;
   buttonRef: (el: HTMLButtonElement | null) => void;
+  /** This is the option the user revealed: a text label plus a tint (never colour alone). */
+  revealed?: boolean;
 }
 
-export function OptionCard({ index, text, selected, tabbable, onSelect, onKeyDown, buttonRef }: OptionCardProps) {
+export function OptionCard({ index, text, selected, tabbable, onSelect, onKeyDown, buttonRef, revealed }: OptionCardProps) {
   return (
     <button
       ref={buttonRef}
@@ -30,11 +35,12 @@ export function OptionCard({ index, text, selected, tabbable, onSelect, onKeyDow
         "flex min-h-11 w-full items-start gap-2 rounded-[10px] border px-3.5 py-2.5 text-left text-[15px] hover:bg-tint",
         selected
           ? "border-accent bg-tint font-semibold shadow-[inset_4px_0_0_var(--accent2)]"
-          : "border-line bg-card font-normal",
+          : revealed ? "border-warn-border bg-warn-bg font-normal" : "border-line bg-card font-normal",
       )}
     >
       <span aria-hidden="true" className="shrink-0 font-semibold">{optionLetter(index)}</span>
       <span className="min-w-0 whitespace-pre-wrap break-words">{text}</span>
+      {revealed && <span className="ml-auto shrink-0 pl-2 text-[13px] font-semibold text-warn">{REVEALED_OPTION_LABEL}</span>}
     </button>
   );
 }
@@ -45,9 +51,11 @@ export interface OptionGroupProps {
   value: string | undefined;
   labelledBy: string;
   onChange: (text: string) => void;
+  /** Index of the option the user revealed, if any. */
+  revealedIndex?: number;
 }
 
-export function OptionGroup({ options, value, labelledBy, onChange }: OptionGroupProps) {
+export function OptionGroup({ options, value, labelledBy, onChange, revealedIndex }: OptionGroupProps) {
   const refs = useRef<(HTMLButtonElement | null)[]>([]);
   // Only the first card with this text is selected, even if two options repeat a string.
   const selected = value === undefined ? -1 : options.indexOf(value);
@@ -77,6 +85,7 @@ export function OptionGroup({ options, value, labelledBy, onChange }: OptionGrou
           index={i}
           text={text}
           selected={i === selected}
+          revealed={i === revealedIndex}
           tabbable={selected === -1 ? i === 0 : i === selected}
           onSelect={() => choose(i)}
           onKeyDown={onKeyDown(i)}
