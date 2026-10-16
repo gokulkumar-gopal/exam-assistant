@@ -18,6 +18,7 @@ import (
 	"github.com/gokulkumar/exam-assistant/backend/internal/config"
 	"github.com/gokulkumar/exam-assistant/backend/internal/docs"
 	"github.com/gokulkumar/exam-assistant/backend/internal/gen"
+	"github.com/gokulkumar/exam-assistant/backend/internal/gen/prompt"
 	"github.com/gokulkumar/exam-assistant/backend/internal/store/memory"
 )
 
@@ -81,15 +82,20 @@ func buildHandler(cfg config.Config, logger *slog.Logger, baseURL string, fakeLL
 	docStore := memory.NewDocStore(clk)
 	blob := newLocalBlob(docs.NewMemBlob(), baseURL)
 
-	var gens gen.GeneratorFactory = gen.UnconfiguredFactory{}
+	gens := gen.GeneratorFactory(gen.UnconfiguredFactory)
 	if fakeLLM {
-		gens = gen.FixedFactory{Generator: gen.FakeGenerator{}}
+		gens = gen.FixedFactory(gen.FakeGenerator{})
 	} else {
 		logger.Warn("no generator configured: jobs will fail; start with -fake-llm for offline generation")
 	}
 	runner := &gen.InProcessRunner{Worker: &gen.Worker{
 		Jobs: jobs, Docs: docStore, Blob: blob, Gens: gens, Clock: clk,
-		Cfg: gen.WorkerConfig{MaxPerCall: cfg.GenMaxPerCall, Effort: cfg.LLMEffort},
+		Cfg: gen.WorkerConfig{
+			MaxPerCall: cfg.GenMaxPerCall, Effort: cfg.LLMEffort, PromptVersion: prompt.PromptVersion,
+			CallTimeout: time.Duration(cfg.LLMTimeoutSeconds) * time.Second, MaxTotalBytes: cfg.GenMaxTotalBytes,
+			MaxPDFPages: cfg.GenMaxPDFPages, MaxInputTokens: cfg.GenMaxInputTokens,
+			BudgetMicros: gen.BudgetMicros(cfg.LLMMonthlyBudgetUSD),
+		},
 	}}
 
 	svc := auth.NewService(users, auth.NewBcryptHasher(auth.BcryptCost), clk)

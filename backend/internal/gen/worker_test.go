@@ -38,6 +38,15 @@ type spyJobs struct {
 
 	putQuestionsErr error
 	addSpendErr     error
+	events          []string // spend, questions, finish:<status> in call order
+	afterPut        func()   // runs after a successful PutQuestions
+	spendErr        error    // returned by SpendThisMonth
+}
+
+func (s *spyJobs) event(e string) {
+	s.mu.Lock()
+	s.events = append(s.events, e)
+	s.mu.Unlock()
 }
 
 func (s *spyJobs) Heartbeat(ctx context.Context, id string, now time.Time, p store.Progress) error {
@@ -71,6 +80,13 @@ func (s *spyJobs) FinishJob(ctx context.Context, id, to string, upd store.JobFin
 	s.finishes = append(s.finishes, to)
 	s.finished = true
 	s.mu.Unlock()
+	ev := "finish:" + to
+	if to == store.JobDone {
+		if _, err := s.JobStore.GetQuestions(ctx, id); err != nil {
+			ev = "finish:done-without-questions"
+		}
+	}
+	s.event(ev)
 	return s.JobStore.FinishJob(ctx, id, to, upd)
 }
 
@@ -78,18 +94,33 @@ func (s *spyJobs) PutQuestions(ctx context.Context, id string, qs []store.Questi
 	if s.putQuestionsErr != nil {
 		return s.putQuestionsErr
 	}
-	return s.JobStore.PutQuestions(ctx, id, qs)
+	if err := s.JobStore.PutQuestions(ctx, id, qs); err != nil {
+		return err
+	}
+	s.event("questions")
+	if s.afterPut != nil {
+		s.afterPut()
+	}
+	return nil
 }
 
 func (s *spyJobs) AddSpend(ctx context.Context, month string, micros int64) (int64, error) {
 	s.mu.Lock()
 	s.spend = append(s.spend, micros)
 	s.spendMonths = append(s.spendMonths, month)
+	s.events = append(s.events, "spend")
 	s.mu.Unlock()
 	if s.addSpendErr != nil {
 		return 0, s.addSpendErr
 	}
 	return s.JobStore.AddSpend(ctx, month, micros)
+}
+
+func (s *spyJobs) SpendThisMonth(ctx context.Context, month string) (int64, error) {
+	if s.spendErr != nil {
+		return 0, s.spendErr
+	}
+	return s.JobStore.SpendThisMonth(ctx, month)
 }
 
 func (s *spyJobs) snapshot() (hb int, finishes []string) {
@@ -185,7 +216,8 @@ func newWEnvShuffle(t *testing.T, counts map[string]int, shuffle bool) *wEnv {
 	spy := &spyJobs{JobStore: raw}
 	e := &wEnv{clk: clk, jobs: spy, raw: raw, docs: ds, blob: blob, gen: g, jobID: "job1"}
 	e.w = &Worker{
-		Jobs: spy, Docs: ds, Blob: blob, Gens: FixedFactory{Generator: g}, Clock: clk,
+		Jobs: spy, Docs: ds, Blob: blob, Gens: FixedFactory(g), Clock: clk,
+		Cfg:               WorkerConfig{BudgetMicros: 1 << 40, PromptVersion: "pv-test"},
 		heartbeatInterval: time.Hour, jobDeadline: 10 * time.Second,
 	}
 	return e
@@ -382,7 +414,7 @@ func TestStaleJobCannotLaterBecomeDone(t *testing.T) {
 }
 
 func TestFinishRefusedBecauseCancelRequestedFinishesCancelled(t *testing.T) {
-	e := newWEnv(t, map[string]int{"1": 2}) // heartbeat interval 1 h: only FinishJob can notice
+	e := newWEnv(t, map[string]int{"1": 2}) // heartbeat interval 1 h: only the final checks can notice
 	e.gen.fn = func(ctx context.Context, in GenInput) (GenOutput, error) {
 		if err := e.raw.RequestCancel(context.Background(), "u1", e.jobID); err != nil {
 			t.Error(err)
@@ -393,9 +425,20 @@ func TestFinishRefusedBecauseCancelRequestedFinishesCancelled(t *testing.T) {
 	if j := e.job(t); j.Status != store.JobCancelled {
 		t.Fatalf("status = %s, want cancelled", j.Status)
 	}
+	// B-2.7: Run looks at the job before writing the questions item, so a cancel that arrived
+	// during the last call finishes cancelled without a done attempt. The late cancel (after
+	// that look) is TestDoneOnlyIfRunningAndNotCancelRequested.
 	_, fin := e.jobs.snapshot()
-	if len(fin) != 2 || fin[0] != store.JobDone || fin[1] != store.JobCancelled {
-		t.Errorf("finish calls = %v, want [done cancelled]", fin)
+	if len(fin) != 1 || fin[0] != store.JobCancelled {
+		t.Errorf("finish calls = %v, want [cancelled]", fin)
+	}
+	e.noQuestionsItem(t)
+}
+
+func (e *wEnv) noQuestionsItem(t *testing.T) {
+	t.Helper()
+	if _, err := e.raw.GetQuestions(context.Background(), e.jobID); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("questions item written for a cancelled job: %v", err)
 	}
 }
 
@@ -531,9 +574,12 @@ func TestAddSpendCalledWithActualUsage(t *testing.T) {
 	}
 	e.run(t)
 	m, _ := LookupModel("claude-haiku-4-5")
-	total := CostMicros(m, Usage{Input: 30_000, Output: 4_000, CacheRead: 10_000, CacheWrite: 2_000})
-	if len(e.jobs.spend) != 1 || e.jobs.spend[0] != total || e.jobs.spendMonths[0] != "202610" {
-		t.Fatalf("AddSpend = %v %v, want [%d] [202610]", e.jobs.spend, e.jobs.spendMonths, total)
+	// B-2.7: spend is added per call (AI-spec 10.4), each call rounded on its own, not once per job.
+	c1 := CostMicros(m, Usage{Input: 10_000, Output: 2_000, CacheRead: 5_000, CacheWrite: 1_000})
+	c2 := CostMicros(m, Usage{Input: 20_000, Output: 2_000, CacheRead: 5_000, CacheWrite: 1_000})
+	total := c1 + c2
+	if len(e.jobs.spend) != 2 || e.jobs.spend[0] != c1 || e.jobs.spend[1] != c2 || e.jobs.spendMonths[0] != "202610" {
+		t.Fatalf("AddSpend = %v %v, want [%d %d] [202610 ...]", e.jobs.spend, e.jobs.spendMonths, c1, c2)
 	}
 	j := e.job(t)
 	if j.Usage.CostMicros != total || j.Usage.InputTokens != 30_000 || j.Usage.OutputTokens != 4_000 ||
@@ -594,7 +640,7 @@ func TestUserErrorMessageIsShown(t *testing.T) {
 
 func TestUnconfiguredFactoryFailsJobClearly(t *testing.T) {
 	e := newWEnv(t, map[string]int{"1": 2})
-	e.w.Gens = UnconfiguredFactory{}
+	e.w.Gens = UnconfiguredFactory
 	e.run(t)
 	if j := e.job(t); j.Status != store.JobFailed || j.Error != GenerateFailedMessage {
 		t.Errorf("job = %s %q", j.Status, j.Error)
@@ -684,12 +730,25 @@ func TestNoReadableSourcesFailsWithoutCallingGenerator(t *testing.T) {
 func TestCountsAreChunkedAndAvoidCarriesEarlierQuestions(t *testing.T) {
 	e := newWEnv(t, map[string]int{"1": 20, "2": 1})
 	e.run(t)
-	var shape []string
-	for _, c := range e.gen.calls {
-		shape = append(shape, fmt.Sprintf("m%dx%d/avoid%d", c.Marks, c.Count, len(c.Avoid)))
+	// B-2.7: the first call runs alone, the other two run together, so the order of the last two
+	// is not fixed: each sees the first call's 15 questions, and the one that starts after the
+	// other has finished may see that one's too.
+	var later []string
+	for i, c := range e.gen.calls {
+		if i == 0 {
+			if c.Marks != 1 || c.Count != 15 || len(c.Avoid) != 0 {
+				t.Errorf("first call = marks %d count %d avoid %d", c.Marks, c.Count, len(c.Avoid))
+			}
+			continue
+		}
+		if len(c.Avoid) < 15 {
+			t.Errorf("call %d Avoid = %d, want at least the first call's 15", i+1, len(c.Avoid))
+		}
+		later = append(later, fmt.Sprintf("m%dx%d", c.Marks, c.Count))
 	}
-	if got := strings.Join(shape, " "); got != "m1x15/avoid0 m1x5/avoid15 m2x1/avoid20" {
-		t.Errorf("calls = %s", got)
+	slices.Sort(later)
+	if got := strings.Join(later, " "); got != "m1x5 m2x1" {
+		t.Errorf("later calls = %s", got)
 	}
 	if j := e.job(t); j.Done != 21 || j.Status != store.JobDone {
 		t.Errorf("job = %s done=%d", j.Status, j.Done)
@@ -898,8 +957,9 @@ func TestWorkerFailsWithShortfallMessageWhenTooFewSurvive(t *testing.T) {
 	e := newWEnv(t, map[string]int{"1": 3})
 	e.gen.fn = func(ctx context.Context, in GenInput) (GenOutput, error) {
 		out := defaultOut(in)
-		out.Questions[1].Text = "" // invalid
-		out.Questions[2].Source = "doc-99"
+		for i := 1; i < len(out.Questions); i++ {
+			out.Questions[i].Text = "" // invalid: only the first question of each call survives
+		}
 		return out, nil
 	}
 	e.run(t)
@@ -910,15 +970,15 @@ func TestWorkerFailsWithShortfallMessageWhenTooFewSurvive(t *testing.T) {
 	if _, err := e.raw.GetQuestions(context.Background(), e.jobID); !errors.Is(err, store.ErrNotFound) {
 		t.Errorf("partial exam saved: %v", err)
 	}
-	if len(e.jobs.spend) != 1 || e.jobs.spend[0] <= 0 {
-		t.Errorf("spend = %v, want the call's cost recorded", e.jobs.spend)
+	// B-2.7: one follow-up call (AI-spec 7.4) for the 2 missing, then the failure; both calls are charged.
+	if len(e.jobs.spend) != 2 || e.jobs.spend[0] <= 0 || e.jobs.spend[1] <= 0 {
+		t.Errorf("spend = %v, want both calls' cost recorded", e.jobs.spend)
 	}
-	if j.Usage.Dropped != 2 || j.Usage.Kept != 1 {
+	if j.Usage.Dropped != 3 || j.Usage.Kept != 2 {
 		t.Errorf("usage = %+v", j.Usage)
 	}
-	// B-2.7 owns the one follow-up call (AI-spec 7.4); until then there is exactly one call.
-	if e.gen.callCount() != 1 {
-		t.Errorf("calls = %d", e.gen.callCount())
+	if e.gen.callCount() != 2 {
+		t.Errorf("calls = %d, want the call and one follow-up", e.gen.callCount())
 	}
 }
 
@@ -968,7 +1028,7 @@ func TestWorkerAssignsIDsFromInjectedClockAndEntropy(t *testing.T) {
 func TestFakeGeneratorOutputSurvivesValidation(t *testing.T) {
 	// The local -fake-llm server relies on this: 15-question calls must pass the duplicate check.
 	e := newWEnv(t, map[string]int{"1": 20, "2": 15, "5": 4})
-	e.w.Gens = FixedFactory{Generator: FakeGenerator{}}
+	e.w.Gens = FixedFactory(FakeGenerator{})
 	e.run(t)
 	if j := e.job(t); j.Status != store.JobDone || j.Done != 39 {
 		t.Errorf("mcq: job = %s %q done=%d", j.Status, j.Error, j.Done)

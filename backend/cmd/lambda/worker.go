@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
@@ -13,6 +14,7 @@ import (
 	"github.com/gokulkumar/exam-assistant/backend/internal/config"
 	"github.com/gokulkumar/exam-assistant/backend/internal/docs"
 	"github.com/gokulkumar/exam-assistant/backend/internal/gen"
+	"github.com/gokulkumar/exam-assistant/backend/internal/gen/prompt"
 	"github.com/gokulkumar/exam-assistant/backend/internal/store/dynamo"
 )
 
@@ -61,8 +63,13 @@ func buildWorker(cfg config.Config, awsCfg aws.Config) (*gen.Worker, error) {
 		Jobs:  stores,
 		Docs:  stores,
 		Blob:  docs.NewS3Blob(awsCfg, cfg.S3Bucket),
-		Gens:  gen.UnconfiguredFactory{},
+		Gens:  gen.UnconfiguredFactory,
 		Clock: clock.Real{},
-		Cfg:   gen.WorkerConfig{MaxPerCall: cfg.GenMaxPerCall, Effort: cfg.LLMEffort},
+		Cfg: gen.WorkerConfig{
+			MaxPerCall: cfg.GenMaxPerCall, Effort: cfg.LLMEffort, PromptVersion: prompt.PromptVersion,
+			CallTimeout: time.Duration(cfg.LLMTimeoutSeconds) * time.Second, MaxTotalBytes: cfg.GenMaxTotalBytes,
+			MaxPDFPages: cfg.GenMaxPDFPages, MaxInputTokens: cfg.GenMaxInputTokens,
+			BudgetMicros: gen.BudgetMicros(cfg.LLMMonthlyBudgetUSD),
+		},
 	}, nil
 }

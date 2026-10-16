@@ -3,7 +3,12 @@ package gen
 import (
 	"context"
 	"fmt"
+	"sync/atomic"
 )
+
+// fakeSeq numbers fake questions across the whole process, so calls running at the same time
+// (up to three) never produce the same words and Validate's duplicate check keeps them all.
+var fakeSeq atomic.Int64
 
 // FakeGenerator returns deterministic questions with no provider call. It backs worker
 // tests and the local server's -fake-llm flag; cmd/lambda never references it.
@@ -16,12 +21,11 @@ func (FakeGenerator) Generate(ctx context.Context, in GenInput) (GenOutput, erro
 	}
 	out := GenOutput{StopReason: "end_turn", RequestID: "fake"}
 	for i := 0; i < in.Count; i++ {
-		n := len(in.Avoid) + i
+		n := fakeSeq.Add(1)
 		q := RawQuestion{
 			Marks: in.Marks,
-			// Index-specific words keep the questions apart under the 0.8 word-set duplicate check.
-			Text: fmt.Sprintf("Sample %d-mark question %d (%d already asked): explain topic%d, detail%d, aspect%d and angle%d",
-				in.Marks, i+1, len(in.Avoid), n, n, n, n),
+			// Five words unique to the question keep any two apart under the 0.8 word-set duplicate check.
+			Text: fmt.Sprintf("Sample %d-mark question: explain topic%d, detail%d, aspect%d, angle%d and idea%d", in.Marks, n, n, n, n, n),
 		}
 		if len(in.Sources) > 0 {
 			q.Source = in.Sources[i%len(in.Sources)].Label
@@ -37,4 +41,13 @@ func (FakeGenerator) Generate(ctx context.Context, in GenInput) (GenOutput, erro
 	}
 	out.Usage = Usage{Input: 1000, Output: int64(100 * in.Count)}
 	return out, nil
+}
+
+// CountTokens implements TokenCounter trivially: one token per four bytes of sources.
+func (FakeGenerator) CountTokens(_ context.Context, in GenInput) (int, error) {
+	n := 0
+	for _, s := range in.Sources {
+		n += len(s.Bytes)
+	}
+	return n / 4, nil
 }
