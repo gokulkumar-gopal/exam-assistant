@@ -42,4 +42,17 @@ func registerAIRoutes(rt *routeTable, deps Deps) {
 			"serverTime": deps.Clock.Now().UTC().Format(time.RFC3339),
 		})
 	})))
+	if deps.Usage == nil {
+		return
+	}
+	// Aggregate counters only: nothing about users, documents or questions is read or returned.
+	rt.handle("GET", "/ai/usage", RequireUser(deps, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-store")
+		v, err := deps.Usage.View(r.Context(), deps.Clock.Now())
+		if err != nil {
+			WriteError(w, r, err)
+			return
+		}
+		WriteJSON(w, http.StatusOK, v)
+	})))
 }

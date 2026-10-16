@@ -69,6 +69,7 @@ func buildAPIDeps(_ context.Context, cfg config.Config, awsCfg aws.Config) (api.
 		Jobs:           stores,
 		Exams:          examSvc,
 		Runner:         runner,
+		Usage:          &gen.UsageService{Usage: stores, Jobs: stores, BudgetUSD: cfg.LLMMonthlyBudgetUSD},
 		Gen:            gen.NewService(stores, stores, runner, clk, models, def.ID, cfg.GenLimits()),
 		Models:         models,
 		DefaultModelID: def.ID,
