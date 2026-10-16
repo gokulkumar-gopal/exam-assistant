@@ -298,7 +298,7 @@ function listItem(e: MockExam, scope: string): ExamListItem {
   if (scope === "created") {
     return { ...base, counts: rosterCounts(e) };
   }
-  const status = (over(e) && e.attempt?.status !== "submitted" ? "missed" : e.attempt?.status) as AttemptStatus;
+  const status = (over(e) && e.attempt?.status === "not_started" ? "missed" : e.attempt?.status) as AttemptStatus;
   const g = e.attempt?.status === "submitted" ? grade(e) : null;
   return { ...base, attemptStatus: status, ...(g?.score != null ? { score: g.score, maxScore: totalMarks(e) } : {}) };
 }
