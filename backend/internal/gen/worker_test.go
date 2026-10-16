@@ -1,14 +1,18 @@
 package gen
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/oklog/ulid/v2"
 
 	"github.com/gokulkumar/exam-assistant/backend/internal/clock"
 	"github.com/gokulkumar/exam-assistant/backend/internal/docs"
@@ -692,17 +696,22 @@ func TestCountsAreChunkedAndAvoidCarriesEarlierQuestions(t *testing.T) {
 	}
 }
 
-func TestShuffleUsesInjectedShuffleAndKeepsEveryQuestion(t *testing.T) {
+func TestShuffleUsesInjectedRandomSourceAndKeepsEveryQuestion(t *testing.T) {
 	e := newWEnvShuffle(t, map[string]int{"1": 4, "2": 4}, true)
-	e.w.shuffle = func(n int, swap func(i, j int)) { // reverse
-		for i, k := 0, n-1; i < k; i, k = i+1, k-1 {
-			swap(i, k)
-		}
-	}
+	e.w.rnd = zeroReader{} // every draw is 0: swap(i, 0) for i = 7 down to 1
 	e.run(t)
 	qs, _ := e.raw.GetQuestions(context.Background(), e.jobID)
-	if len(qs) != 8 || qs[0].Marks != 2 || qs[7].Marks != 1 {
-		t.Errorf("questions = %+v", qs)
+	if len(qs) != 8 {
+		t.Fatalf("questions = %+v", qs)
+	}
+	// Generation order is the four 1-mark then the four 2-mark questions: q0..q3, p0..p3.
+	// swap(i,0) for i = 7..1 rotates the list left by one: q1 q2 q3 p0 p1 p2 p3 q0.
+	var marks []int
+	for _, q := range qs {
+		marks = append(marks, q.Marks)
+	}
+	if want := []int{1, 1, 1, 2, 2, 2, 2, 1}; !slices.Equal(marks, want) {
+		t.Errorf("marks = %v, want %v (input order rotated by the injected source)", marks, want)
 	}
 }
 
@@ -772,5 +781,212 @@ func TestRunRecoversPanicWithUsage(t *testing.T) {
 	}
 	if j := e.job(t); j.Status != store.JobFailed || j.Usage.CostMicros != want || j.Usage.Calls != 1 {
 		t.Errorf("job = %s usage=%+v", j.Status, j.Usage)
+	}
+}
+
+// ---- B-2.6: sources are prepared and output is validated ----
+
+// setDoc replaces document id with the given type and bytes.
+func (e *wEnv) setDoc(t *testing.T, id, name, contentType string, data []byte) {
+	t.Helper()
+	key := "users/u1/" + id + "/" + name
+	e.blob.Put(key, data)
+	if err := e.docs.PutDoc(context.Background(), store.Document{
+		ID: id, OwnerID: "u1", Name: name, Type: "TXT", ContentType: contentType, SizeBytes: int64(len(data)),
+		S3Key: key, Status: store.DocReady, CreatedAt: t0,
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestWorkerSendsPreparedSources(t *testing.T) {
+	e := newWEnv(t, map[string]int{"1": 1})
+	pdf := []byte("%PDF-1.7 fake body")
+	e.setDoc(t, "d1", "notes.txt", "text/plain", []byte("Line one\x00‮​\r\nLine two\x07"))
+	e.setDoc(t, "d2", "paper.pdf", "application/pdf", pdf)
+	e.run(t)
+	got := e.gen.calls[0].Sources
+	if len(got) != 2 {
+		t.Fatalf("sources = %+v", got)
+	}
+	if string(got[0].Bytes) != "Line one\nLine two" { // control, bidi and zero-width removed, CRLF normalised
+		t.Errorf("text source not cleaned: %q", got[0].Bytes)
+	}
+	if got[1].ContentType != "application/pdf" || !bytes.Equal(got[1].Bytes, pdf) {
+		t.Errorf("pdf source = %q %q", got[1].ContentType, got[1].Bytes)
+	}
+}
+
+func TestWorkerDoesNotSendCorruptSourceAndReportsIt(t *testing.T) {
+	e := newWEnv(t, map[string]int{"1": 1})
+	e.setDoc(t, "d2", "scan.png", "image/png", []byte("\x89PNG\r\n\x1a\nnot really a png"))
+	e.run(t)
+	j := e.job(t)
+	if j.Status != store.JobDone {
+		t.Fatalf("job = %s %q", j.Status, j.Error)
+	}
+	if got := e.gen.calls[0].Sources; len(got) != 1 || got[0].Label != "doc-1" || string(got[0].Bytes) != "content of notes.txt" {
+		t.Errorf("sources = %+v", got)
+	}
+	if len(j.FailedSources) != 1 || j.FailedSources[0].DocID != "d2" || j.FailedSources[0].Name != "scan.png" ||
+		j.FailedSources[0].Reason != unreadableFileReason || !j.Usage.AnySourceFailed {
+		t.Errorf("failedSources = %+v", j.FailedSources)
+	}
+}
+
+func TestWorkerFailsWhenNoSourceSurvivesPreparation(t *testing.T) {
+	e := newWEnv(t, map[string]int{"1": 1})
+	e.setDoc(t, "d1", "blank.txt", "text/plain", []byte(" ​ \n"))
+	e.setDoc(t, "d2", "bad.pdf", "application/pdf", []byte("not a pdf"))
+	e.run(t)
+	j := e.job(t)
+	if e.gen.callCount() != 0 || j.Status != store.JobFailed || j.Error != "We couldn't read any of the selected files." {
+		t.Errorf("calls=%d job=%s %q", e.gen.callCount(), j.Status, j.Error)
+	}
+	if len(j.FailedSources) != 2 {
+		t.Errorf("failedSources = %+v", j.FailedSources)
+	}
+	if _, err := e.raw.GetQuestions(context.Background(), e.jobID); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("questions saved: %v", err)
+	}
+}
+
+func TestWorkerSurfacesGeneratorUnreadableSources(t *testing.T) {
+	e := newWEnv(t, map[string]int{"1": 1})
+	e.gen.fn = func(ctx context.Context, in GenInput) (GenOutput, error) {
+		out := defaultOut(in)
+		out.UnreadableSources = []string{"doc-2", "doc-7"} // doc-7 is not a label we sent
+		return out, nil
+	}
+	e.run(t)
+	j := e.job(t)
+	if len(j.FailedSources) != 1 || j.FailedSources[0].DocID != "d2" || j.FailedSources[0].Reason != modelSkippedReason {
+		t.Errorf("failedSources = %+v", j.FailedSources)
+	}
+}
+
+func TestWorkerValidatesOutputBeforeSaving(t *testing.T) {
+	e := newWEnv(t, map[string]int{"2": 2})
+	e.gen.fn = func(ctx context.Context, in GenInput) (GenOutput, error) {
+		opts := []string{"a", "b", "c", "d"}
+		out := GenOutput{Usage: Usage{Input: 10, Output: 10}, Questions: []RawQuestion{
+			{Marks: 2, Text: "Good question number one about cells", Options: opts, CorrectIndex: ip(0), Source: "doc-1"},
+			{Marks: 2, Text: "Bad <b>html</b> question", Options: opts, CorrectIndex: ip(0), Source: "doc-1"},
+			{Marks: 3, Text: "Wrong marks question", Options: opts, CorrectIndex: ip(0), Source: "doc-1"},
+			{Marks: 2, Text: "Good question number one about cells", Options: opts, CorrectIndex: ip(1), Source: "doc-1"}, // duplicate
+			{Marks: 2, Text: "Good second question about mitochondria", Options: opts, CorrectIndex: ip(2), Source: "doc-2"},
+			{Marks: 2, Text: "Third valid but one too many question on ribosomes", Options: opts, CorrectIndex: ip(3), Source: "doc-1"},
+		}}
+		return out, nil
+	}
+	e.run(t)
+	j := e.job(t)
+	qs, err := e.raw.GetQuestions(context.Background(), e.jobID)
+	if err != nil || j.Status != store.JobDone || len(qs) != 2 {
+		t.Fatalf("job=%s %q qs=%v err=%v", j.Status, j.Error, qs, err)
+	}
+	if qs[0].Text != "Good question number one about cells" || qs[1].Text != "Good second question about mitochondria" ||
+		qs[1].SourceDocID != "d2" || qs[1].SourceDocName != "scan.png" {
+		t.Errorf("questions = %+v", qs)
+	}
+	if j.Usage.Kept != 2 || j.Usage.Dropped != 4 { // html, marks, duplicate and the one past the count
+		t.Errorf("usage = %+v", j.Usage)
+	}
+}
+
+func TestWorkerFailsWithShortfallMessageWhenTooFewSurvive(t *testing.T) {
+	e := newWEnv(t, map[string]int{"1": 3})
+	e.gen.fn = func(ctx context.Context, in GenInput) (GenOutput, error) {
+		out := defaultOut(in)
+		out.Questions[1].Text = "" // invalid
+		out.Questions[2].Source = "doc-99"
+		return out, nil
+	}
+	e.run(t)
+	j := e.job(t)
+	if j.Status != store.JobFailed || j.Error != "We couldn't generate enough questions from these files." {
+		t.Errorf("job = %s %q", j.Status, j.Error)
+	}
+	if _, err := e.raw.GetQuestions(context.Background(), e.jobID); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("partial exam saved: %v", err)
+	}
+	if len(e.jobs.spend) != 1 || e.jobs.spend[0] <= 0 {
+		t.Errorf("spend = %v, want the call's cost recorded", e.jobs.spend)
+	}
+	if j.Usage.Dropped != 2 || j.Usage.Kept != 1 {
+		t.Errorf("usage = %+v", j.Usage)
+	}
+	// B-2.7 owns the one follow-up call (AI-spec 7.4); until then there is exactly one call.
+	if e.gen.callCount() != 1 {
+		t.Errorf("calls = %d", e.gen.callCount())
+	}
+}
+
+func TestWorkerShufflesMCQOptionsKeepingTheAnswer(t *testing.T) {
+	e := newWEnv(t, map[string]int{"1": 4})
+	e.w.rnd = zeroReader{} // n=4: swap(3,0), n=3: swap(2,0), n=2: swap(1,0)
+	e.gen.fn = func(ctx context.Context, in GenInput) (GenOutput, error) {
+		out := defaultOut(in)
+		for i := range out.Questions {
+			c := i % 4
+			out.Questions[i].CorrectIndex = &c
+			out.Questions[i].Text = fmt.Sprintf("Distinct prompt %c about %c", 'a'+i, 'q'+i)
+		}
+		return out, nil
+	}
+	e.run(t)
+	qs, _ := e.raw.GetQuestions(context.Background(), e.jobID)
+	if len(qs) != 4 {
+		t.Fatalf("qs = %+v", qs)
+	}
+	letters := []string{"a", "b", "c", "d"}
+	for i, q := range qs {
+		if q.Options[0] == "a" && q.Options[3] == "d" {
+			t.Errorf("question %d options not shuffled: %v", i, q.Options)
+		}
+		if q.Options[*q.CorrectIndex] != letters[i%4] {
+			t.Errorf("question %d: answer %q at %d, want %q", i, q.Options[*q.CorrectIndex], *q.CorrectIndex, letters[i%4])
+		}
+	}
+}
+
+func TestWorkerAssignsIDsFromInjectedClockAndEntropy(t *testing.T) {
+	e := newWEnv(t, map[string]int{"1": 3})
+	e.w.idEntropy = bytes.NewReader(bytes.Repeat([]byte{9}, 1024))
+	e.run(t)
+	qs, _ := e.raw.GetQuestions(context.Background(), e.jobID)
+	seen := map[string]bool{}
+	for _, q := range qs {
+		id, err := ulid.ParseStrict(q.ID)
+		if err != nil || id.Time() != ulid.Timestamp(t0) || seen[q.ID] {
+			t.Errorf("id %q: err=%v time=%d dup=%v", q.ID, err, id.Time(), seen[q.ID])
+		}
+		seen[q.ID] = true
+	}
+}
+
+func TestFakeGeneratorOutputSurvivesValidation(t *testing.T) {
+	// The local -fake-llm server relies on this: 15-question calls must pass the duplicate check.
+	e := newWEnv(t, map[string]int{"1": 20, "2": 15, "5": 4})
+	e.w.Gens = FixedFactory{Generator: FakeGenerator{}}
+	e.run(t)
+	if j := e.job(t); j.Status != store.JobDone || j.Done != 39 {
+		t.Errorf("mcq: job = %s %q done=%d", j.Status, j.Error, j.Done)
+	}
+	labels := map[string]store.Document{"doc-1": {ID: "d1", Name: "n"}, "doc-2": {ID: "d2", Name: "m"}}
+	for _, typ := range []string{"mcq", "free"} {
+		var avoid []string
+		for call := 0; call < 3; call++ {
+			out, _ := FakeGenerator{}.Generate(context.Background(), GenInput{
+				Sources: []SourceFile{{Label: "doc-1"}, {Label: "doc-2"}}, Type: typ, Marks: 3, Count: 15, Avoid: avoid,
+			})
+			kept, dropped := Validate(out.Questions, CallSpec{Type: typ, Marks: 3}, labels, avoid)
+			if len(kept) != 15 || dropped != 0 {
+				t.Fatalf("%s call %d: kept=%d dropped=%d", typ, call, len(kept), dropped)
+			}
+			for _, q := range kept {
+				avoid = append(avoid, q.Text)
+			}
+		}
 	}
 }
