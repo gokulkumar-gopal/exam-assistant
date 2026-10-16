@@ -35,5 +35,7 @@ describe("validateQuestionEdit", () => {
   it("rejects an empty option", () => expect(validateQuestionEdit({ ...mcq, options: ["a", "", "c", "d"] }, "mcq")).toMatch(/option/i));
   it("rejects duplicate options", () => expect(validateQuestionEdit({ ...mcq, options: ["a", "A ", "c", "d"] }, "mcq")).toMatch(/different/i));
   it("rejects a missing correct answer", () => expect(validateQuestionEdit({ ...mcq, correctIndex: undefined }, "mcq")).toMatch(/correct/i));
+  it("rejects an empty model answer for free text", () => expect(validateQuestionEdit({ text: "Q?", modelAnswer: " " }, "free")).toMatch(/model answer/i));
+  it("accepts a free-text edit with a model answer", () => expect(validateQuestionEdit({ text: "Q?", modelAnswer: "A" }, "free")).toBeNull());
   it("needs only text for free text", () => expect(validateQuestionEdit({ text: "Q?" }, "free")).toBeNull());
 });

@@ -1,12 +1,15 @@
 // Validation for the inline question editor (fs 6.4 Edit).
 import type { ExamType } from "./types";
 
-export interface QuestionDraft { text: string; options?: string[]; correctIndex?: number }
+export interface QuestionDraft { text: string; options?: string[]; correctIndex?: number; modelAnswer?: string }
 
 /** An error message, or null when the draft can be saved. */
 export function validateQuestionEdit(d: QuestionDraft, type: ExamType): string | null {
   if (!d.text.trim()) return "Write the question.";
-  if (type !== "mcq") return null;
+  if (type !== "mcq") {
+    // A free-text question that has a model answer must keep a non-empty one.
+    return d.modelAnswer !== undefined && !d.modelAnswer.trim() ? "Write the model answer." : null;
+  }
   const opts = d.options ?? [];
   if (opts.length !== 4 || opts.some((o) => !o.trim())) return "Fill in all four options.";
   const norm = opts.map((o) => o.trim().toLowerCase());

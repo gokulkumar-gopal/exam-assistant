@@ -1,6 +1,6 @@
 "use client";
 // One generated question (fs 6.4). All question and option text is rendered as React text nodes only.
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { MarkBadge } from "@/components/MarkBadge";
 import { validateQuestionEdit } from "@/lib/question-edit";
 import type { ExamType, Question } from "@/lib/types";
@@ -28,10 +28,22 @@ export function QuestionCard({ index, question, type, regenerating, locked, onSa
   const [text, setText] = useState(question.text);
   const [options, setOptions] = useState<string[]>(question.options ?? []);
   const [correct, setCorrect] = useState<number | undefined>(question.correctIndex);
+  const [modelAnswer, setModelAnswer] = useState<string | undefined>(question.modelAnswer);
   const [error, setError] = useState<string | null>(null);
+  const editRef = useRef<HTMLButtonElement>(null);
+  const refocus = useRef(false);
   const id = `q-${question.id}`;
 
+  // Save and Cancel unmount the focused button; put focus back on Edit once it is rendered again.
+  useEffect(() => {
+    if (!editing && refocus.current) {
+      refocus.current = false;
+      editRef.current?.focus();
+    }
+  }, [editing]);
+
   const startEdit = () => {
+    setModelAnswer(question.modelAnswer);
     setText(question.text);
     setOptions(question.options ?? []);
     setCorrect(question.correctIndex);
@@ -39,7 +51,7 @@ export function QuestionCard({ index, question, type, regenerating, locked, onSa
     setEditing(true);
   };
   const save = () => {
-    const draft = { text, options: type === "mcq" ? options : undefined, correctIndex: correct };
+    const draft = { text, options: type === "mcq" ? options : undefined, correctIndex: correct, modelAnswer: type === "free" ? modelAnswer : undefined };
     const err = validateQuestionEdit(draft, type);
     if (err) { setError(err); return; }
     const next: Question = { ...question, text: text.trim() };
@@ -47,7 +59,9 @@ export function QuestionCard({ index, question, type, regenerating, locked, onSa
       next.options = options.map((o) => o.trim());
       next.correctIndex = correct;
     }
+    if (type === "free" && modelAnswer !== undefined) next.modelAnswer = modelAnswer.trim();
     onSave(next);
+    refocus.current = true;
     setEditing(false);
   };
 
@@ -59,8 +73,8 @@ export function QuestionCard({ index, question, type, regenerating, locked, onSa
         {question.sourceDocName && <span className="text-[13px] text-muted">from {question.sourceDocName}</span>}
         {!editing && (
           <div className="ml-auto flex flex-wrap">
-            <button type="button" className={TXT_BTN} onClick={startEdit} disabled={busy}>Edit<span className="sr-only"> question {index}</span></button>
-            <button type="button" className={TXT_BTN} onClick={onRegenerate} disabled={busy || locked}>
+            <button type="button" ref={editRef} data-focus={`${question.id}:edit`} className={TXT_BTN} onClick={startEdit} disabled={busy}>Edit<span className="sr-only"> question {index}</span></button>
+            <button type="button" data-focus={`${question.id}:regen`} className={TXT_BTN} onClick={onRegenerate} disabled={busy || locked}>
               {regenerating ? "Regenerating…" : "Regenerate"}<span className="sr-only"> question {index}</span>
             </button>
             <button type="button" className={TXT_BTN} onClick={onDelete} disabled={busy}>Delete<span className="sr-only"> question {index}</span></button>
@@ -101,10 +115,16 @@ export function QuestionCard({ index, question, type, regenerating, locked, onSa
               </div>
             </fieldset>
           )}
+          {type === "free" && modelAnswer !== undefined && (
+            <div>
+              <label htmlFor={`${id}-answer`} className="mb-1 block font-semibold">Model answer</label>
+              <textarea id={`${id}-answer`} className={FIELD} rows={3} value={modelAnswer} onChange={(e) => setModelAnswer(e.target.value)} />
+            </div>
+          )}
           {error && <p role="alert" className="text-[13px] text-bad">{error}</p>}
           <div className="flex gap-2">
             <button type="button" className="btn-primary" onClick={save}>Save</button>
-            <button type="button" className="btn-secondary" onClick={() => { setEditing(false); setError(null); }}>Cancel</button>
+            <button type="button" className="btn-secondary" onClick={() => { refocus.current = true; setEditing(false); setError(null); }}>Cancel</button>
           </div>
         </div>
       ) : (
