@@ -23,9 +23,8 @@ export function ExamBar({ title, save, peeksLeft, closesAtIso, offsetMs, exiting
     <header className="sticky top-0 z-30 h-14 border-b border-line bg-white">
       <div className="page flex h-full items-center gap-3">
         <div className="min-w-0 flex-1 truncate font-semibold">{title}</div>
-        {/* The failure is always visible; the quiet "Saved" time hides on narrow screens. */}
         {text && (
-          <span aria-hidden="true" className={cn("text-[13px]", failing ? "text-bad" : "hidden text-muted sm:inline")}>{text}</span>
+          <span aria-hidden="true" className={cn("shrink-0 whitespace-nowrap text-[13px]", failing ? "text-bad" : "text-muted")}>{text}</span>
         )}
         <span role="status" className="sr-only">{failing ? text : ""}</span>
         {peeksLeft !== undefined && <span className="text-sm">💡 {peeksLeft} left</span>}

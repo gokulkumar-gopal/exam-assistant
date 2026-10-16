@@ -5,7 +5,8 @@ import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { api, ApiError, serverNow } from "@/lib/api";
 import { useAttempt } from "@/lib/attempt";
-import { createAutosaver, type AutosaveState } from "@/lib/autosave";
+import { createAutosaver, keepaliveOk, shouldFlushOnEvent, type AutosaveState } from "@/lib/autosave";
+import { scheduleAt } from "@/lib/timer";
 import { answersByIndex, clampIndex, closesText, metaText, takeRedirect } from "@/lib/take";
 import type { ExamResponse } from "@/lib/types";
 import { DotNav } from "@/components/DotNav";
@@ -114,30 +115,47 @@ function TakeScreen({ data }: { data: ExamResponse }) {
   useEffect(() => {
     const saver = createAutosaver({
       put: async (answers, lastQuestionIndex) => {
-        await api("PUT", `/exams/${encodeURIComponent(examId)}/attempt`, { answers, lastQuestionIndex }, { noRetry: true });
+        const body = { answers, lastQuestionIndex };
+        // Leaving the page: keepalive lets the request finish after unload (only if the body is small enough).
+        const keepalive = document.visibilityState === "hidden" && keepaliveOk(JSON.stringify(body));
+        await api("PUT", `/exams/${encodeURIComponent(examId)}/attempt`, body, { noRetry: true, keepalive });
       },
       snapshot: () => latest.current,
       initialSavedAt: Number.isNaN(initialSaved) ? null : initialSaved,
       onState: (s) => { setSave(s); if (s.status === "closed") goClosed(); },
     });
     saverRef.current = saver;
-    return () => { void saver.flush(); saver.dispose(); saverRef.current = null; };
+    // Closing the tab or switching away: send what is pending (closing loses at most the last keystroke).
+    const onLeave = (e: Event) => { if (shouldFlushOnEvent(e.type, document.visibilityState)) void saver.flush(); };
+    window.addEventListener("pagehide", onLeave);
+    document.addEventListener("visibilitychange", onLeave);
+    return () => {
+      window.removeEventListener("pagehide", onLeave);
+      document.removeEventListener("visibilitychange", onLeave);
+      // One best-effort final save; its retries never outlive the page (dispose stops them).
+      void saver.flush();
+      saver.dispose();
+      saverRef.current = null;
+    };
     // initialSaved comes from props fixed for this keyed screen.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [examId, goClosed]);
   // Only a real change schedules a save (not mount, and not React's dev double-run of effects).
+  // Typing is debounced (500 ms); option clicks, keys and navigation save right away (fs 6.5).
+  const typing = useRef(false);
   const seen = useRef({ answers: a.answers, index });
   useEffect(() => {
     if (seen.current.answers === a.answers && seen.current.index === index) return;
     seen.current = { answers: a.answers, index };
-    saverRef.current?.change();
+    saverRef.current?.change({ immediate: !typing.current });
+    typing.current = false;
   }, [a.answers, index]);
 
   // Past the grace window the exam is over whatever the autosave says: show the result.
   useEffect(() => {
     if (Number.isNaN(acceptingMs)) return;
-    const id = setTimeout(goClosed, Math.max(0, acceptingMs - (Date.now() + offsetMs)));
-    return () => clearTimeout(id);
+    // scheduleAt re-arms for far deadlines (a single setTimeout overflows above ~24.8 days).
+    return scheduleAt(acceptingMs, () => Date.now() + offsetMs, goClosed);
   }, [acceptingMs, offsetMs, goClosed]);
 
   const [exiting, setExiting] = useState(false);
@@ -240,7 +258,7 @@ function TakeScreen({ data }: { data: ExamResponse }) {
                 placeholder="Type your answer"
                 maxLength={MAX_ANSWER}
                 value={a.answers[q.id] ?? ""}
-                onChange={(e) => a.setAnswer(q.id, e.target.value)}
+                onChange={(e) => { typing.current = true; a.setAnswer(q.id, e.target.value); }}
                 className="min-h-[120px] w-full resize-y rounded-[10px] border border-line bg-card px-3.5 py-2.5 text-[15px]"
               />
             </div>

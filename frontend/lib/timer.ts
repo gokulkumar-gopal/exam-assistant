@@ -36,3 +36,22 @@ export function timerBucket(closesAtIso: string, nowMs: number): string {
   if (s > 0) return "1 minute left";
   return "Time is up. Closing…";
 }
+
+/** setTimeout fires immediately above 2^31-1 ms (about 24.8 days); stay safely below it. */
+export const MAX_DELAY = 2 ** 31 - 1 - 1000;
+export const armDelay = (ms: number): number => Math.max(0, Math.min(ms, MAX_DELAY));
+
+/**
+ * Run `cb` once when `now()` reaches `targetMs`, re-arming in chunks for far deadlines.
+ * `now` should be server-based (device clock plus offset). Returns a cancel function.
+ */
+export function scheduleAt(targetMs: number, now: () => number, cb: () => void): () => void {
+  let id: ReturnType<typeof setTimeout> | null = null;
+  const arm = () => {
+    const left = targetMs - now();
+    if (left <= 0) { id = null; cb(); return; }
+    id = setTimeout(arm, armDelay(left));
+  };
+  arm();
+  return () => { if (id !== null) clearTimeout(id); id = null; };
+}

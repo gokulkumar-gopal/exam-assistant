@@ -14,7 +14,7 @@ export interface AutosaverOpts {
   debounceMs?: number;
   retryMs?: number;
   onState: (s: AutosaveState) => void;
-  /** Latest answers and index, read when a put is sent. `change(s)` may pass it instead. */
+  /** Latest answers and index, read when a put is sent. `change({snapshot})` may pass it instead. */
   snapshot?: () => { answers: Record<string, string>; lastQuestionIndex: number };
   now?: () => number;
   /** Last successful save time known at load (resume), so the bar can show it before any edit. */
@@ -29,28 +29,33 @@ export function createAutosaver(o: AutosaverOpts) {
   let dirty = false;
   let failing = false;
   let closed = false;
+  let disposed = false;
+  let wantsNow = false; // an immediate change is waiting (for the timer or an in-flight put)
   let inflight: Promise<FlushResult> | null = null;
+  let flushing: Promise<FlushResult> | null = null;
   let savedAt: number | null = o.initialSavedAt ?? null;
   let latest: { answers: Record<string, string>; lastQuestionIndex: number } | undefined;
 
-  const emit = (status: AutosaveState["status"]) => o.onState({ status, savedAt });
+  const emit = (status: AutosaveState["status"]) => { if (!disposed) o.onState({ status, savedAt }); };
   const clear = () => { if (timer) { clearTimeout(timer); timer = null; } };
 
   function schedule(ms: number) {
     clear();
+    if (disposed) return;
     timer = setTimeout(fire, ms);
   }
 
   async function fire() {
     timer = null;
-    if (inflight) await inflight.catch(() => undefined);
-    if (closed || timer || !dirty) return;
+    while (inflight) await inflight.catch(() => undefined);
+    if (disposed || closed || timer || !dirty) return;
     await attempt();
   }
 
   function attempt(): Promise<FlushResult> {
     clear();
     dirty = false;
+    wantsNow = false;
     const snap = o.snapshot ? o.snapshot() : latest;
     const p = (async (): Promise<FlushResult> => {
       try {
@@ -58,7 +63,7 @@ export function createAutosaver(o: AutosaverOpts) {
         savedAt = now();
         failing = false;
         emit("saved");
-        if (dirty && !closed) schedule(debounceMs);
+        if (dirty && !closed) schedule(wantsNow ? 0 : debounceMs);
         return "saved";
       } catch (e) {
         if ((e as { status?: number } | null)?.status === 409) {
@@ -71,7 +76,7 @@ export function createAutosaver(o: AutosaverOpts) {
         failing = true;
         dirty = true;
         emit("retrying");
-        schedule(retryMs);
+        schedule(retryMs); // no-op once disposed: a retry never outlives the page
         return "failed";
       }
     })();
@@ -82,25 +87,50 @@ export function createAutosaver(o: AutosaverOpts) {
   }
 
   return {
-    /** Something changed: save the latest snapshot 500 ms after the last change. */
-    change(s?: { answers: Record<string, string>; lastQuestionIndex: number }) {
-      if (closed) return;
-      if (s) latest = s;
+    /**
+     * Something changed. Text is saved 500 ms after the last change; `immediate` (option clicks,
+     * navigation) saves right away, still queued behind a put already in flight.
+     */
+    change(c?: { immediate?: boolean; snapshot?: { answers: Record<string, string>; lastQuestionIndex: number } }) {
+      if (closed || disposed) return;
+      if (c?.snapshot) latest = c.snapshot;
       dirty = true;
-      schedule(debounceMs);
+      if (c?.immediate) wantsNow = true;
+      schedule(c?.immediate ? 0 : debounceMs);
     },
-    /** Save now. "saved" also when nothing was pending; "failed" keeps retrying in the background. */
-    async flush(): Promise<FlushResult> {
-      if (closed) return "closed";
+    /**
+     * Save now. "saved" also when nothing was pending; "failed" keeps retrying in the background.
+     * Concurrent calls share one run. A flush started before dispose() still sends its one put.
+     */
+    flush(): Promise<FlushResult> {
+      if (closed) return Promise.resolve("closed");
+      if (disposed) return Promise.resolve(dirty || failing ? "failed" : "saved");
+      if (flushing) return flushing;
       clear();
-      if (inflight) await inflight;
-      if (closed) return "closed";
-      if (!dirty && !failing) return "saved";
-      return attempt();
+      const p = (async (): Promise<FlushResult> => {
+        while (inflight) await inflight.catch(() => undefined);
+        if (closed) return "closed";
+        if (!dirty && !failing) return "saved";
+        return attempt();
+      })();
+      flushing = p;
+      const done = () => { if (flushing === p) flushing = null; };
+      p.then(done, done);
+      return p;
     },
-    /** Stop timers (unmount). Call flush() first to send pending changes. */
-    dispose() { clear(); },
+    /** Stop for good (unmount): no timers, no new puts, no state reports. Call flush() first to send pending changes. */
+    dispose() { disposed = true; clear(); },
   };
+}
+
+/** Browsers cap a keepalive request body at 64 KB; stay under it (UTF-8 bytes). */
+export function keepaliveOk(body: string): boolean {
+  return new TextEncoder().encode(body).length < 60_000;
+}
+
+/** Leaving the page: flush on pagehide and when the page becomes hidden. */
+export function shouldFlushOnEvent(type: string, visibility: string): boolean {
+  return type === "pagehide" || (type === "visibilitychange" && visibility === "hidden");
 }
 
 const hhmm = (ms: number) => {
