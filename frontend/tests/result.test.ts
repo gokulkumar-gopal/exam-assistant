@@ -9,24 +9,24 @@ const leaky = {
 
 describe("resultCardView", () => {
   it("hides the pill and the correct line when the key is hidden, even if the object carries the key", () => {
-    expect(resultCardView(leaky, false)).toEqual({ showPill: false, showCorrect: false });
-    expect(resultCardView({ correctIndex: 1, modelAnswer: "x" }, false)).toEqual({ showPill: false, showCorrect: false });
+    expect(resultCardView(leaky, false, "mcq")).toEqual({ showPill: false, showCorrect: false });
+    expect(resultCardView({ correctIndex: 1, modelAnswer: "x" }, false, "mcq")).toEqual({ showPill: false, showCorrect: false });
   });
   it("shows the pill and the correct line when the key is visible", () => {
-    expect(resultCardView(leaky, true)).toEqual({ showPill: true, showCorrect: true });
-    expect(resultCardView({ correctIndex: 1, modelAnswer: "x" }, true)).toEqual({ showPill: true, showCorrect: true });
+    expect(resultCardView(leaky, true, "mcq")).toEqual({ showPill: true, showCorrect: true });
+    expect(resultCardView({ correctIndex: 1, modelAnswer: "x" }, true, "mcq")).toEqual({ showPill: true, showCorrect: true });
   });
   it("free text gets no pill, only the model answer", () => {
-    expect(resultCardView({ modelAnswer: "m", correct: undefined }, true)).toEqual({ showPill: false, showCorrect: true });
+    expect(resultCardView({ modelAnswer: "m", correct: undefined }, true, "free")).toEqual({ showPill: false, showCorrect: true });
   });
   it("a visible key with nothing to show shows nothing", () => {
-    expect(resultCardView({}, true)).toEqual({ showPill: false, showCorrect: false });
+    expect(resultCardView({}, true, "mcq")).toEqual({ showPill: false, showCorrect: false });
   });
 });
 
 describe("resultCardData", () => {
   it("never carries key material when hidden", () => {
-    const d = resultCardData(leaky, false, 1);
+    const d = resultCardData(leaky, false, 1, "mcq");
     expect(JSON.stringify(d)).not.toContain("B1");
     expect(JSON.stringify(d)).not.toContain("The model answer");
     expect(d.pill).toBeNull();
@@ -36,15 +36,15 @@ describe("resultCardData", () => {
     expect(d.yourAnswer).toBe("A1");
   });
   it("MCQ visible: pill with a text label and the correct text", () => {
-    expect(resultCardData(leaky, true, 1).pill).toEqual({ variant: "bad", text: "✗ Incorrect" });
-    expect(resultCardData({ ...leaky, correct: true }, true, 1).pill).toEqual({ variant: "ok", text: "✓ Correct" });
-    expect(resultCardData(leaky, true, 1).correctText).toBe("B1");
+    expect(resultCardData(leaky, true, 1, "mcq").pill).toEqual({ variant: "bad", text: "✗ Incorrect" });
+    expect(resultCardData({ ...leaky, correct: true }, true, 1, "mcq").pill).toEqual({ variant: "ok", text: "✓ Correct" });
+    expect(resultCardData(leaky, true, 1, "mcq").correctText).toBe("B1");
   });
   it("falls back to options[correctIndex] when correctAnswer is absent", () => {
-    expect(resultCardData({ options: ["x", "y"], correctIndex: 1, correct: true }, true, 1).correctText).toBe("y");
+    expect(resultCardData({ options: ["x", "y"], correctIndex: 1, correct: true }, true, 1, "mcq").correctText).toBe("y");
   });
   it("free text visible: model answer and self-check; markup stays literal", () => {
-    const d = resultCardData({ id: "f", marks: 3, text: "<b>x</b>", yourAnswer: "mine", modelAnswer: "<i>m</i>" }, true, 2);
+    const d = resultCardData({ id: "f", marks: 3, text: "<b>x</b>", yourAnswer: "mine", modelAnswer: "<i>m</i>" }, true, 2, "free");
     expect(d.kind).toBe("free");
     expect(d.canSelfCheck).toBe(true);
     expect(d.modelAnswer).toBe("<i>m</i>");
@@ -52,8 +52,33 @@ describe("resultCardData", () => {
     expect(d.number).toBe(2);
   });
   it("a blank answer reads as no answer", () => {
-    expect(resultCardData({ yourAnswer: "" }, false, 1).yourAnswer).toBe("No answer");
-    expect(resultCardData({}, false, 1).yourAnswer).toBe("No answer");
+    expect(resultCardData({ yourAnswer: "" }, false, 1, "mcq").yourAnswer).toBe("No answer");
+    expect(resultCardData({}, false, 1, "mcq").yourAnswer).toBe("No answer");
+    expect(resultCardData({ yourAnswer: "  \n " }, false, 1, "mcq").yourAnswer).toBe("No answer");
+  });
+});
+
+describe("card kind comes from the exam type, never from the payload shape", () => {
+  // A Go handler may emit these zero values for free-text questions.
+  const goFree = { id: "f", marks: 3, text: "Explain", options: [] as string[], correct: false, correctIndex: 0, yourAnswer: "mine", modelAnswer: "The model" };
+  it("a free exam renders free text even with options [], correct false, correctIndex 0", () => {
+    expect(resultCardView(goFree, true, "free")).toEqual({ showPill: false, showCorrect: true });
+    const d = resultCardData(goFree, true, 1, "free");
+    expect(d.kind).toBe("free");
+    expect(d.pill).toBeNull();
+    expect(d.modelAnswer).toBe("The model");
+    expect(d.correctText).toBeUndefined();
+    expect(d.canSelfCheck).toBe(true);
+  });
+  it("a free exam with the key hidden still leaks nothing", () => {
+    expect(resultCardView(goFree, false, "free")).toEqual({ showPill: false, showCorrect: false });
+    const d = resultCardData(goFree, false, 1, "free");
+    expect(JSON.stringify(d)).not.toContain("The model");
+    expect(d.canSelfCheck).toBe(false);
+  });
+  it("an MCQ exam is unaffected, and a question with no options or flags is still MCQ", () => {
+    expect(resultCardData({ ...leaky, correct: true }, true, 1, "mcq").pill?.text).toBe("✓ Correct");
+    expect(resultCardData({ correct: false, correctAnswer: "y" }, true, 1, "mcq").kind).toBe("mcq");
   });
 });
 

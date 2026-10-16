@@ -51,7 +51,7 @@ function seedExams() {
       attempt: { status: "in_progress", answers: { q21: "Light reaction" }, lastQuestionIndex: 0 }, assigned: [] },
     { id: "e3", title: "Last week's quiz", type: "mcq", closesAt: iso(now - 3 * 24 * HOUR), maxPeeks: 0,
       createdBy: rao, questions: mk(3, "mcq"), mine: false,
-      attempt: { status: "submitted", answers: { q31: "1", q32: "0", q33: "2", q34: "3" }, lastQuestionIndex: 3 }, assigned: [] },
+      attempt: { status: "submitted", answers: { q31: "Option B", q32: "Option A", q33: "Option C", q34: "Option D" }, lastQuestionIndex: 3 }, assigned: [] },
     { id: "e4", title: "My class test", type: "mcq", closesAt: iso(now + 2 * 24 * HOUR), maxPeeks: 0,
       createdBy: { id: demoUser.id, name: demoUser.name }, questions: mk(4, "mcq"), mine: true,
       attempt: null, assigned: ["aisha@x.com", "ben@x.com", "chen@x.com", "dev@x.com"] },
@@ -168,9 +168,9 @@ function stickyFlag(name: string): string | null {
 const acceptingUntil = (e: MockExam) => iso(Date.parse(e.closesAt) + GRACE);
 const over = (e: MockExam) => Date.now() >= Date.parse(e.closesAt) + GRACE;
 const keyVisible = (e: MockExam) => e.mine || over(e);
-/** MCQ answers are stored as the option text; a bare index string (older fixtures) is accepted too. */
+/** MCQ answers are stored as the option text (bs 9.3: exact match with options[correctIndex]). */
 const isRight = (q: Question, a: string | undefined) =>
-  a !== undefined && q.correctIndex !== undefined && (a === q.options?.[q.correctIndex] || a === String(q.correctIndex));
+  a !== undefined && q.correctIndex !== undefined && a === q.options?.[q.correctIndex];
 const totalMarks = (e: MockExam) => e.questions.reduce((s, q) => s + q.marks, 0);
 
 function grade(e: MockExam): { score: number | null; before: number | null } {
@@ -614,8 +614,8 @@ export function mockFetch(method: string, rawPath: string, body: unknown, idempo
     }
     if (method === "GET" && sub === "result") {
       if (!exam.attempt) return err(404, "not_found", "That item isn't available.");
-      // Mock-only page-URL flag (see seedResultFixtures): hidden | leak | fractional | unfinished.
-      const flag = stickyFlag("mockResult");
+      // Mock-only page-URL flag (see seedResultFixtures), honoured for e14 and e15 only: hidden | leak | fractional | unfinished.
+      const flag = exam.id === "e14" || exam.id === "e15" ? stickyFlag("mockResult") : null;
       const isOver = over(exam);
       if (flag === "unfinished" || (exam.attempt.status !== "submitted" && !isOver)) return err(409, "conflict", "Submit the exam to see results.");
       const hide = flag === "hidden" || flag === "leak";

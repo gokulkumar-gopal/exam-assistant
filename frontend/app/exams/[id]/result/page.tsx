@@ -65,7 +65,11 @@ export default function Page() {
 
   const data = view.kind === "ok" ? view.data : null;
   const cards = useMemo(
-    () => (data ? data.questions.map((q, i) => ({ id: q.id, marks: q.marks, revealed: q.revealed, card: resultCardData(q, data.keyVisible, i + 1) })) : []),
+    () => (data ? data.questions.map((q, i) => {
+      const card = resultCardData(q, data.keyVisible, i + 1, data.exam.type);
+      // A missed attempt has nothing to self-check.
+      return { id: q.id, marks: q.marks, revealed: q.revealed, card: data.status === "missed" ? { ...card, canSelfCheck: false } : card };
+    }) : []),
     [data],
   );
   const score = data
@@ -103,14 +107,16 @@ export default function Page() {
             <p className="text-[13px] text-muted">{keyAvailableLine(data.keyAvailableAt)}</p>
           )}
         </div>
-        <a
-          href={`/exams/${encoded}/print`}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="btn-secondary shrink-0"
-        >
-          Print
-        </a>
+        {(view.kind === "ok" || view.kind === "unfinished") && (
+          <a
+            href={`/exams/${encoded}/print`}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="btn-secondary shrink-0"
+          >
+            Print
+          </a>
+        )}
       </div>
       {view.kind === "loading" && <Skeleton />}
       {view.kind === "unfinished" && (

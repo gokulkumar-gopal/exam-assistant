@@ -2,6 +2,7 @@
 // resultCardData: when the key is hidden nothing here returns, or lets a caller reach, correct-answer material.
 import { scoreText } from "./format";
 import { submittedCell } from "./status";
+import type { ExamType } from "./types";
 
 /** A result question as the API sends it. The key fields may be present even when they must not be shown. */
 export interface ResultCardInput {
@@ -19,15 +20,18 @@ export interface ResultCardInput {
 
 export interface CardView { showPill: boolean; showCorrect: boolean }
 
-const isMcq = (q: ResultCardInput) => Array.isArray(q.options) || typeof q.correct === "boolean" || typeof q.correctIndex === "number";
 const hasModel = (q: ResultCardInput) => typeof q.modelAnswer === "string" && q.modelAnswer !== "";
 const hasCorrect = (q: ResultCardInput) =>
   (typeof q.correctAnswer === "string" && q.correctAnswer !== "") || typeof q.correctIndex === "number";
 
-/** Whether the correctness pill and the correct-answer line may be drawn. Both are always false while the key is hidden. */
-export function resultCardView(q: ResultCardInput, keyVisible: boolean): CardView {
+/**
+ * Whether the correctness pill and the correct-answer line may be drawn. Both are always false while the key is hidden.
+ * The card kind comes from the exam type only: payload fields (options, correct, correctIndex) may carry zero values
+ * for free text and never decide it.
+ */
+export function resultCardView(q: ResultCardInput, keyVisible: boolean, type: ExamType): CardView {
   if (!keyVisible) return { showPill: false, showCorrect: false };
-  return { showPill: isMcq(q), showCorrect: isMcq(q) ? hasCorrect(q) : hasModel(q) };
+  return type === "mcq" ? { showPill: typeof q.correct === "boolean" || hasCorrect(q), showCorrect: hasCorrect(q) } : { showPill: false, showCorrect: hasModel(q) };
 }
 
 export interface ResultCardData {
@@ -44,14 +48,14 @@ export interface ResultCardData {
 }
 
 /** The only shape the card component receives. Key fields are copied in only when resultCardView allows them. */
-export function resultCardData(q: ResultCardInput, keyVisible: boolean, number: number): ResultCardData {
-  const view = resultCardView(q, keyVisible);
-  const kind = isMcq(q) ? "mcq" : "free";
+export function resultCardData(q: ResultCardInput, keyVisible: boolean, number: number, type: ExamType): ResultCardData {
+  const view = resultCardView(q, keyVisible, type);
+  const kind = type;
   const out: ResultCardData = {
     number,
     kind,
     text: q.text ?? "",
-    yourAnswer: q.yourAnswer ? q.yourAnswer : "No answer",
+    yourAnswer: q.yourAnswer?.trim() ? q.yourAnswer : "No answer",
     pill: null,
     canSelfCheck: false,
   };
