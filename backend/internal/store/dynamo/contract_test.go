@@ -30,3 +30,11 @@ func TestJobStoreContract(t *testing.T) {
 		return s
 	})
 }
+
+func TestExamStoreContract(t *testing.T) {
+	storetest.RunExamStoreSuite(t, func(t *testing.T) store.ExamStore { s, _ := newStores(); return s })
+}
+
+func TestAttemptStoreContract(t *testing.T) {
+	storetest.RunAttemptStoreSuite(t, func(t *testing.T) store.AttemptStore { s, _ := newStores(); return s })
+}
