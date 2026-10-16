@@ -162,6 +162,7 @@ Resources:
       Timeout: 29
       ReservedConcurrentExecutions: !If [ReserveApi, !Ref ApiReservedConcurrency, !Ref "AWS::NoValue"]
       FunctionUrlConfig: { AuthType: NONE }
+      LoggingConfig: { LogGroup: !Ref ApiLogs }   # makes the function depend on the group, so Lambda never creates it first
       Environment:
         Variables:                     # the API never calls the LLM, so it gets no provider keys
           MODE: api
@@ -320,6 +321,7 @@ Outputs:
 ```
 
 **Notes on the template**
+- **Log groups are tied to their functions.** `LoggingConfig: { LogGroup: !Ref ApiLogs }` makes CloudFormation create the group before the function; without it Lambda can create the group itself on an early invoke or from a stale stack, and the stack create fails with "already exists" or the group lacks the 14-day retention. `WorkerFunction` needs the same `LoggingConfig: { LogGroup: !Ref WorkerLogs }` when it is added in D-2.1.
 - **Data layer is five tables and four indexes, all on-demand.** `users` has no index (login uses the email lock item, `backend-spec.md` section 6.2). Index projections are `INCLUDE` lists, never `ALL`: an index copies a write only when a projected attribute changes, so autosaving answers or embedding questions never writes to an index. (`day-index` has one partition per UTC day, which is fine at this volume: a handful of jobs a day.) `NonKeyAttributes` must match the attribute names the store implementation writes; the key attributes are projected automatically.
 - **The jobs table holds four kinds of item:** job status items (with `day`, `model` and live usage fields; `day-index` reads these), a questions item per job (`<jobId>#questions`, written just before the job turns `done`), quota counters (`quota#<userId>#<yyyymmdd>`, `quota#global#<yyyymmdd>`, `quota#global#<yyyymm>`), and usage counters per model (`usage#<yyyymm>#<modelId>`, `usage#<yyyymmdd>#<modelId>`). All carry `ttl` (jobs 24 hours, daily quota and usage items 3 days, monthly items 40 days).
 - **`ENV: production`** is set for both stages so the session cookie always has the `Secure` flag when deployed. Only a locally run server uses `ENV=local`.

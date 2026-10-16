@@ -34,6 +34,7 @@ Resources:
       CodeUri: .
       Timeout: 29
       FunctionUrlConfig: { AuthType: NONE }
+      LoggingConfig: { LogGroup: !Ref ApiLogs }   # makes the function depend on the group, so Lambda never creates it first
       Environment:
         Variables:
           MODE: api
@@ -46,4 +47,6 @@ Resources:
     Properties: { LogGroupName: !Sub "/aws/lambda/exam-assistant-${Stage}-api", RetentionInDays: 14 }
 
 Outputs:
-  FunctionUrl: { Value: !GetAtt ApiFunctionUrl.FunctionUrl }
+  FunctionUrl:
+    Description: Function URL. The value keeps a trailing slash; consumers ($DEV_URL, Vercel API_URL) must strip it.
+    Value: !GetAtt ApiFunctionUrl.FunctionUrl
