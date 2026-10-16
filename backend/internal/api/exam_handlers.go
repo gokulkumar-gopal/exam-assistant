@@ -129,6 +129,19 @@ func registerExamRoutes(rt *routeTable, deps Deps) {
 			"serverTime": deps.Clock.Now().UTC().Format(time.RFC3339),
 		})
 	})))
+	rt.handle("GET", "/exams/{id}/result", RequireUser(deps, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		u, _ := UserFrom(r.Context())
+		res, err := deps.Exams.Result(r.Context(), u, r.PathValue("id"))
+		if err != nil {
+			WriteError(w, r, err)
+			return
+		}
+		w.Header().Set("Cache-Control", "no-store")
+		WriteJSON(w, http.StatusOK, struct {
+			ServerTime string `json:"serverTime"`
+			exams.ResultView
+		}{deps.Clock.Now().UTC().Format(time.RFC3339), res})
+	})))
 	rt.handle("POST", "/exams/{id}/submit", RequireUser(deps, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var in exams.SubmitInput
 		if err := decodeOptional(w, r, &in, autosaveBodyCap); err != nil {
