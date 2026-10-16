@@ -6,9 +6,18 @@ Parameters:
   Stage:           { Type: String, AllowedValues: [dev, prod] }
   JwtSecret:       { Type: String, NoEcho: true, MinLength: 32 }
   LlmProviders:    { Type: String, Default: anthropic, Description: "Enabled providers, comma-separated: anthropic, gemini (for example gemini,anthropic)" }
+  LlmApiKey:       { Type: String, NoEcho: true, Default: "", Description: "Anthropic API key (LLM_API_KEY). Required when anthropic is enabled" }
+  GeminiApiKey:    { Type: String, NoEcho: true, Default: "", Description: "Gemini API key (GEMINI_API_KEY), paid tier only. Required when gemini is enabled" }
+  LlmModel:        { Type: String, Default: "", Description: "Default model ID. Empty means the cheapest enabled model in the backend's catalog" }
   GoogleClientId:  { Type: String, Description: "Google OAuth client ID that sign-in tokens must be issued for" }
   AllowedOrigins:  { Type: String, Description: "Comma-separated, e.g. https://app.example.com,http://localhost:3000" }
   FrontendOrigins: { Type: CommaDelimitedList, Description: "Same origins, for S3 CORS (used by the uploads bucket CORS)" }
+  ApiReservedConcurrency:    { Type: Number, Default: 0, Description: "0 = no reservation. Suggested 20, only if the account concurrency quota allows it" }
+  WorkerReservedConcurrency: { Type: Number, Default: 0, Description: "0 = no reservation. Suggested 5, only if the account concurrency quota allows it" }
+
+Conditions:
+  ReserveApi:    !Not [!Equals [!Ref ApiReservedConcurrency, 0]]
+  ReserveWorker: !Not [!Equals [!Ref WorkerReservedConcurrency, 0]]
 
 Globals:
   Function:
@@ -21,7 +30,8 @@ Globals:
         ENV: production
         STAGE: !Ref Stage
         S3_BUCKET: !Ref UploadsBucket
-        LLM_PROVIDERS: !Ref LlmProviders
+        LLM_PROVIDERS: !Ref LlmProviders  # not secret; the API lists and validates models with it, the worker uses it to pick a provider
+        LLM_MODEL: !Ref LlmModel          # not secret; empty means the cheapest enabled model
 
 Resources:
   ApiFunction:
@@ -31,39 +41,89 @@ Resources:
       FunctionName: !Sub "exam-assistant-${Stage}-api"
       CodeUri: .
       Timeout: 29
+      ReservedConcurrentExecutions: !If [ReserveApi, !Ref ApiReservedConcurrency, !Ref "AWS::NoValue"]
       FunctionUrlConfig: { AuthType: NONE }
       LoggingConfig: { LogGroup: !Ref ApiLogs }   # makes the function depend on the group, so Lambda never creates it first
       Environment:
-        Variables:
+        Variables:                     # the API never calls the LLM, so it gets no provider keys
           MODE: api
           JWT_SECRET: !Ref JwtSecret
           GOOGLE_CLIENT_ID: !Ref GoogleClientId
           ALLOWED_ORIGINS: !Ref AllowedOrigins
+          WORKER_FUNCTION_NAME: !Sub "exam-assistant-${Stage}-worker"
+      # Least privilege, derived from what internal/store/dynamo and internal/docs call (TestIAMPoliciesMatchDerivation, TestStoreCodeIAMDerivation).
+      # No Scan, no BatchWriteItem, no DeleteItem outside documents. Transactions (users, jobs) need Put/Update on each item's table.
       Policies:
         - Statement:
+            - Effect: Allow             # users: get, batch get, signup and Google link transactions (Put + Update)
+              Action: [dynamodb:GetItem, dynamodb:BatchGetItem, dynamodb:PutItem, dynamodb:UpdateItem]
+              Resource: !GetAtt UsersTable.Arn
+            - Effect: Allow             # documents: the only table with DeleteItem; ListReady queries the base table
+              Action: [dynamodb:GetItem, dynamodb:BatchGetItem, dynamodb:PutItem, dynamodb:UpdateItem, dynamodb:DeleteItem, dynamodb:Query]
+              Resource: !GetAtt DocumentsTable.Arn
+            - Effect: Allow             # exams: immutable once created (no UpdateItem)
+              Action: [dynamodb:GetItem, dynamodb:BatchGetItem, dynamodb:PutItem]
+              Resource: !GetAtt ExamsTable.Arn
             - Effect: Allow
-              Action: [dynamodb:GetItem, dynamodb:PutItem, dynamodb:UpdateItem, dynamodb:DeleteItem,
-                       dynamodb:Query, dynamodb:BatchGetItem, dynamodb:ConditionCheckItem]
-              Resource:
-                - !GetAtt UsersTable.Arn
-                - !GetAtt DocumentsTable.Arn
-                - !GetAtt ExamsTable.Arn
-                - !Sub "${ExamsTable.Arn}/index/*"
-                - !GetAtt AttemptsTable.Arn
-                - !Sub "${AttemptsTable.Arn}/index/*"
-                - !GetAtt JobsTable.Arn
-                - !Sub "${JobsTable.Arn}/index/*"     # includes day-index, which the usage page queries
+              Action: dynamodb:Query
+              Resource: !Sub "${ExamsTable.Arn}/index/creator-index"
+            - Effect: Allow             # attempts: ListByExam queries the base table
+              Action: [dynamodb:GetItem, dynamodb:PutItem, dynamodb:UpdateItem, dynamodb:Query]
+              Resource: !GetAtt AttemptsTable.Arn
+            - Effect: Allow
+              Action: dynamodb:Query
+              Resource: !Sub "${AttemptsTable.Arn}/index/user-index"
+            - Effect: Allow             # jobs: create-with-quota transaction (Put + Update), cancel, get questions; BatchGet: usage counters (B-5a.2, backend-spec 6.3)
+              Action: [dynamodb:GetItem, dynamodb:BatchGetItem, dynamodb:PutItem, dynamodb:UpdateItem]
+              Resource: !GetAtt JobsTable.Arn
+            - Effect: Allow             # owner-index today; day-index is for the usage page
+              Action: dynamodb:Query
+              Resource: !Sub "${JobsTable.Arn}/index/*"
             - Effect: Allow
               Action: [s3:PutObject, s3:GetObject, s3:DeleteObject]
               Resource: !Sub "${UploadsBucket.Arn}/*"
             - Effect: Allow
               Action: s3:ListBucket        # without it, HeadObject on a missing key returns 403, not 404
               Resource: !GetAtt UploadsBucket.Arn
-            # lambda:InvokeFunction on the worker arrives in D-2.1
+            - Effect: Allow
+              Action: lambda:InvokeFunction
+              Resource: !GetAtt WorkerFunction.Arn
+
+  WorkerFunction:
+    Type: AWS::Serverless::Function
+    Metadata: { BuildMethod: makefile }
+    Properties:
+      FunctionName: !Sub "exam-assistant-${Stage}-worker"
+      CodeUri: .
+      Timeout: 600                     # platform ceiling; the job's own deadline is 8 minutes (backend-spec 7.2)
+      ReservedConcurrentExecutions: !If [ReserveWorker, !Ref WorkerReservedConcurrency, !Ref "AWS::NoValue"]
+      LoggingConfig: { LogGroup: !Ref WorkerLogs }
+      Environment:
+        Variables:                     # the worker needs the provider keys, not the session secret or Google
+          MODE: worker
+          LLM_API_KEY: !Ref LlmApiKey        # Anthropic
+          GEMINI_API_KEY: !Ref GeminiApiKey  # Gemini (paid tier)
+      EventInvokeConfig:
+        MaximumRetryAttempts: 0          # a retried job would run the LLM calls twice
+        MaximumEventAgeInSeconds: 3600
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action: dynamodb:BatchGetItem   # GetDocs reads the source document rows; nothing else on documents
+              Resource: !GetAtt DocumentsTable.Arn
+            - Effect: Allow
+              Action: [dynamodb:GetItem, dynamodb:PutItem, dynamodb:UpdateItem]   # claim, heartbeat, finish, questions item, spend counter; no Query, no index
+              Resource: !GetAtt JobsTable.Arn
+            - Effect: Allow
+              Action: s3:GetObject
+              Resource: !Sub "${UploadsBucket.Arn}/*"
 
   ApiLogs:
     Type: AWS::Logs::LogGroup
     Properties: { LogGroupName: !Sub "/aws/lambda/exam-assistant-${Stage}-api", RetentionInDays: 14 }
+  WorkerLogs:
+    Type: AWS::Logs::LogGroup
+    Properties: { LogGroupName: !Sub "/aws/lambda/exam-assistant-${Stage}-worker", RetentionInDays: 14 }
 
   UploadsBucket:
     Type: AWS::S3::Bucket
@@ -154,3 +214,5 @@ Outputs:
     Value: !GetAtt ApiFunctionUrl.FunctionUrl
   BucketName:
     Value: !Ref UploadsBucket
+  WorkerName:
+    Value: !Ref WorkerFunction

@@ -43,8 +43,9 @@ func handleWorkerEvent(r jobRunner) func(ctx context.Context, payload json.RawMe
 // buildWorker wires the MODE=worker dependencies: the DynamoDB stores, the S3 blob and
 // the generator factory. It makes no network calls and fails fast when something the
 // worker cannot run without is missing. The factory (providers.New) picks the Anthropic or
-// Gemini adapter from the job's model; a missing key fails that job with the generic message
-// and the log names the variable.
+// Gemini adapter from the job's model. A key for an enabled provider is checked earlier, in
+// config.Load (MODE=worker): when it is missing the process exits at init and the log names
+// the variable; the job stays queued until the stale rule shows it as failed.
 func buildWorker(cfg config.Config, awsCfg aws.Config) (*gen.Worker, error) {
 	var errs []error
 	if cfg.Stage == "" {
