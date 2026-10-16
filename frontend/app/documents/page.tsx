@@ -77,9 +77,10 @@ export default function Page() {
     setSelected((s) => new Set([...s].filter((id) => !gone.has(id))));
     setDeleting(false);
     const network = results.some((r) => r.status === "rejected" && isNetworkError(r.reason));
-    if (failedCount > 0 && network) toast.error(NETWORK_TOAST);
     if (failedCount === 0) {
       setConfirming(false);
+    } else if (network) {
+      toast.error(NETWORK_TOAST); // one error surface: toast for network failures, inline otherwise
     } else {
       setDeleteError(
         failedCount === 1
