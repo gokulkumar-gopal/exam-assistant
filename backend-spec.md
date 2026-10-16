@@ -697,8 +697,8 @@ This section lists requirements only. How to provision them (tools, templates, a
 - Presigned URLs last 10 minutes.
 
 **Permissions the code uses** (grant these and nothing broader, scoped to the project's own resources):
-- DynamoDB (API): `GetItem`, `PutItem`, `UpdateItem`, `DeleteItem`, `Query`, `BatchGetItem`, `ConditionCheckItem` on the five tables and their indexes. (`TransactWriteItems` has no permission of its own; it is authorised through the underlying write actions.) There is no `BatchWriteItem` and no `Scan`.
-- DynamoDB (worker): `GetItem` on `documents`; `GetItem`, `PutItem`, `UpdateItem`, `Query` on `jobs`. Nothing else.
+- DynamoDB (API): per table, only what the store code calls. `users`: `GetItem`, `BatchGetItem`, `PutItem`, `UpdateItem`. `documents`: `GetItem`, `BatchGetItem`, `PutItem`, `UpdateItem`, `DeleteItem`, `Query`. `exams`: `GetItem`, `BatchGetItem`, `PutItem`, plus `Query` on `creator-index`. `attempts`: `GetItem`, `PutItem`, `UpdateItem`, `Query`, plus `Query` on `user-index`. `jobs`: `GetItem`, `BatchGetItem` (usage counters), `PutItem`, `UpdateItem`, plus `Query` on its indexes. `DeleteItem` is granted on `documents` only. (`TransactWriteItems` has no permission of its own; it is authorised through the underlying `PutItem` and `UpdateItem`. There is no `ConditionCheckItem`, `BatchWriteItem` or `Scan`.)
+- DynamoDB (worker): `BatchGetItem` on `documents`; `GetItem`, `PutItem`, `UpdateItem` on `jobs`. Nothing else.
 - S3 (API): `s3:PutObject` (for presigning uploads), `s3:GetObject` (presigned views), `s3:DeleteObject`, and **`s3:ListBucket` on the bucket** (so `HeadObject` on a missing key returns 404, not 403). S3 (worker): `s3:GetObject`.
 - Lambda, only for `LambdaRunner`: invoke permission on the worker function.
 - The jobs table holds quota counters and question items as well as jobs (section 6.2); the permissions above cover them.

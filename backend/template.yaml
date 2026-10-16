@@ -51,7 +51,7 @@ Resources:
           GOOGLE_CLIENT_ID: !Ref GoogleClientId
           ALLOWED_ORIGINS: !Ref AllowedOrigins
           WORKER_FUNCTION_NAME: !Sub "exam-assistant-${Stage}-worker"
-      # Least privilege, derived from what internal/store/dynamo and internal/docs call (TestIAMMatchesStoreCode).
+      # Least privilege, derived from what internal/store/dynamo and internal/docs call (TestIAMPoliciesMatchDerivation, TestStoreCodeIAMDerivation).
       # No Scan, no BatchWriteItem, no DeleteItem outside documents. Transactions (users, jobs) need Put/Update on each item's table.
       Policies:
         - Statement:
@@ -73,8 +73,8 @@ Resources:
             - Effect: Allow
               Action: dynamodb:Query
               Resource: !Sub "${AttemptsTable.Arn}/index/user-index"
-            - Effect: Allow             # jobs: create-with-quota transaction (Put + Update), cancel, get questions
-              Action: [dynamodb:GetItem, dynamodb:PutItem, dynamodb:UpdateItem]
+            - Effect: Allow             # jobs: create-with-quota transaction (Put + Update), cancel, get questions; BatchGet: usage counters (B-5a.2, backend-spec 6.3)
+              Action: [dynamodb:GetItem, dynamodb:BatchGetItem, dynamodb:PutItem, dynamodb:UpdateItem]
               Resource: !GetAtt JobsTable.Arn
             - Effect: Allow             # owner-index today; day-index is for the usage page
               Action: dynamodb:Query

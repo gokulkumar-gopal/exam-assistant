@@ -1,6 +1,10 @@
 package dynamo
 
 import (
+	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -191,7 +195,7 @@ var wantAPIPolicy = map[string][]string{
 	"${ExamsTable.Arn}/index/creator-index": {"dynamodb:Query"},
 	"AttemptsTable.Arn":                     {"dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:Query", "dynamodb:UpdateItem"},
 	"${AttemptsTable.Arn}/index/user-index": {"dynamodb:Query"},
-	"JobsTable.Arn":                         {"dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem"},
+	"JobsTable.Arn":                         {"dynamodb:BatchGetItem", "dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem"},
 	"${JobsTable.Arn}/index/*":              {"dynamodb:Query"},
 	"${UploadsBucket.Arn}/*":                {"s3:DeleteObject", "s3:GetObject", "s3:PutObject"},
 	"UploadsBucket.Arn":                     {"s3:ListBucket"},
@@ -217,46 +221,268 @@ func TestIAMPoliciesMatchDerivation(t *testing.T) {
 	}
 }
 
-// Which DynamoDB client methods each store file calls (directly or through getItem, batchGet
-// and transact). If a file starts using another action, this fails: update the template
-// policy (and wantAPIPolicy/wantWorkerPolicy) together with this table.
-var wantStoreCalls = map[string][]string{
-	"users.go":    {"BatchGetItem", "GetItem", "TransactWriteItems"},
-	"docs.go":     {"DeleteItem", "GetItem", "BatchGetItem", "PutItem", "Query", "UpdateItem"},
-	"exams.go":    {"BatchGetItem", "GetItem", "PutItem", "Query"},
-	"attempts.go": {"GetItem", "PutItem", "Query", "UpdateItem"},
-	"jobs.go":     {"GetItem", "PutItem", "Query", "TransactWriteItems", "UpdateItem"},
+// plannedAPIGrants are API grants no store method uses yet. Each needs a spec reference; the
+// test fails when a grant is neither derived from the code nor listed here.
+var plannedAPIGrants = map[string]string{
+	"JobsTable.Arn|dynamodb:BatchGetItem": "GET /ai/usage reads the month and day counter items (backend-spec 6.3, B-5a.2)",
 }
 
-func TestStoreCodeUsesOnlyTemplateGrantedActions(t *testing.T) {
-	call := regexp.MustCompile(`s\.api\.(\w+)\(`)
-	helper := map[string]string{"s.getItem(": "GetItem", "s.batchGet(": "BatchGetItem", "s.transact(": "TransactWriteItems"}
-	for file, want := range wantStoreCalls {
-		b, err := os.ReadFile(file)
+// tableResource maps the Stores table fields to the template resources that own them.
+var tableResource = map[string]string{
+	"users": "UsersTable.Arn", "docs": "DocumentsTable.Arn", "jobs": "JobsTable.Arn",
+	"exams": "ExamsTable.Arn", "attempts": "AttemptsTable.Arn",
+}
+
+// fnInfo is what one function in the package does to DynamoDB, from its source text.
+type fnInfo struct {
+	name    string
+	file    string
+	actions map[string]bool // IAM actions, e.g. dynamodb:GetItem
+	tables  map[string]bool // Stores table fields it names (s.jobs ...)
+	indexes []string        // index names it queries
+	queries int             // calls to Query
+	callees []string
+}
+
+var (
+	reAPICall    = regexp.MustCompile(`\.api\.(\w+)\(`)
+	reTable      = regexp.MustCompile(`\bs\.(users|docs|jobs|exams|attempts)\b`)
+	reIndexName  = regexp.MustCompile(`IndexName:\s*ptr\(("[\w-]+"|\w+)\)`)
+	reIndexField = regexp.MustCompile(`\bIndexName:`)
+	reCall       = regexp.MustCompile(`\b(\w+)\(`)
+	// Transaction items are authorised by the write they contain.
+	txItem = map[string]string{"Put:": "dynamodb:PutItem", "Update:": "dynamodb:UpdateItem", "Delete:": "dynamodb:DeleteItem", "ConditionCheck:": "dynamodb:ConditionCheckItem"}
+)
+
+// scanFunctions parses EVERY non-test .go file in dir (a new file is picked up with no
+// registration) and returns its functions plus the package's string constants.
+func scanFunctions(t *testing.T, dir string) (map[string]*fnInfo, map[string]string) {
+	t.Helper()
+	files, err := filepath.Glob(filepath.Join(dir, "*.go"))
+	if err != nil || len(files) == 0 {
+		t.Fatalf("no go files in %s: %v", dir, err)
+	}
+	fns := map[string]*fnInfo{}
+	consts := map[string]string{}
+	for _, f := range files {
+		if strings.HasSuffix(f, "_test.go") {
+			continue
+		}
+		src, err := os.ReadFile(f)
 		if err != nil {
 			t.Fatal(err)
 		}
-		src := string(b)
-		set := map[string]bool{}
-		for _, m := range call.FindAllStringSubmatch(src, -1) {
-			set[m[1]] = true
+		fset := token.NewFileSet()
+		af, err := parser.ParseFile(fset, f, src, 0)
+		if err != nil {
+			t.Fatal(err)
 		}
-		for h, a := range helper {
-			if strings.Contains(src, h) {
-				set[a] = true
+		for _, d := range af.Decls {
+			switch d := d.(type) {
+			case *ast.GenDecl:
+				for _, sp := range d.Specs {
+					if vs, ok := sp.(*ast.ValueSpec); ok && d.Tok == token.CONST {
+						for i, n := range vs.Names {
+							if i < len(vs.Values) {
+								if bl, ok := vs.Values[i].(*ast.BasicLit); ok && bl.Kind == token.STRING {
+									consts[n.Name] = strings.Trim(bl.Value, "\"")
+								}
+							}
+						}
+					}
+				}
+			case *ast.FuncDecl:
+				if d.Body == nil {
+					continue
+				}
+				body := string(src[fset.Position(d.Body.Pos()).Offset:fset.Position(d.Body.End()).Offset])
+				fi := &fnInfo{name: d.Name.Name, file: filepath.Base(f), actions: map[string]bool{}, tables: map[string]bool{}}
+				for _, m := range reAPICall.FindAllStringSubmatch(body, -1) {
+					if m[1] == "TransactWriteItems" {
+						continue // authorised through the items' own actions
+					}
+					fi.actions["dynamodb:"+m[1]] = true
+					if m[1] == "Query" {
+						fi.queries++
+					}
+				}
+				for tok, act := range txItem {
+					if strings.Contains(body, tok+" &types.") {
+						fi.actions[act] = true
+					}
+				}
+				for _, m := range reTable.FindAllStringSubmatch(body, -1) {
+					fi.tables[m[1]] = true
+				}
+				all := reIndexName.FindAllStringSubmatch(body, -1)
+				if n := len(reIndexField.FindAllString(body, -1)); n != len(all) {
+					t.Errorf("%s.%s: %d IndexName uses but only %d are ptr(<literal or constant>); write it so the test can resolve it", fi.file, fi.name, n, len(all))
+				}
+				for _, m := range all {
+					fi.indexes = append(fi.indexes, m[1])
+				}
+				for _, m := range reCall.FindAllStringSubmatch(body, -1) {
+					fi.callees = append(fi.callees, m[1])
+				}
+				if _, dup := fns[fi.name]; dup {
+					t.Errorf("function name %s declared twice in the package; the IAM scan keys by name", fi.name)
+				}
+				fns[fi.name] = fi
 			}
 		}
-		var got []string
-		for a := range set {
-			got = append(got, a)
+	}
+	return fns, consts
+}
+
+// need is a set of "<resource>|<action>" pairs.
+type need map[string]bool
+
+// derive returns, per function, the (resource, action) pairs it needs, following calls to other
+// package functions. A function owns the tables and actions of everything it calls (so ClaimJob
+// gets the jobs table through updateJob); a helper that names no table (getItem, batchGet,
+// condUpdate) is attributed through its callers.
+func derive(t *testing.T, fns map[string]*fnInfo, consts map[string]string) map[string]need {
+	t.Helper()
+	var tables map[string]bool
+	var closure func(name string, seen map[string]bool) (actions map[string]bool, indexes []string, queries int)
+	closure = func(name string, seen map[string]bool) (map[string]bool, []string, int) {
+		acts := map[string]bool{}
+		fi := fns[name]
+		if fi == nil || seen[name] {
+			return acts, nil, 0
 		}
-		sort.Strings(got)
-		w := append([]string(nil), want...)
-		sort.Strings(w)
-		if !reflect.DeepEqual(got, w) {
-			t.Errorf("%s calls %v, expected %v (update the template IAM and this table together)", file, got, w)
+		seen[name] = true
+		for a := range fi.actions {
+			acts[a] = true
+		}
+		for tb := range fi.tables {
+			tables[tb] = true
+		}
+		idx, q := append([]string(nil), fi.indexes...), fi.queries
+		for _, c := range fi.callees {
+			if c == name {
+				continue
+			}
+			ca, ci, cq := closure(c, seen)
+			for a := range ca {
+				acts[a] = true
+			}
+			idx, q = append(idx, ci...), q+cq
+		}
+		return acts, idx, q
+	}
+	out := map[string]need{}
+	covered := map[string]bool{}
+	for name, fi := range fns {
+		seen := map[string]bool{}
+		tables = map[string]bool{}
+		acts, idx, q := closure(name, seen)
+		if len(tables) == 0 {
+			continue
+		}
+		for n := range seen {
+			covered[n] = true
+		}
+		n := need{}
+		for tb := range tables {
+			res := tableResource[tb]
+			indexed := 0
+			for _, ix := range idx {
+				ixName := strings.Trim(ix, `"`)
+				if !strings.HasPrefix(ix, `"`) {
+					v, ok := consts[ix]
+					if !ok {
+						t.Errorf("%s.%s: index %s is not a string constant the test can resolve", fi.file, name, ix)
+						continue
+					}
+					ixName = v
+				}
+				n["${"+res+"}/index/"+ixName+"|dynamodb:Query"] = true
+				indexed++
+			}
+			for a := range acts {
+				if a == "dynamodb:Query" && indexed > 0 && q <= indexed {
+					continue // every Query in this function goes through an index
+				}
+				n[res+"|"+a] = true
+			}
+		}
+		out[name] = n
+	}
+	for name, fi := range fns {
+		if len(fi.actions) > 0 && len(fi.tables) == 0 && !covered[name] {
+			t.Errorf("%s.%s calls DynamoDB but no function that names a table reaches it: its table cannot be attributed", fi.file, name)
 		}
 	}
+	return out
+}
+
+func granted(pol map[string][]string, resAction string) bool {
+	res, act, _ := strings.Cut(resAction, "|")
+	has := func(r string) bool {
+		for _, a := range pol[r] {
+			if a == act {
+				return true
+			}
+		}
+		return false
+	}
+	if has(res) {
+		return true
+	}
+	if i := strings.Index(res, "/index/"); i >= 0 { // a wildcard on the same table's indexes
+		return has(res[:i] + "/index/*")
+	}
+	return false
+}
+
+func storeNeeds(t *testing.T) map[string]need {
+	t.Helper()
+	fns, consts := scanFunctions(t, ".")
+	return derive(t, fns, consts)
+}
+
+func TestStoreCodeIAMDerivation(t *testing.T) {
+	doc := loadTemplate(t)
+	api := policy(t, doc, "ApiFunction")
+	derived := storeNeeds(t)
+
+	// Everything any store method needs is granted to the API, on the right table and index.
+	used := map[string]bool{}
+	for name, n := range derived {
+		for ra := range n {
+			used[ra] = true
+			if !granted(api, ra) {
+				t.Errorf("%s needs %s but the API policy does not grant it (update template.yaml and wantAPIPolicy together)", name, strings.Replace(ra, "|", " ", 1))
+			}
+		}
+	}
+	// Every API DynamoDB grant is used by code or explicitly planned.
+	for res, acts := range api {
+		if strings.HasPrefix(res, "${UploadsBucket") || strings.HasPrefix(res, "UploadsBucket") || strings.HasPrefix(res, "WorkerFunction") {
+			continue
+		}
+		for _, a := range acts {
+			ra := res + "|" + a
+			ok := used[ra]
+			if !ok && strings.HasSuffix(res, "/index/*") { // wildcard: used when any index of that table is
+				for u := range used {
+					if strings.HasPrefix(u, strings.TrimSuffix(res, "*")) && strings.HasSuffix(u, "|"+a) {
+						ok = true
+					}
+				}
+			}
+			if _, planned := plannedAPIGrants[ra]; !ok && !planned {
+				t.Errorf("API grants %s on %s that no store method uses; remove it or list it in plannedAPIGrants with a spec reference", a, res)
+			}
+		}
+	}
+	for ra := range plannedAPIGrants {
+		if used[ra] {
+			t.Errorf("plannedAPIGrants lists %s but code now uses it; delete the entry", ra)
+		}
+	}
+
 	// Package-wide bans, including the interface (a new method means a new IAM action).
 	files, _ := filepath.Glob("*.go")
 	for _, f := range files {
@@ -264,9 +490,8 @@ func TestStoreCodeUsesOnlyTemplateGrantedActions(t *testing.T) {
 			continue
 		}
 		b, _ := os.ReadFile(f)
-		src := string(b)
 		for _, banned := range []string{".Scan(", "BatchWriteItem", "ConditionCheck:", "types.ConditionCheck{", "ExecuteStatement", "ExecuteTransaction"} {
-			if strings.Contains(src, banned) {
+			if strings.Contains(string(b), banned) {
 				t.Errorf("%s uses %s, which the template grants to nobody", f, banned)
 			}
 		}
@@ -282,23 +507,63 @@ func TestStoreCodeUsesOnlyTemplateGrantedActions(t *testing.T) {
 	if !reflect.DeepEqual(methods, wantM) {
 		t.Errorf("DynamoAPI methods %v, expected %v", methods, wantM)
 	}
-	// Indexes queried by name must be ones the API policy grants.
-	idx := regexp.MustCompile(`IndexName:\s+ptr\(("[\w-]+"|ownerIndexName)\)`)
-	for _, f := range []string{"exams.go", "attempts.go", "jobs.go"} {
+}
+
+// workerStoreMethods lists the store methods the worker code path references: every
+// <x>.Jobs.<Method> and <x>.Docs.<Method> in internal/gen (the Worker's JobStore and DocStore
+// fields; the API-side Service uses lowercase fields, so it is not matched). Static analysis,
+// because running the worker over a recording fake would need a generator, blob and documents
+// and would only cover the branches a fixture reaches; the source scan covers every branch.
+func workerStoreMethods(t *testing.T) map[string]string {
+	t.Helper()
+	files, err := filepath.Glob("../../gen/*.go")
+	if err != nil || len(files) == 0 {
+		t.Fatalf("no go files in internal/gen: %v", err)
+	}
+	re := regexp.MustCompile(`\.(Jobs|Docs)\.(\w+)`)
+	out := map[string]string{}
+	for _, f := range files {
+		if strings.HasSuffix(f, "_test.go") {
+			continue
+		}
 		b, _ := os.ReadFile(f)
-		for _, m := range idx.FindAllStringSubmatch(string(b), -1) {
-			name := strings.Trim(m[1], `"`)
-			if name == "ownerIndexName" {
-				name = ownerIndexName
+		for _, m := range re.FindAllStringSubmatch(string(b), -1) {
+			out[m[2]] = fmt.Sprintf("%s.%s in %s", m[1], m[2], filepath.Base(f))
+		}
+	}
+	return out
+}
+
+func TestWorkerPolicyMatchesWorkerCodePath(t *testing.T) {
+	doc := loadTemplate(t)
+	derived := storeNeeds(t)
+	methods := workerStoreMethods(t)
+	if len(methods) < 5 {
+		t.Fatalf("found only %v worker store calls; the scan is broken", methods)
+	}
+	pol := policy(t, doc, "WorkerFunction")
+	used := map[string]bool{}
+	for m, where := range methods {
+		n, ok := derived[m]
+		if !ok {
+			t.Errorf("worker calls %s (%s) but no such store function was found", m, where)
+			continue
+		}
+		for ra := range n {
+			used[ra] = true
+			if !granted(pol, ra) {
+				t.Errorf("worker calls %s (%s) which needs %s; the worker policy does not grant it", m, where, strings.Replace(ra, "|", " ", 1))
 			}
-			ok := false
-			for r := range wantAPIPolicy {
-				if strings.HasSuffix(r, "/index/"+name) || (strings.HasSuffix(r, "/index/*") && strings.HasPrefix(r, "${JobsTable")) {
-					ok = true
-				}
-			}
-			if !ok {
-				t.Errorf("%s queries index %s with no IAM grant", f, name)
+		}
+	}
+	// The grant must also be no wider than the code path.
+	for res, acts := range pol {
+		if strings.HasPrefix(res, "${UploadsBucket") {
+			continue
+		}
+		for _, a := range acts {
+			if !used[res+"|"+a] {
+				t.Errorf("worker policy grants %s on %s but no worker store call needs it", a, res)
 			}
 		}
 	}
