@@ -38,11 +38,12 @@ const (
 	timeLayout       = time.RFC3339Nano
 )
 
-// Stores implements store.UserStore and store.DocStore.
+// Stores implements store.UserStore, store.DocStore and store.JobStore.
 type Stores struct {
 	api   DynamoAPI
-	users string // table names: <STAGE>-users, <STAGE>-documents
+	users string // table names: <STAGE>-users, <STAGE>-documents, <STAGE>-jobs
 	docs  string
+	jobs  string
 	// Now reports the current time; it decides whether a pending document's ttl has passed
 	// (DynamoDB deletes expired items lazily, so reads must filter them).
 	Now func() time.Time
@@ -53,11 +54,12 @@ type Stores struct {
 var (
 	_ store.UserStore = (*Stores)(nil)
 	_ store.DocStore  = (*Stores)(nil)
+	_ store.JobStore  = (*Stores)(nil)
 )
 
-// New returns Stores over api using tables "<stage>-users" and "<stage>-documents".
+// New returns Stores over api using tables "<stage>-users", "<stage>-documents" and "<stage>-jobs".
 func New(api DynamoAPI, stage string) *Stores {
-	return &Stores{api: api, users: stage + "-users", docs: stage + "-documents", Now: time.Now, sleep: sleepCtx}
+	return &Stores{api: api, users: stage + "-users", docs: stage + "-documents", jobs: stage + "-jobs", Now: time.Now, sleep: sleepCtx}
 }
 
 // isCondFailed reports whether err is a single-item conditional check failure and returns it.

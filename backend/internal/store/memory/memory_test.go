@@ -63,3 +63,7 @@ func TestPendingDocExpiresAtTTL(t *testing.T) {
 		t.Fatalf("ready doc expired: %v", err)
 	}
 }
+
+func TestJobStoreContract(t *testing.T) {
+	storetest.RunJobStoreSuite(t, func(t *testing.T) store.JobStore { return memory.NewJobStore(clock.NewFake(storetest.T0)) })
+}
