@@ -52,7 +52,7 @@ func TestWorkerModePropagatesRunError(t *testing.T) {
 	}
 }
 
-func TestBuildWorkerWiresStoresBlobAndPlaceholderGenerators(t *testing.T) {
+func TestBuildWorkerWiresStoresBlobAndProviderFactory(t *testing.T) {
 	cfg := testCfg()
 	cfg.Mode = "worker"
 	cfg.GenMaxPerCall = 12
@@ -76,8 +76,21 @@ func TestBuildWorkerWiresStoresBlobAndPlaceholderGenerators(t *testing.T) {
 	if w.Cfg != want {
 		t.Errorf("cfg = %+v, want %+v", w.Cfg, want)
 	}
-	if _, err := w.Gens("claude-haiku-4-5"); !errors.Is(err, gen.ErrGeneratorsNotConfigured) {
-		t.Errorf("placeholder factory error = %v", err)
+	// testCfg has no provider keys: the real factory refuses with a plain error naming the variable.
+	if _, err := w.Gens("claude-haiku-4-5"); err == nil || errors.Is(err, gen.ErrGeneratorsNotConfigured) || !strings.Contains(err.Error(), "LLM_API_KEY") {
+		t.Errorf("factory error = %v", err)
+	}
+	cfg.LLMAPIKey = "sk-ant-x"
+	cfg.Providers = []string{"anthropic", "gemini"}
+	cfg.GeminiAPIKey = "gem-x"
+	w, err = buildWorker(cfg, anonymous())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range []string{"claude-haiku-4-5", "gemini-3.1-flash-lite"} {
+		if g, err := w.Gens(m); err != nil || g == nil {
+			t.Errorf("%s: g=%v err=%v", m, g, err)
+		}
 	}
 }
 
