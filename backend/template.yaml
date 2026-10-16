@@ -1,0 +1,49 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: Exam Assistant backend (health-only skeleton, D-0.3)
+
+Parameters:
+  Stage:           { Type: String, AllowedValues: [dev, prod] }
+  JwtSecret:       { Type: String, NoEcho: true, MinLength: 32 }
+  LlmProviders:    { Type: String, Default: anthropic, Description: "Enabled providers, comma-separated: anthropic, gemini (for example gemini,anthropic)" }
+  GoogleClientId:  { Type: String, Description: "Google OAuth client ID that sign-in tokens must be issued for" }
+  AllowedOrigins:  { Type: String, Description: "Comma-separated, e.g. https://app.example.com,http://localhost:3000" }
+  FrontendOrigins: { Type: CommaDelimitedList, Description: "Same origins, for S3 CORS (used by the uploads bucket from D-1.2)" }
+
+Globals:
+  Function:
+    Runtime: provided.al2023
+    Architectures: [arm64]
+    Handler: bootstrap
+    MemorySize: 1024
+    Environment:
+      Variables:                       # shared, non-secret
+        ENV: production
+        STAGE: !Ref Stage
+        # PLACEHOLDER: config.Load requires S3_BUCKET in every mode, but the bucket
+        # does not exist yet. D-1.2 replaces this with !Ref UploadsBucket.
+        S3_BUCKET: !Sub "exam-assistant-${Stage}-placeholder"
+        LLM_PROVIDERS: !Ref LlmProviders
+
+Resources:
+  ApiFunction:
+    Type: AWS::Serverless::Function
+    Metadata: { BuildMethod: makefile }
+    Properties:
+      FunctionName: !Sub "exam-assistant-${Stage}-api"
+      CodeUri: .
+      Timeout: 29
+      FunctionUrlConfig: { AuthType: NONE }
+      Environment:
+        Variables:
+          MODE: api
+          JWT_SECRET: !Ref JwtSecret
+          GOOGLE_CLIENT_ID: !Ref GoogleClientId
+          ALLOWED_ORIGINS: !Ref AllowedOrigins
+
+  ApiLogs:
+    Type: AWS::Logs::LogGroup
+    Properties: { LogGroupName: !Sub "/aws/lambda/exam-assistant-${Stage}-api", RetentionInDays: 14 }
+
+Outputs:
+  FunctionUrl: { Value: !GetAtt ApiFunctionUrl.FunctionUrl }
