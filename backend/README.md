@@ -4,7 +4,7 @@ Go backend for the Exam Assistant. The design is in `../backend-spec.md`; this f
 
 ## Prerequisites
 
-- Go 1.22 or newer
+- Go 1.24 or newer
 - `make` and `curl`
 
 ## Commands

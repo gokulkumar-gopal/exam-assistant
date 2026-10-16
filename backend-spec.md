@@ -12,7 +12,7 @@ Audience: a coding agent building the backend. Read this whole file before writi
 
 ## 1. Non-negotiable rules
 
-1. **Go.** The whole backend is written in Go (1.22 or newer). No other language, no scripts in other languages in the runtime path.
+1. **Go.** The whole backend is written in Go (1.24 or newer). No other language, no scripts in other languages in the runtime path.
 2. **3-day, 1-person constraint.** Prefer the standard library. Add a dependency only if it saves real time (see section 3). No frameworks beyond what is listed.
 3. **Minimal AWS footprint.** One compute service, one database, one S3 bucket. No VPC, no NAT gateway, no queues, no caches, no Cognito. Section 12 lists what the backend requires; `deployment-spec.md` covers how it is provisioned.
 4. **Section 8 is the contract.** Endpoint names, shapes, and error behaviour are defined here and nowhere else. `frontend-spec.md` points to this section and lists the calls the frontend makes. Change section 8 first, then the frontend spec.
@@ -35,7 +35,7 @@ Audience: a coding agent building the backend. Read this whole file before writi
 
 | Concern | Choice |
 |---|---|
-| Language | Go 1.22+ |
+| Language | Go 1.24+ |
 | HTTP | standard library `net/http` with `ServeMux` method and path patterns (`"POST /exams/{id}/submit"`) |
 | Database | DynamoDB through the AWS SDK for Go v2 (`dynamodb`, `attributevalue`) |
 | Other AWS | AWS SDK for Go v2 (`config`, `s3`, and `lambda` only for the Lambda job runner) |
