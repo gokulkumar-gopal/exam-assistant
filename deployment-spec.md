@@ -508,7 +508,12 @@ deploy: check-env
 set -eu
 umask 077
 
-stage="${1:?usage: write-samconfig.sh <stage>}"
+if [ "$#" -ne 1 ]; then echo "usage: write-samconfig.sh <stage>  (dev or prod)" >&2; exit 2; fi
+stage="$1"
+case "$stage" in
+  dev|prod) ;;
+  *) echo "stage must be dev or prod" >&2; exit 2 ;;
+esac
 dir=$(cd "$(dirname "$0")/.." && pwd)
 out="$dir/.samconfig.$stage.toml"
 
