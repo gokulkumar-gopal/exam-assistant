@@ -46,13 +46,17 @@ func validateSubmit(exam store.Exam, in *SubmitInput) error {
 // Submit grades and submits the caller's attempt (backend-spec 8.5, 9.2, 9.3).
 //
 // A creator without a row, a declined user, a stranger and a missing exam are the same 404. An
-// already-submitted attempt returns its existing result (idempotent), whatever the clock or the
-// body say. Otherwise, from acceptingUntil the in_progress attempt goes through the lazy
+// attempt that the client itself submitted returns its existing result (idempotent), whatever
+// the clock or the body say; one the server auto-finalized (AutoSubmitted) is 409 exam_closed,
+// because this request's answers were not graded. Otherwise, from acceptingUntil the in_progress attempt goes through the lazy
 // finalizer (saved answers graded, AutoSubmitted) and the call is 409 exam_closed; the body's
 // answers are NOT used then. Before that, including the 60 s grace window, the body's answers
 // (when present) replace the saved ones, are graded, and SubmittedAt = min(now, closesAt).
 // A not_started attempt is started and submitted in one write. If the conditional write loses
-// a race the winner's row is returned.
+// a race the winner's row is returned (409 exam_closed if the winner is the finalizer).
+//
+// Known gap: with no body, a save landing between the read and the write is overwritten and
+// not graded (the frontend always sends a body).
 func (s *Service) Submit(ctx context.Context, user store.User, examID string, in *SubmitInput) (SubmitResult, error) {
 	a, err := s.attempts.GetAttempt(ctx, examID, user.ID)
 	if errors.Is(err, store.ErrNotFound) {
@@ -72,6 +76,9 @@ func (s *Service) Submit(ctx context.Context, user store.User, examID string, in
 		return SubmitResult{}, apperr.Internal(err)
 	}
 	if a.Status == store.AttemptSubmitted {
+		if a.AutoSubmitted {
+			return SubmitResult{}, apperr.ExamClosed() // the server finalized it; no client submit produced this row
+		}
 		return submitResult(exam, a, s.clk.Now()), nil
 	}
 	now := s.clk.Now()
@@ -119,6 +126,9 @@ func (s *Service) Submit(ctx context.Context, user store.User, examID string, in
 		won, gerr := s.attempts.GetAttempt(ctx, examID, user.ID)
 		if gerr != nil {
 			return SubmitResult{}, apperr.Internal(gerr)
+		}
+		if won.AutoSubmitted { // lost to the lazy finalizer: this body was not graded
+			return SubmitResult{}, apperr.ExamClosed()
 		}
 		return submitResult(exam, won, now), nil
 	case errors.Is(err, store.ErrDeclined), errors.Is(err, store.ErrNotFound):

@@ -30,3 +30,6 @@ func NewService(users store.UserStore, exams store.ExamStore, attempts store.Att
 func newID(clk clock.Clock) string {
 	return ulid.MustNew(ulid.Timestamp(clk.Now()), rand.Reader).String()
 }
+
+// HasFinalizer reports whether the lazy-finalize hook is wired (checked by the cmd wiring tests).
+func (s *Service) HasFinalizer() bool { return s.fin != nil }

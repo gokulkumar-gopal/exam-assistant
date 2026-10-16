@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -156,5 +157,34 @@ func TestSubmitBadRequestsOverHTTP(t *testing.T) {
 	// none of the rejected calls submitted anything
 	if got := e.do("GET", "/exams/as-key-1", "", "", e.student, "").Body.String(); !strings.Contains(got, `"status":"not_started"`) {
 		t.Fatalf("%s", got)
+	}
+}
+
+// countReader serves n bytes and records how many were read.
+type countReader struct{ left, read int }
+
+func (c *countReader) Read(p []byte) (int, error) {
+	if c.left == 0 {
+		return 0, io.EOF
+	}
+	n := min(len(p), c.left)
+	c.left -= n
+	c.read += n
+	return n, nil
+}
+
+func TestDecodeOptionalNeverReadsPastTheCap(t *testing.T) {
+	cr := &countReader{left: 8 << 20}
+	req := httptest.NewRequest("POST", "/exams/x/submit", cr)
+	var in struct{}
+	err := decodeOptional(httptest.NewRecorder(), req, &in, autosaveBodyCap)
+	if err == nil {
+		t.Fatal("oversize body accepted")
+	}
+	if cr.read > autosaveBodyCap+(64<<10) {
+		t.Fatalf("read %d bytes of an oversize body before rejecting it", cr.read)
+	}
+	if err := decodeOptional(httptest.NewRecorder(), httptest.NewRequest("POST", "/", strings.NewReader("  \n")), &in, 10); err != nil {
+		t.Fatalf("blank body: %v", err)
 	}
 }

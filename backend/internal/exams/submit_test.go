@@ -234,7 +234,10 @@ func TestSubmitResponseFreeTextNullScores(t *testing.T) {
 
 func TestSubmitResponseNeverCarriesKeyMaterial(t *testing.T) {
 	e := subEnv(t)
-	res, _ := e.submit(e.student, body(map[string]string{"q1": "o1"}, 0))
+	res, err := e.submit(e.student, body(map[string]string{"q1": "o1"}, 0))
+	if err != nil || res.Status != "submitted" {
+		t.Fatalf("submit must succeed first: %+v %v", res, err)
+	}
 	b := marshal(t, res)
 	keys := []string{}
 	var m map[string]any
@@ -273,6 +276,13 @@ func TestSubmitNotFoundShapesAreIdentical(t *testing.T) {
 	}
 	if a, err := e.attempts.GetAttempt(context.Background(), "e1", "s1"); err != nil || a.Status != store.AttemptNotStarted {
 		t.Fatal("a 404 submit changed another attempt")
+	}
+	// declined after the exam is over is still the 404, never exam_closed (which would show a row exists)
+	e.clk.Set(closes.Add(time.Hour))
+	_, err := e.submit(decl, nil)
+	var ae *apperr.Error
+	if !errors.As(err, &ae) || ae.Status != http.StatusNotFound {
+		t.Fatalf("declined after close: %v", err)
 	}
 }
 
@@ -339,10 +349,11 @@ func TestSubmitStoreErrorIs500AndNoFinalizerStillCloses(t *testing.T) {
 
 func TestFinalizeAtAcceptingUntilGradesSavedAnswers(t *testing.T) {
 	e := subEnv(t)
+	e.save(t, "s1", map[string]string{"q3": "o0"}, 0)
+	stale := e.row(t) // the caller's copy predates the last save
 	e.save(t, "s1", map[string]string{"q3": "o0", "q1": "bad", "q2": "o2"}, 2)
 	e.clk.Set(closes.Add(exams.GraceWindow))
 	fin := exams.NewFinalizer(e.attempts)
-	stale := e.row(t)
 	x, _ := e.exams.GetExam(context.Background(), "e1")
 	got, err := fin.FinalizeIfExpired(context.Background(), stale, x, e.clk.Now())
 	if err != nil {
@@ -583,5 +594,128 @@ func TestListAndStatusFinalizeExpired(t *testing.T) {
 	}
 	if a := e2.row(t); a.Status != store.AttemptSubmitted || !a.AutoSubmitted {
 		t.Fatalf("%+v", a)
+	}
+}
+
+// hookStore runs hook once, inside Submit and before the write, to land a competing write
+// between the service's read and its conditional write.
+type hookStore struct {
+	store.AttemptStore
+	mu        sync.Mutex
+	hook      func()
+	submitErr error // when set, Submit fails with it
+}
+
+func (h *hookStore) Submit(ctx context.Context, a store.Attempt) error {
+	h.mu.Lock()
+	f := h.hook
+	h.hook = nil
+	h.mu.Unlock()
+	if f != nil {
+		f()
+	}
+	if h.submitErr != nil {
+		return h.submitErr
+	}
+	return h.AttemptStore.Submit(ctx, a)
+}
+
+func raceEnv(t *testing.T) (*env, *hookStore) {
+	t.Helper()
+	e := subEnv(t)
+	h := &hookStore{AttemptStore: e.attempts}
+	e.svc = exams.NewService(e.users, e.exams, h, e.clk)
+	e.svc.SetFinalizer(exams.NewFinalizer(h))
+	return e, h
+}
+
+func TestSubmitAfterServerAutoFinalizeIsExamClosed(t *testing.T) {
+	e := subEnv(t)
+	e.save(t, "s1", map[string]string{"q3": "o0"}, 0)
+	e.clk.Set(closes.Add(exams.GraceWindow))
+	e.get(t, e.student, "e1") // a read auto-finalizes from the saved answers
+	before := e.row(t)
+	if before.Status != store.AttemptSubmitted || !before.AutoSubmitted {
+		t.Fatalf("%+v", before)
+	}
+	_, err := e.submit(e.student, body(map[string]string{"q3": "o0", "q1": "o1", "q2": "o2"}, 0)) // the delayed deadline submit
+	wantClosed(t, err)
+	if after := e.row(t); !reflect.DeepEqual(after, before) || *after.ScoreHalves != 6 || len(after.Answers) != 1 {
+		t.Fatalf("row changed: %+v", after)
+	}
+}
+
+func TestSubmitLosingToFinalizerIsExamClosed(t *testing.T) {
+	e, h := raceEnv(t)
+	e.save(t, "s1", map[string]string{"q3": "o0"}, 0)
+	e.clk.Set(closes.Add(exams.GraceWindow - time.Nanosecond)) // Submit reads the row while the exam is still open
+	x, _ := e.exams.GetExam(context.Background(), "e1")
+	h.hook = func() { // a finalizer runs at acceptingUntil, inside Submit's read-to-write window
+		if _, err := exams.NewFinalizer(e.attempts).FinalizeIfExpired(context.Background(), e.row(t), x, closes.Add(exams.GraceWindow)); err != nil {
+			t.Error(err)
+		}
+	}
+	_, err := e.submit(e.student, body(map[string]string{"q3": "o0", "q1": "o1", "q2": "o2"}, 0))
+	wantClosed(t, err)
+	if a := e.row(t); !a.AutoSubmitted || *a.ScoreHalves != 6 || len(a.Answers) != 1 {
+		t.Fatalf("%+v", a)
+	}
+}
+
+func TestSubmitLosingToOtherTabSubmitReturnsWinnersResult(t *testing.T) {
+	e, h := raceEnv(t)
+	e.clk.Set(t0.Add(time.Hour))
+	var first exams.SubmitResult
+	h.hook = func() {
+		var err error
+		if first, err = e.submit(e.student, body(map[string]string{"q3": "o0"}, 0)); err != nil {
+			t.Error(err)
+		}
+	}
+	res, err := e.submit(e.student, body(map[string]string{"q1": "o1", "q2": "o2"}, 1))
+	if err != nil || !reflect.DeepEqual(res, first) || res.Score == nil || *res.Score != 3 || res.AutoSubmitted {
+		t.Fatalf("%+v vs %+v (%v)", res, first, err)
+	}
+	if a := e.row(t); len(a.Answers) != 1 || a.Answers["q3"] != "o0" {
+		t.Fatalf("loser overwrote the winner: %+v", a)
+	}
+}
+
+func TestSubmitLosingToDeclineIs404(t *testing.T) {
+	e, h := raceEnv(t)
+	e.clk.Set(t0.Add(time.Hour))
+	h.hook = func() {
+		if err := e.attempts.Decline(context.Background(), "e1", "s1"); err != nil {
+			t.Error(err)
+		}
+	}
+	_, err := e.submit(e.student, body(map[string]string{"q3": "o0"}, 0))
+	var ae *apperr.Error
+	if !errors.As(err, &ae) || ae.Status != http.StatusNotFound {
+		t.Fatalf("want 404, got %v", err)
+	}
+	if a := e.row(t); a.Status != store.AttemptDeclined {
+		t.Fatalf("%+v", a)
+	}
+}
+
+func TestSubmitUnexpectedStoreErrorIs500(t *testing.T) {
+	e, h := raceEnv(t)
+	h.submitErr = errors.New("boom")
+	e.clk.Set(t0.Add(time.Hour))
+	_, err := e.submit(e.student, nil)
+	var ae *apperr.Error
+	if !errors.As(err, &ae) || ae.Status != http.StatusInternalServerError {
+		t.Fatalf("%v", err)
+	}
+}
+
+func TestFinalizeStoreSubmitErrorPropagates(t *testing.T) {
+	e := subEnv(t)
+	e.save(t, "s1", map[string]string{"q3": "o0"}, 0)
+	h := &hookStore{AttemptStore: e.attempts, submitErr: errors.New("boom")}
+	x, _ := e.exams.GetExam(context.Background(), "e1")
+	if _, err := exams.NewFinalizer(h).FinalizeIfExpired(context.Background(), e.row(t), x, closes.Add(time.Hour)); err == nil {
+		t.Fatal("a store write error must not be swallowed")
 	}
 }
