@@ -13,11 +13,20 @@ export function tokensK(n: number): string {
   return `${(tenths / 10).toFixed(1)}K`;
 }
 
-/** Meter colour for spend against budget: warn from 80%, bad from 100%. Bad input stays accent. */
+const toCents = (n: number) => Math.round((n + Number.EPSILON) * 100);
+
+/**
+ * Meter colour for spend against budget: warn from 80%, bad from 100%. Compared in whole cents, rounded the way
+ * formatUsd rounds, so the tone always agrees with the "$X of $Y" text (14.996 of 15 is "$15.00 of $15.00" and bad).
+ * A budget of 0 (or missing or invalid) and bad spend never change the tone: accent.
+ */
 export function spendTone(spend: number, budget: number): Exclude<MeterTone, "ok"> {
-  if (!Number.isFinite(spend) || !Number.isFinite(budget) || budget <= 0 || spend < 0) return "accent";
-  if (spend >= budget) return "bad";
-  if (spend * 100 >= budget * 80) return "warn";
+  if (!Number.isFinite(spend) || !Number.isFinite(budget) || spend < 0) return "accent";
+  const s = toCents(spend);
+  const b = toCents(budget);
+  if (b <= 0) return "accent";
+  if (s >= b) return "bad";
+  if (s * 100 >= b * 80) return "warn";
   return "accent";
 }
 
@@ -43,6 +52,13 @@ export function clockTime(iso: string): string {
 export function clockTimeShort(iso: string): string {
   const t = Date.parse(iso);
   return Number.isNaN(t) ? "" : clock(false).format(new Date(t));
+}
+
+/** Short name of the viewer's timezone at that instant ("UTC", "GMT+5:30"). */
+export function zoneName(iso: string): string {
+  const t = Date.parse(iso);
+  if (Number.isNaN(t)) return "";
+  return new Intl.DateTimeFormat("en-US", { timeZoneName: "short" }).formatToParts(new Date(t)).find((p) => p.type === "timeZoneName")?.value ?? "";
 }
 
 const PILLS: Record<string, PillVariant> = {

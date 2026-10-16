@@ -3,7 +3,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "@/lib/api";
 import { usePolling } from "@/lib/usePolling";
 import {
-  clockTime, clockTimeShort, formatUsd, kindLabel, mapUsage, nextUsageView, spendTone, statusPill,
+  clockTime, clockTimeShort, zoneName, formatUsd, kindLabel, mapUsage, nextUsageView, spendTone, statusPill,
   tokensK, usedModels, type UsageView,
 } from "@/lib/usage";
 import type { Tokens } from "@/lib/types";
@@ -14,6 +14,9 @@ import { EmptyState } from "@/components/EmptyState";
 
 const TH = "whitespace-nowrap px-3 py-2 text-left text-xs font-semibold text-muted";
 const TD = "whitespace-nowrap px-3 py-2 text-[13px] text-ink";
+
+// A horizontal scroll area must be focusable so keyboard users can scroll it (focus ring from the global :focus-visible).
+const SCROLL = { className: "overflow-x-auto focus-visible:outline-offset-[-2px]", tabIndex: 0, role: "region" } as const;
 
 function TokenLine({ t }: { t: Tokens }) {
   return (
@@ -54,7 +57,7 @@ export default function Page() {
     <main className="page py-5">
       <h1 ref={heading} tabIndex={-1} className="outline-none">AI usage</h1>
       <p className="text-[13px] text-muted">Live. Updates every 5 seconds.</p>
-      {d && <p className="tabular mb-3 text-[13px] text-muted">Updated {clockTime(d.serverTime)}</p>}
+      {d && <p className="tabular mb-3 text-[13px] text-muted">Updated {clockTime(d.serverTime)} {zoneName(d.serverTime)}</p>}
       {/* Only this region is live: the 5-second updates are silent, a failure is announced politely. */}
       <div aria-live="polite" className="mb-3 text-[13px] text-bad">
         {view.failed && <p>Couldn&apos;t refresh. Retrying…</p>}
@@ -98,7 +101,7 @@ export default function Page() {
             <>
               <section className="card overflow-hidden" aria-labelledby="u-models">
                 <h2 id="u-models" className="h-section px-4 pb-1 pt-4">By model</h2>
-                <div className="overflow-x-auto">
+                <div {...SCROLL} aria-labelledby="u-models">
                   <table className="tabular w-full border-collapse">
                     <thead>
                       <tr className="border-b border-line">
@@ -128,11 +131,11 @@ export default function Page() {
 
               <section className="card overflow-hidden" aria-labelledby="u-jobs">
                 <h2 id="u-jobs" className="h-section px-4 pb-1 pt-4">Latest jobs</h2>
-                <div className="overflow-x-auto">
+                <div {...SCROLL} aria-labelledby="u-jobs">
                   <table className="tabular w-full border-collapse">
                     <thead>
                       <tr className="border-b border-line">
-                        <th scope="col" className={TH}>Time</th>
+                        <th scope="col" className={TH}>Time ({zoneName(d.serverTime)})</th>
                         <th scope="col" className={TH}>Kind</th>
                         <th scope="col" className={TH}>Model</th>
                         <th scope="col" className={TH}>Status</th>

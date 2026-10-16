@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  clockTime, formatUsd, kindLabel, mapUsage, nextUsageView, spendTone, statusPill, tokensK, usedModels,
+  clockTime, formatUsd, zoneName, kindLabel, mapUsage, nextUsageView, spendTone, statusPill, tokensK, usedModels,
 } from "../lib/usage";
 
 process.env.TZ = "UTC";
@@ -32,6 +32,22 @@ describe("spendTone", () => {
     expect(spendTone(14.99, 15)).toBe("warn");
     expect(spendTone(15, 15)).toBe("bad");
     expect(spendTone(20, 15)).toBe("bad");
+  });
+  // Rule: spend and budget are compared in whole cents (rounded like the displayed money), so the tone
+  // always agrees with the "$X of $Y" text: 11.999 shows "$12.00" and is warn, 14.996 shows "$15.00" and is bad.
+  it("compares in cents so the tone matches the displayed money", () => {
+    expect(spendTone(11.999, 15)).toBe("warn");
+    expect(spendTone(11.994, 15)).toBe("accent");
+    expect(spendTone(12.000000001, 15)).toBe("warn");
+    expect(spendTone(14.996, 15)).toBe("bad");
+    expect(spendTone(14.999, 15)).toBe("bad");
+    expect(spendTone(14.994, 15)).toBe("warn");
+    expect(spendTone(15.004, 15)).toBe("bad");
+    expect(spendTone(1.005, 1.01)).toBe("bad");
+  });
+  it("budget 0 or missing never changes the tone (accent, no crash)", () => {
+    expect(spendTone(0, 0)).toBe("accent");
+    expect(spendTone(3, 0)).toBe("accent");
   });
   it("is safe on a zero or invalid budget and invalid spend", () => {
     expect(spendTone(5, 0)).toBe("accent");
@@ -69,6 +85,15 @@ describe("clockTime", () => {
   });
   it("is empty for an invalid time", () => {
     expect(clockTime("nope")).toBe("");
+  });
+});
+
+describe("zoneName", () => {
+  it("is the short zone name of the viewer", () => {
+    expect(zoneName("2026-10-17T10:42:07Z")).toBe("UTC");
+  });
+  it("is empty for an invalid time", () => {
+    expect(zoneName("nope")).toBe("");
   });
 });
 
