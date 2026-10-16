@@ -30,25 +30,30 @@ func (f *AttemptFinalizer) FinalizeIfExpired(ctx context.Context, a store.Attemp
 	if a.Status != store.AttemptInProgress || !over(e, now) {
 		return a, nil
 	}
-	cur, err := f.attempts.GetAttempt(ctx, a.ExamID, a.UserID)
-	if err != nil {
+	for try := 0; try <= maxSubmitRetries; try++ {
+		cur, err := f.attempts.GetAttempt(ctx, a.ExamID, a.UserID)
+		if err != nil {
+			return a, err
+		}
+		if cur.Status != store.AttemptInProgress {
+			return cur, nil
+		}
+		fin := cur
+		fin.Status = store.AttemptSubmitted
+		fin.AutoSubmitted = true
+		closes := e.ClosesAt
+		fin.SubmittedAt = &closes
+		fin.ScoreHalves, fin.ScoreBeforePeeksHalves = Grade(e, cur.Answers, cur.Revealed)
+		err = f.attempts.Submit(ctx, fin)
+		switch {
+		case err == nil:
+			return fin, nil
+		case errors.Is(err, store.ErrSubmitted), errors.Is(err, store.ErrDeclined):
+			return f.attempts.GetAttempt(ctx, a.ExamID, a.UserID)
+		case errors.Is(err, store.ErrConflict):
+			continue // a peek landed after the read; re-read and regrade
+		}
 		return a, err
 	}
-	if cur.Status != store.AttemptInProgress {
-		return cur, nil
-	}
-	fin := cur
-	fin.Status = store.AttemptSubmitted
-	fin.AutoSubmitted = true
-	closes := e.ClosesAt
-	fin.SubmittedAt = &closes
-	fin.ScoreHalves, fin.ScoreBeforePeeksHalves = Grade(e, cur.Answers, cur.Revealed)
-	err = f.attempts.Submit(ctx, fin)
-	switch {
-	case err == nil:
-		return fin, nil
-	case errors.Is(err, store.ErrSubmitted), errors.Is(err, store.ErrDeclined):
-		return f.attempts.GetAttempt(ctx, a.ExamID, a.UserID)
-	}
-	return a, err
+	return a, errors.New("exams: finalize: too much contention")
 }

@@ -25,6 +25,9 @@ type SubmitResult struct {
 	AutoSubmitted    bool      `json:"autoSubmitted"`
 }
 
+// maxSubmitRetries bounds the regrade loop when peeks keep landing during a submit.
+const maxSubmitRetries = 3
+
 func validateSubmit(exam store.Exam, in *SubmitInput) error {
 	if in.badValue {
 		return apperr.Validation("An answer must be text.", map[string]string{"answers": "Must be text"})
@@ -119,6 +122,17 @@ func (s *Service) Submit(ctx context.Context, user store.User, examID string, in
 	fin.SubmittedAt = &at
 	fin.ScoreHalves, fin.ScoreBeforePeeksHalves = Grade(exam, fin.Answers, fin.Revealed)
 	err = s.attempts.Submit(ctx, fin)
+	// A peek that landed after the row was read makes the write lose with ErrConflict. Regrade
+	// against the fresh revealed list and write again (a few times at most).
+	for try := 0; errors.Is(err, store.ErrConflict) && try < maxSubmitRetries; try++ {
+		cur, gerr := s.attempts.GetAttempt(ctx, examID, user.ID)
+		if gerr != nil {
+			return SubmitResult{}, apperr.Internal(gerr)
+		}
+		fin.Revealed = cur.Revealed
+		fin.ScoreHalves, fin.ScoreBeforePeeksHalves = Grade(exam, fin.Answers, fin.Revealed)
+		err = s.attempts.Submit(ctx, fin)
+	}
 	switch {
 	case err == nil:
 		return submitResult(exam, fin, now), nil
