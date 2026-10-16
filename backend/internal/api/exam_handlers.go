@@ -50,6 +50,21 @@ func registerExamRoutes(rt *routeTable, deps Deps) {
 			"exams":      items,
 		})
 	})))
+	rt.handle("GET", "/exams/{id}", RequireUser(deps, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		u, _ := UserFrom(r.Context())
+		v, err := deps.Exams.Get(r.Context(), u, r.PathValue("id"))
+		if err != nil {
+			WriteError(w, r, err)
+			return
+		}
+		w.Header().Set("Cache-Control", "no-store")
+		WriteJSON(w, http.StatusOK, map[string]any{
+			"serverTime": deps.Clock.Now().UTC().Format(time.RFC3339),
+			"exam":       v.Exam,
+			"attempt":    v.Attempt,
+			"keyVisible": v.KeyVisible,
+		})
+	})))
 	rt.handle("POST", "/exams/{id}/decline", RequireUser(deps, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		u, _ := UserFrom(r.Context())
 		if err := deps.Exams.Decline(r.Context(), u, r.PathValue("id")); err != nil {
