@@ -5,7 +5,7 @@ Audience: whoever (person or coding agent) sets up and ships the app. Read this 
 **Related files**
 - `goals.md`: the 3-day plan and constraints. Binding. Section 9 below maps this file onto its days.
 - `frontend-spec.md`: section 8.1 defines the `/api/*` rewrite and the Vercel-facing contract.
-- `backend-spec.md`: section 12 lists what the backend **requires** from deployment. This file says **how** to provide it. If the two disagree, fix `backend-spec.md` section 12 first.
+- `backend-spec.md`: section 12 lists what the backend **requires** from deployment. This file says **how** to provide it. If the two disagree, that is a bug in one of them: decide which is right, fix it, and report the mismatch. Neither file silently overrides the other.
 
 ---
 
@@ -15,7 +15,7 @@ Audience: whoever (person or coding agent) sets up and ships the app. Read this 
 |---|---|
 | Frontend host | **Vercel**, deployed from Git. This is fixed. |
 | Backend host | **AWS**: two Lambda functions (API and worker) built from one Go binary, called through a Lambda **Function URL**. No API Gateway. |
-| Database | **DynamoDB**, five tables, provisioned capacity (small). |
+| Database | **DynamoDB**, five tables, **on-demand** billing (no capacity to plan). |
 | Files | **S3**, one private bucket per stage. |
 | Sign-in | Backend-issued session cookie. Two ways in: email and password, and **Sign in with Google** (Google Identity Services in the browser, ID-token verification in the backend). Needs one Google OAuth client per stage (section 8.0). |
 | Infrastructure as code | **AWS SAM** (`backend/template.yaml`). Nothing is created by hand-clicking except the one-time account setup. |
@@ -52,7 +52,7 @@ Browser ──► S3 (presigned PUT and GET, direct)
 - An AWS account. Never deploy with the root user. Create an admin-capable identity for yourself (IAM Identity Center user or an IAM user with access keys) and turn on MFA for it and for the root user.
 - A Vercel account (the Hobby plan is for personal, non-commercial use; check its terms **(verify)**).
 - A GitHub repository connected to Vercel.
-- An account with the LLM provider and an API key. Set a monthly spend limit on that key at the provider.
+- An account with the LLM provider and an API key. **Set a monthly spend limit on that key at the provider before anything is deployed to prod.** This is a hard gate (section 8.4), not a nicety: it is the only cap that bounds LLM spend if the app's own limits are bypassed.
 - A Google account for the Google Cloud Console, to create the OAuth clients for sign-in (free for basic profile sign-in **(verify)**).
 
 **Tools on the machine that deploys**
@@ -69,22 +69,14 @@ Browser ──► S3 (presigned PUT and GET, direct)
 Details **(verify)** on AWS's own pages before relying on them.
 
 - Accounts created after July 15, 2025 are on a **Free plan**: up to $200 in credits (the first $100 at sign-up, up to $100 more for completing tasks), and **the account closes 6 months after it opens, or when credits run out, whichever comes first** unless you upgrade to a Paid plan. Older accounts may still be on the previous 12-month program. Find out which one you have (Billing console) before planning anything long-lived.
-- About 30 services, including **Lambda** and **DynamoDB**, have monthly always-free allowances that do not use up credits. DynamoDB's allowance is for **provisioned** capacity (reported as 25 read and 25 write capacity units in total, across tables and indexes).
-- **S3** and **CloudWatch Logs** usage at this project's volume is small. Treat S3 as credit-funded.
-- **The LLM is not an AWS cost and is not free.** It is the main running cost (about $0.40 to $0.75 per generation job; see `AI-spec.md` section 10.3). The default model is `claude-opus-5-5`; set `LlmModel` to `claude-sonnet-5-5` to roughly halve it. The per-user limits in `backend-spec.md` section 7.5 and the provider-side spend limit are the guards.
+- **Lambda** has a monthly always-free allowance that does not use up credits. **DynamoDB on-demand** is *not* covered by the always-free allowance (that covers provisioned capacity only **(verify)**), but at this project's volume it costs cents a month and is paid from the credits. That trade was made on purpose: provisioned units this small throttle under real use with items this size.
+- **S3** and **CloudWatch Logs** usage at this project's volume is small. Treat both as credit-funded.
+- **The LLM is not an AWS cost and is not free.** It is the main running cost (about $0.40 to $0.75 per generation job; see `AI-spec.md` section 10.3). The default model is `claude-opus-5-5`; set `LlmModel` to `claude-sonnet-5-5` to roughly halve it. The guards, in order: the provider-side monthly spend limit (hard gate), the global limit of 200 jobs a day, the per-user limits of 10 generate and 30 regenerate a day (`backend-spec.md` section 7.5). At the global limit, a day on the default model costs up to about $150, so the provider limit, not the app limits, is what actually protects your budget.
 - **Google sign-in** (basic profile and email only) has no AWS cost. Verifying tokens means the backend fetches Google's public keys over the internet, which is one more reason not to put the Lambdas in a VPC.
 - **Things that cause surprise bills, and that this design avoids on purpose:** NAT gateways (about $30 a month), unattached Elastic IPs, putting Lambdas in a VPC, RDS, extra regions, high-retention logs. Do not add any of these.
 - **Budget alerts lag** (hours, sometimes a day). Set one anyway (section 11).
 
-**DynamoDB capacity plan** (assuming a total allowance of 25 read and 25 write units; recheck if yours differs):
-
-| Stage | Units per table or index | Objects | Total |
-|---|---|---|---|
-| prod | 2 read, 2 write | 5 tables + 3 indexes = 8 | 16 |
-| dev | 1 read, 1 write | 8 | 8 |
-| **Both** | | | **24 (under 25)** |
-
-If you only keep one stage deployed, give it more. Throttling is acceptable at this scale; the backend retries (`backend-spec.md` section 4). If you decide on on-demand mode instead, it costs cents at demo volume, but it may not be covered by the always-free allowance **(verify)**.
+**DynamoDB billing.** Every table and index uses `BillingMode: PAY_PER_REQUEST`. There are no capacity units to plan, no dev/prod split of units, and no throttling from under-provisioning. The `dev` stack costs next to nothing when idle. Cost scales with reads and writes (billed by item size), which is why the template projects only the attributes each index needs (section 6.2).
 
 ## 5. Repository layout
 
@@ -97,14 +89,15 @@ exam-assistant/
   backend/             # Go module and SAM template
     template.yaml
     samconfig.toml     # non-secret deploy settings only
+    scripts/write-samconfig.sh   # writes .samconfig.<stage>.toml (with secrets, gitignored) for `make deploy`
     Makefile           # build, test, run, smoke, deploy, destroy
     ...
   .gitignore
 ```
 
-`.gitignore` must include: `.env*` (all environment files), `backend/.aws-sam/`, `frontend/.next/`, `node_modules/`, `backend/.env.deploy.*`.
+`.gitignore` must include: `.env*` (all environment files), `backend/.aws-sam/`, `frontend/.next/`, `node_modules/`, `backend/.env.deploy.*`, `backend/.samconfig.*.toml` (generated at deploy time and contains secrets).
 
-**Secrets never go in Git.** They live in two places only: per-stage files on the deploying machine (`backend/.env.deploy.dev`, `backend/.env.deploy.prod`, both gitignored) and, once deployed, the Lambda configuration. Frontend has no secrets (`API_URL` is not secret but is server-side only).
+**Secrets never go in Git.** They live in two places only: per-stage files on the deploying machine (`backend/.env.deploy.dev`, `backend/.env.deploy.prod`, both gitignored, plus the generated `backend/.samconfig.<stage>.toml`, also gitignored) and, once deployed, the Lambda configuration. Frontend has no secrets (`API_URL` is not secret but is server-side only).
 
 ## 6. AWS stack (SAM)
 
@@ -121,7 +114,7 @@ Runtime is `provided.al2023`, architecture `arm64`, handler `bootstrap`. Both fu
 
 ### 6.2 Reference template
 
-A starting point, not gospel. Run `sam validate --lint` and fix whatever it reports. Where it differs from `backend-spec.md` section 12, the spec wins.
+A starting point, not gospel. Run `sam validate --lint` and fix whatever it reports. If it disagrees with `backend-spec.md` section 12, treat that as a bug in one of the two and fix it (see the note at the top).
 
 ```yaml
 AWSTemplateFormatVersion: '2010-09-09'
@@ -136,7 +129,12 @@ Parameters:
   GoogleClientId:  { Type: String, Description: "Google OAuth client ID that sign-in tokens must be issued for" }
   AllowedOrigins:  { Type: String, Description: "Comma-separated, e.g. https://app.example.com,http://localhost:3000" }
   FrontendOrigins: { Type: CommaDelimitedList, Description: "Same origins, for S3 CORS" }
-  TableUnits:      { Type: Number, Default: 2 }
+  ApiReservedConcurrency:    { Type: Number, Default: 0, Description: "0 = no reservation. Suggested 20, only if the account concurrency quota allows it" }
+  WorkerReservedConcurrency: { Type: Number, Default: 0, Description: "0 = no reservation. Suggested 5, only if the account concurrency quota allows it" }
+
+Conditions:
+  ReserveApi:    !Not [!Equals [!Ref ApiReservedConcurrency, 0]]
+  ReserveWorker: !Not [!Equals [!Ref WorkerReservedConcurrency, 0]]
 
 Globals:
   Function:
@@ -145,18 +143,10 @@ Globals:
     Handler: bootstrap
     MemorySize: 1024
     Environment:
-      Variables:
+      Variables:                       # shared, non-secret
         ENV: production
         STAGE: !Ref Stage
-        JWT_SECRET: !Ref JwtSecret
-        LLM_API_KEY: !Ref LlmApiKey
-        LLM_MODEL: !Ref LlmModel
-        GOOGLE_CLIENT_ID: !Ref GoogleClientId
-        ALLOWED_ORIGINS: !Ref AllowedOrigins
         S3_BUCKET: !Ref UploadsBucket
-        WORKER_FUNCTION_NAME: !Sub "exam-assistant-${Stage}-worker"
-        GEN_MAX_RUNNING: "2"
-        GEN_MAX_PER_DAY: "20"
 
 Resources:
   ApiFunction:
@@ -166,8 +156,15 @@ Resources:
       FunctionName: !Sub "exam-assistant-${Stage}-api"
       CodeUri: .
       Timeout: 29
+      ReservedConcurrentExecutions: !If [ReserveApi, !Ref ApiReservedConcurrency, !Ref "AWS::NoValue"]
       FunctionUrlConfig: { AuthType: NONE }
-      Environment: { Variables: { MODE: api } }
+      Environment:
+        Variables:                     # the API never calls the LLM, so it gets no LLM key
+          MODE: api
+          JWT_SECRET: !Ref JwtSecret
+          GOOGLE_CLIENT_ID: !Ref GoogleClientId
+          ALLOWED_ORIGINS: !Ref AllowedOrigins
+          WORKER_FUNCTION_NAME: !Sub "exam-assistant-${Stage}-worker"
       Policies:
         - Statement:
             - Effect: Allow
@@ -186,6 +183,9 @@ Resources:
               Action: [s3:PutObject, s3:GetObject, s3:DeleteObject]
               Resource: !Sub "${UploadsBucket.Arn}/*"
             - Effect: Allow
+              Action: s3:ListBucket        # without it, HeadObject on a missing key returns 403, not 404
+              Resource: !GetAtt UploadsBucket.Arn
+            - Effect: Allow
               Action: lambda:InvokeFunction
               Resource: !GetAtt WorkerFunction.Arn
 
@@ -195,17 +195,24 @@ Resources:
     Properties:
       FunctionName: !Sub "exam-assistant-${Stage}-worker"
       CodeUri: .
-      Timeout: 600
-      Environment: { Variables: { MODE: worker } }
+      Timeout: 600                     # platform ceiling; the job's own deadline is 8 minutes (backend-spec 7.2)
+      ReservedConcurrentExecutions: !If [ReserveWorker, !Ref WorkerReservedConcurrency, !Ref "AWS::NoValue"]
+      Environment:
+        Variables:                     # the worker needs the LLM, not the session secret or Google
+          MODE: worker
+          LLM_API_KEY: !Ref LlmApiKey
+          LLM_MODEL: !Ref LlmModel
       EventInvokeConfig:
         MaximumRetryAttempts: 0          # a retried job would run the LLM calls twice
         MaximumEventAgeInSeconds: 3600
       Policies:
         - Statement:
             - Effect: Allow
-              Action: [dynamodb:GetItem, dynamodb:PutItem, dynamodb:UpdateItem, dynamodb:Query, dynamodb:BatchGetItem]
+              Action: dynamodb:GetItem     # reads source document rows only
+              Resource: !GetAtt DocumentsTable.Arn
+            - Effect: Allow
+              Action: [dynamodb:GetItem, dynamodb:PutItem, dynamodb:UpdateItem, dynamodb:Query]
               Resource:
-                - !GetAtt DocumentsTable.Arn
                 - !GetAtt JobsTable.Arn
                 - !Sub "${JobsTable.Arn}/index/*"
             - Effect: Allow
@@ -243,60 +250,57 @@ Resources:
     Type: AWS::DynamoDB::Table
     Properties:
       TableName: !Sub "${Stage}-users"
+      BillingMode: PAY_PER_REQUEST
       AttributeDefinitions: [{ AttributeName: id, AttributeType: S }]
       KeySchema: [{ AttributeName: id, KeyType: HASH }]
-      ProvisionedThroughput: { ReadCapacityUnits: !Ref TableUnits, WriteCapacityUnits: !Ref TableUnits }
 
   DocumentsTable:
     Type: AWS::DynamoDB::Table
     Properties:
       TableName: !Sub "${Stage}-documents"
+      BillingMode: PAY_PER_REQUEST
       AttributeDefinitions: [{ AttributeName: ownerId, AttributeType: S }, { AttributeName: id, AttributeType: S }]
       KeySchema: [{ AttributeName: ownerId, KeyType: HASH }, { AttributeName: id, KeyType: RANGE }]
       TimeToLiveSpecification: { AttributeName: ttl, Enabled: true }
-      ProvisionedThroughput: { ReadCapacityUnits: !Ref TableUnits, WriteCapacityUnits: !Ref TableUnits }
 
   ExamsTable:
     Type: AWS::DynamoDB::Table
     Properties:
       TableName: !Sub "${Stage}-exams"
+      BillingMode: PAY_PER_REQUEST
       AttributeDefinitions: [{ AttributeName: id, AttributeType: S }, { AttributeName: creatorId, AttributeType: S }]
       KeySchema: [{ AttributeName: id, KeyType: HASH }]
-      ProvisionedThroughput: { ReadCapacityUnits: !Ref TableUnits, WriteCapacityUnits: !Ref TableUnits }
       GlobalSecondaryIndexes:
         - IndexName: creator-index
           KeySchema: [{ AttributeName: creatorId, KeyType: HASH }, { AttributeName: id, KeyType: RANGE }]
-          Projection: { ProjectionType: ALL }
-          ProvisionedThroughput: { ReadCapacityUnits: !Ref TableUnits, WriteCapacityUnits: !Ref TableUnits }
+          Projection: { ProjectionType: INCLUDE, NonKeyAttributes: [title, type, totalMarks, closesAt, createdAt] }   # never the questions
 
   AttemptsTable:
     Type: AWS::DynamoDB::Table
     Properties:
       TableName: !Sub "${Stage}-attempts"
+      BillingMode: PAY_PER_REQUEST
       AttributeDefinitions:
         - { AttributeName: examId, AttributeType: S }
         - { AttributeName: userId, AttributeType: S }
       KeySchema: [{ AttributeName: examId, KeyType: HASH }, { AttributeName: userId, KeyType: RANGE }]
-      ProvisionedThroughput: { ReadCapacityUnits: !Ref TableUnits, WriteCapacityUnits: !Ref TableUnits }
       GlobalSecondaryIndexes:
         - IndexName: user-index
           KeySchema: [{ AttributeName: userId, KeyType: HASH }, { AttributeName: examId, KeyType: RANGE }]
-          Projection: { ProjectionType: ALL }
-          ProvisionedThroughput: { ReadCapacityUnits: !Ref TableUnits, WriteCapacityUnits: !Ref TableUnits }
+          Projection: { ProjectionType: INCLUDE, NonKeyAttributes: [status, scoreHalves, scoreBeforePeeksHalves] }   # never the answers
 
-  JobsTable:
+  JobsTable:                           # also holds quota items (quota#...) and question items (<jobId>#questions)
     Type: AWS::DynamoDB::Table
     Properties:
       TableName: !Sub "${Stage}-jobs"
+      BillingMode: PAY_PER_REQUEST
       AttributeDefinitions: [{ AttributeName: id, AttributeType: S }, { AttributeName: ownerId, AttributeType: S }]
       KeySchema: [{ AttributeName: id, KeyType: HASH }]
       TimeToLiveSpecification: { AttributeName: ttl, Enabled: true }
-      ProvisionedThroughput: { ReadCapacityUnits: !Ref TableUnits, WriteCapacityUnits: !Ref TableUnits }
       GlobalSecondaryIndexes:
         - IndexName: owner-index
           KeySchema: [{ AttributeName: ownerId, KeyType: HASH }, { AttributeName: id, KeyType: RANGE }]
-          Projection: { ProjectionType: ALL }
-          ProvisionedThroughput: { ReadCapacityUnits: !Ref TableUnits, WriteCapacityUnits: !Ref TableUnits }
+          Projection: { ProjectionType: INCLUDE, NonKeyAttributes: [status, createdAt, updatedAt, kind] }
 
 Outputs:
   FunctionUrl: { Value: !GetAtt ApiFunctionUrl.FunctionUrl }
@@ -305,9 +309,13 @@ Outputs:
 ```
 
 **Notes on the template**
-- **Data layer is five tables and three indexes.** `users` has no index (login uses the email lock item, `backend-spec.md` section 6.2).
+- **Data layer is five tables and three indexes, all on-demand.** `users` has no index (login uses the email lock item, `backend-spec.md` section 6.2). Index projections are `INCLUDE` lists, never `ALL`: an index copies a write only when a projected attribute changes, so autosaving answers or embedding questions never writes to an index. `NonKeyAttributes` must match the attribute names the store implementation writes; the key attributes are projected automatically.
+- **The jobs table holds three kinds of item:** job status items, a questions item per job (`<jobId>#questions`, written just before the job turns `done`), and quota counters (`quota#<userId>#<yyyymmdd>`, `quota#global#<yyyymmdd>`). All carry `ttl` (jobs 24 hours, quota items 3 days).
 - **`ENV: production`** is set for both stages so the session cookie always has the `Secure` flag when deployed. Only a locally run server uses `ENV=local`.
-- **Worker retries are off on purpose.** The default for asynchronous invocation is to retry twice, which would run a generation job (and pay for its LLM calls) up to three times.
+- **Worker retries are off on purpose.** The default for asynchronous invocation is to retry twice, which would run a generation job (and pay for its LLM calls) up to three times. Asynchronous delivery is still at-least-once, so the worker claims a job with a conditional `queued -> running` write and exits if it loses (`backend-spec.md` section 7.2).
+- **Timeouts line up like this.** Worker function timeout 600 s is the ceiling; the job's own deadline is 8 minutes, and a job with no heartbeat for 6 minutes reads as failed to the client. The API function's 29 s matches the Function URL's practical limit; nothing long runs there.
+- **Reserved concurrency is optional and off by default.** When set, it caps how many API or worker executions run at once, which bounds LLM spend and DynamoDB load under abuse. It only works if the account's concurrency quota is high enough: AWS requires at least 100 unreserved executions to remain, and a new account's quota may be lower. Check Service Quotas first **(verify)**; if you cannot reserve, rely on the quota counters and the provider spend limit. A worker invoke throttled by its reservation is dropped (retries are 0), so that job stays `queued` until the 6-minute stale rule fails it and the user retries.
+- **Secrets are scoped per function.** `JWT_SECRET` and `GOOGLE_CLIENT_ID` exist only on the API; `LLM_API_KEY` and `LLM_MODEL` only on the worker. `backend-spec.md` section 11 must therefore mark each variable required per `MODE`, so config loading does not fail in a mode that does not need it.
 - **No VPC, no API Gateway, no Cognito, no queue.** Do not add them.
 - **Public function URL.** `AuthType: NONE` means anyone with the URL can call it; the app authenticates every request itself. Keep the URL out of public docs, and know it is reachable directly, not only through Vercel. If a newly created function URL returns `403`, check its resource policy: AWS has tightened what the permission for public URLs requires **(verify)**.
 - **Memory** is 1024 MB for both because PDF page counting happens in the API function and reads the whole file. Lower it after measuring.
@@ -319,14 +327,28 @@ Outputs:
 | Parameter | dev | prod |
 |---|---|---|
 | `Stage` | `dev` | `prod` |
-| `TableUnits` | `1` | `2` |
+| `ApiReservedConcurrency`, `WorkerReservedConcurrency` | `0` (off) | `0` (off), or `20` and `5` if the account quota allows (see notes) |
 | `AllowedOrigins` | `http://localhost:3000` | the production Vercel domain, for example `https://exam-assistant.vercel.app`, plus any custom domain, and `http://localhost:3000` if you want local frontend against prod (not recommended) |
 | `FrontendOrigins` | same list as `AllowedOrigins` | same list as `AllowedOrigins` |
 | `JwtSecret` | random, different per stage | random, different per stage |
 | `LlmApiKey` | a key with a low spend limit | a key with a spend limit sized to your budget |
 | `GoogleClientId` | the **dev** OAuth client ID (authorized origin: `http://localhost:3000`) | the **prod** OAuth client ID (authorized origin: the production Vercel domain) |
 
-Generate a secret with `openssl rand -base64 48`. Never reuse the prod secret in dev.
+Generate a secret with `openssl rand -hex 32` (hex has no characters that need quoting in the generated deploy config). Never reuse the prod secret in dev.
+
+### 6.4 Optional overrides
+
+These variables have defaults in the code and are **not** set in the template. Add one under the relevant function's `Environment: Variables` only when you need to change it. Names and defaults are owned by `AI-spec.md` section 12 and `backend-spec.md` section 11; the values below are for orientation, so check those files if they ever differ.
+
+| Variable | Code default | Function |
+|---|---|---|
+| `LLM_EFFORT` | `medium` | worker |
+| `LLM_TIMEOUT_SECONDS` | `120` | worker |
+| `GEN_MAX_FILES`, `GEN_MAX_TOTAL_BYTES`, `GEN_MAX_PDF_PAGES`, `GEN_MAX_INPUT_TOKENS`, `GEN_MAX_PER_CALL` | see `AI-spec.md` section 12 | API and worker |
+| `GEN_MAX_RUNNING` | `2` | API |
+| `GEN_MAX_PER_DAY` | `10` (per user, generate) | API |
+| `GEN_MAX_REGEN_PER_DAY` | `30` (per user, regenerate) | API |
+| `GEN_MAX_GLOBAL_PER_DAY` | `200` (all users, UTC day) | API |
 
 ## 7. Frontend on Vercel
 
@@ -410,7 +432,7 @@ Preview deployments cannot use Google sign-in, for the same reason they cannot c
 
 ```
 # backend/.env.deploy.dev
-JWT_SECRET=<openssl rand -base64 48>
+JWT_SECRET=<openssl rand -hex 32>
 LLM_API_KEY=<dev key>
 LLM_MODEL=claude-opus-5-5
 ALLOWED_ORIGINS=http://localhost:3000
@@ -423,9 +445,13 @@ LLM_API_KEY=<prod key>
 LLM_MODEL=claude-opus-5-5
 ALLOWED_ORIGINS=https://exam-assistant.vercel.app,http://localhost:3000
 GOOGLE_CLIENT_ID=<prod OAuth client ID>
+# optional, only if the account's concurrency quota allows (section 6.2 notes):
+# API_RESERVED_CONCURRENCY=20
+# WORKER_RESERVED_CONCURRENCY=5
 ```
 
 4. Set a budget alert (section 11) before creating anything else.
+5. Create the LLM provider API key for `prod` and **set its monthly spend limit now**. Section 8.4 will not let you deploy prod without it.
 
 ### 8.2 `make deploy` (backend)
 
@@ -434,20 +460,43 @@ GOOGLE_CLIENT_ID=<prod OAuth client ID>
 ```make
 STAGE ?= dev
 AWS_REGION ?= us-east-1
-include .env.deploy.$(STAGE)
+-include .env.deploy.$(STAGE)
 export
 
-deploy:
+check-env:
+	@test -f .env.deploy.$(STAGE) || { echo "Missing backend/.env.deploy.$(STAGE). See deployment-spec.md section 8.1."; exit 1; }
+
+deploy: check-env
 	sam build
-	sam deploy \
+	./scripts/write-samconfig.sh $(STAGE)
+	sam deploy --config-file .samconfig.$(STAGE).toml \
 	  --stack-name exam-assistant-$(STAGE) --region $(AWS_REGION) \
-	  --capabilities CAPABILITY_IAM --resolve-s3 --no-confirm-changeset --no-fail-on-empty-changeset \
-	  --parameter-overrides Stage=$(STAGE) JwtSecret=$$JWT_SECRET LlmApiKey=$$LLM_API_KEY \
-	      LlmModel=$$LLM_MODEL GoogleClientId=$$GOOGLE_CLIENT_ID AllowedOrigins=$$ALLOWED_ORIGINS FrontendOrigins=$$ALLOWED_ORIGINS \
-	      TableUnits=$(if $(filter prod,$(STAGE)),2,1)
+	  --capabilities CAPABILITY_IAM --resolve-s3 --no-confirm-changeset --no-fail-on-empty-changeset
 	@aws cloudformation describe-stacks --stack-name exam-assistant-$(STAGE) --region $(AWS_REGION) \
 	  --query "Stacks[0].Outputs" --output table
 ```
+
+`-include` means `make test`, `make run`, and `make smoke` work on a fresh clone with no env file; only `deploy` needs it, and `check-env` stops it with a clear message.
+
+**How secrets reach CloudFormation.** Passing them with `--parameter-overrides` on the command line would expose them in the process list. Instead `scripts/write-samconfig.sh` reads the exported variables and writes `backend/.samconfig.<stage>.toml` (mode 600, gitignored), and `sam deploy --config-file` reads the overrides from there. The values are `NoEcho` stack parameters, so they are not shown in the console or in the deploy output.
+
+```sh
+#!/bin/sh
+# usage: write-samconfig.sh <stage>   (variables come from .env.deploy.<stage> via make)
+set -eu
+umask 077
+extra=""
+if [ -n "${API_RESERVED_CONCURRENCY:-}" ]; then extra="$extra ApiReservedConcurrency=$API_RESERVED_CONCURRENCY"; fi
+if [ -n "${WORKER_RESERVED_CONCURRENCY:-}" ]; then extra="$extra WorkerReservedConcurrency=$WORKER_RESERVED_CONCURRENCY"; fi
+{
+  echo 'version = 0.1'
+  echo '[default.deploy.parameters]'
+  printf 'parameter_overrides = "Stage=%s JwtSecret=%s LlmApiKey=%s LlmModel=%s GoogleClientId=%s AllowedOrigins=\\"%s\\" FrontendOrigins=\\"%s\\"%s"\n' \
+    "$1" "$JWT_SECRET" "$LLM_API_KEY" "$LLM_MODEL" "$GOOGLE_CLIENT_ID" "$ALLOWED_ORIGINS" "$ALLOWED_ORIGINS" "$extra"
+} > ".samconfig.$1.toml"
+```
+
+The quoting around the origin lists (they contain commas) is the fiddly part. Run the first `sam deploy` with `--debug` and confirm the parameters arrive as intended **(verify)**.
 
 `samconfig.toml` may be committed but must not contain secrets. Never run `sam deploy --guided` and commit what it writes without checking the file.
 
@@ -465,8 +514,10 @@ The aim is to find rewrite, cookie, and AWS problems at the start. Do this with 
 
 ### 8.4 Production (Day 2)
 
+**Gate: do not deploy prod until the LLM key's provider-side monthly spend limit is set** and a budget alert exists (section 11). Check the provider's console, not your memory. Nothing else in the design caps spend if the app's own limits are bypassed.
+
 1. Create `backend/.env.deploy.prod` with the production Vercel domain in `ALLOWED_ORIGINS`.
-2. `make deploy STAGE=prod`. Copy the `FunctionUrl`.
+2. Confirm the gate above, then `make deploy STAGE=prod`. Copy the `FunctionUrl`.
 3. Turn on termination protection for the prod stack: `aws cloudformation update-termination-protection --enable-termination-protection --stack-name exam-assistant-prod --region <region>`.
 4. In Vercel, set `API_URL` for **Production** to the prod `FunctionUrl` and redeploy production.
 5. Run the smoke test through the whole chain: `make smoke BASE_URL=https://<vercel-domain>/api`.
@@ -486,7 +537,7 @@ The aim is to find rewrite, cookie, and AWS problems at the start. Do this with 
 | 1, first hour | Section 8.3: dev stack with `/health`, Vercel project, rewrite verified, cookie, Google sign-in (OAuth clients from 8.0), and (once built) upload verified |
 | 1, rest of day | Keep deploying `dev` after each backend slice; the frontend builds against the dev stack or the mock flag |
 | 2 | Section 8.4: prod stack, termination protection, Vercel production env var, smoke test, device walk-through, fix production-only problems (cookies, presigned URLs, CORS, timeouts) |
-| 3 | Redeploy fixes with `make deploy` and Git pushes; run the smoke test after each |
+| 3 | Redeploy fixes with `make deploy` and Git pushes; run the smoke test after each. In the first test pass, run the AI golden set on `claude-sonnet-5-5` (`AI-spec.md` section 13); if quality holds, set `LlmModel` for the stage and redeploy |
 
 ## 10. Verification checklist
 
@@ -501,16 +552,20 @@ The aim is to find rewrite, cookie, and AWS problems at the start. Do this with 
 - [ ] An uploaded file opens in the viewer, and its URL stops working after about 10 minutes.
 - [ ] The bucket shows "Block all public access" on, and objects cannot be fetched without a presigned URL.
 - [ ] A generation job started from the deployed app finishes and is not run twice (check the worker's logs for one invocation per job).
+- [ ] A job whose worker never starts or stalls reads as failed after about 6 minutes, and the user can retry.
+- [ ] Every table and index shows on-demand billing in the DynamoDB console, and no index projects all attributes.
+- [ ] The API function has no `LLM_API_KEY` and the worker has no `JWT_SECRET` (check each function's configuration).
+- [ ] If reserved concurrency was set, both functions show it; if not, that was a conscious choice (quota too low).
 - [ ] `make smoke BASE_URL=https://<vercel-domain>/api` passes against prod.
 - [ ] The prod stack has termination protection on.
-- [ ] A budget alert exists and the LLM key has a spend limit.
+- [ ] **Gate:** the prod LLM key has a provider-side monthly spend limit, set before the prod deploy, and a budget alert exists.
 - [ ] No secret appears in Git history, in `samconfig.toml`, or in Vercel's `NEXT_PUBLIC_` variables.
 - [ ] CloudWatch log groups exist for both functions with 14-day retention.
-- [ ] Combined DynamoDB provisioned units across all deployed stages are within the free allowance (24 of 25 with the plan in section 4).
+- [ ] No secret appears in the process list or deploy output (`make deploy` uses the generated `.samconfig.<stage>.toml`, which is gitignored).
 
 ## 11. Operations
 
-**Budget alert.** In the AWS Billing console, create a budget with an alert at a small amount (for example $5) to your email. It lags by hours, so it is a backstop, not a limit.
+**Budget alert.** In the AWS Billing console, create a budget with an alert at a small amount (for example $5) to your email. It lags by hours, so it is a backstop, not a limit. The LLM spend limit at the provider is the real cap; review its usage page after the first real day of use. Compare it with the per-job token usage recorded on jobs (`AI-spec.md` section 11).
 
 **Logs.** Each function writes JSON lines to CloudWatch Logs with 14-day retention. To follow them: `sam logs --stack-name exam-assistant-prod --name ApiFunction --tail` (and `--name WorkerFunction`).
 
@@ -533,12 +588,13 @@ The aim is to find rewrite, cookie, and AWS problems at the start. Do this with 
 
 - MFA on the AWS root user, your AWS identity, GitHub, and Vercel.
 - No access keys in Git, in the repository, or in Vercel. If you use IAM access keys on your machine, rotate them if they leak and prefer SSO.
-- Lambda roles are the ones in the template: table-scoped DynamoDB actions, `GetObject`, `PutObject`, `DeleteObject` on the bucket only, and invoke permission on the worker only. No `*` resources.
+- Lambda roles are the ones in the template: table-scoped DynamoDB actions (the worker can only read `documents` and read and write `jobs`), `GetObject`, `PutObject`, `DeleteObject` on the bucket objects, `ListBucket` on the bucket for the API only, and invoke permission on the worker only. No `*` resources.
 - The bucket blocks all public access. Files are served only through short-lived presigned URLs.
 - Google OAuth: no client secret exists or is stored. Client IDs are public. Keep separate dev and prod clients, keep the consent screen to basic scopes, and keep the authorized origins list to exactly the domains in use.
 - Whoever owns the Google Cloud project can change the sign-in configuration; protect that Google account with MFA too.
 - The function URL is public by design; the app authenticates every request, checks the origin on state-changing requests, and uses `HttpOnly`, `Secure`, `SameSite=Lax` cookies.
-- Secrets are injected as stack parameters (`NoEcho`) and stored as Lambda environment variables, which are visible to anyone with read access to the function configuration. Keep that access to yourself. Moving them to a secrets service is out of scope for the MVP.
+- Secrets are injected as stack parameters (`NoEcho`) from a generated, gitignored config file (never on the command line) and stored as Lambda environment variables, scoped per function. They are visible to anyone with read access to the function configuration. Keep that access to yourself. Moving them to a secrets service is out of scope for the MVP.
+- The LLM key has a provider-side monthly spend limit (hard gate before prod).
 - Minors' data: complete the privacy review noted in `goals.md` before any real users.
 
 ## 13. Troubleshooting
@@ -555,9 +611,10 @@ The aim is to find rewrite, cookie, and AWS problems at the start. Do this with 
 | Google button missing, or the console says the origin is not allowed | the page's origin is not in the client's authorized origins, or the change has not propagated, or this is a preview URL | Add the exact origin to the right client (section 8.0) and wait; test on the production domain or `localhost` |
 | Google sign-in succeeds in the browser but the backend returns 401 | the backend's `GOOGLE_CLIENT_ID` differs from the client ID the frontend used, or the backend cannot reach Google | Compare the two values per stage; check the stack parameter and that the Lambda has internet access (no VPC) |
 | Some people can sign in with Google and others cannot | the consent screen is in Testing and the others are not test users, or their school account blocks it | Add them as test users or publish the app; keep email and password available |
-| Generation job stays `queued` | the API cannot invoke the worker, or `WORKER_FUNCTION_NAME` is wrong | Check the API role's `lambda:InvokeFunction` on the worker and the env var |
-| A job runs twice | worker retries are on | Confirm `MaximumRetryAttempts: 0` on the worker |
-| Frequent throttling errors | provisioned units too low | Raise `TableUnits` for that stage, keeping the total within the allowance |
+| Generation job stays `queued` | the API cannot invoke the worker, `WORKER_FUNCTION_NAME` is wrong, or the worker's reserved concurrency throttled the invoke (dropped, retries are 0) | Check the API role's `lambda:InvokeFunction` and the env var; check the worker's throttle metric. The 6-minute stale rule fails the job so the user can retry |
+| A job runs twice | worker retries are on, or duplicate async delivery without the claim check | Confirm `MaximumRetryAttempts: 0`; confirm the worker's conditional `queued -> running` claim exists (`backend-spec.md` section 7.2) |
+| `complete` returns an unexpected 500 on a missing upload | the API role lacks `s3:ListBucket`, so `HeadObject` returns 403 instead of 404 | Add `s3:ListBucket` on the bucket ARN (it is in the template) |
+| `sam deploy` shows wrong parameter values (for example origins split in two) | quoting in `.samconfig.<stage>.toml` | Run with `--debug`, fix `scripts/write-samconfig.sh`; origin lists need the escaped quotes |
 | `sam deploy` fails on the bucket | the bucket name is taken or has objects | Use the account ID in the name (already in the template) and empty it before delete |
 | New stack cannot be created: resource already exists | a previous stack's tables or bucket still exist | Delete the leftover resources (section 11) or use a different stage name |
 
@@ -566,9 +623,11 @@ The aim is to find rewrite, cookie, and AWS problems at the start. Do this with 
 - **AWS region.** Default `us-east-1`; choose one near your users.
 - **Which free-tier program the account is on,** and therefore how long the account lives.
 - **Custom domain or the default `vercel.app` domain.**
-- **Whether to keep a `dev` stack at all.** It costs one extra stack and 8 capacity units; it lets you develop without touching prod data. If you drop it, give `prod` more capacity and develop against `prod` or the mock flag.
+- **Whether to keep a `dev` stack at all.** It costs one extra stack (next to nothing on-demand); it lets you develop without touching prod data. If you drop it, develop against `prod` or the mock flag.
 - **Preview deployments:** visual-only (default) or supported (section 7.5).
 - **Production branch name** if not `main`.
 - **Google consent screen:** stay in Testing with a test-user list, or publish to Production (and whether that needs a privacy policy and homepage link).
 - **Google client layout:** two clients (dev and prod) as recommended, or one shared client.
+- **Reserved concurrency:** whether the account's concurrency quota allows it (check Service Quotas); otherwise rely on the quota counters and the spend limit.
+- **Launch model:** `claude-opus-5-5` now; switch to `claude-sonnet-5-5` after the Day 3 golden-set comparison if quality holds.
 - **Everything marked (verify)** in this file.

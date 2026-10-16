@@ -4,6 +4,8 @@ Audience: a coding agent building the frontend. Read this whole file before writ
 
 **Related files**
 - `goals.md`: product goals, the 3-day constraint, deferred list. Binding.
+- `backend-spec.md`: **the API contract is `backend-spec.md` section 8.** Section 8 of this file only lists the calls the screens make and the facts they depend on. If the two ever differ, the backend spec wins and this file is corrected.
+- `AI-spec.md`: how questions are generated; section 6.4 here follows it.
 - `exam-assistant-requirements.md`: user stories and acceptance criteria.
 - `prototype/index.html`: the approved visual and interaction reference. Open it in a browser. When this spec and the prototype disagree on visuals, the prototype wins. When they disagree on behavior, this spec wins.
 
@@ -101,23 +103,23 @@ Colour discipline: use the gradient only for the primary action, selection, and 
 ### Top bar (all pages except the exam page)
 - Sticky, height 56 px, white, bottom border.
 - Left: logo text "Exam Assistant" (gradient text, 17 px, bold), links to Home.
-- Next to it: nav links **Home**, **Documents**, **Create**. The active link has a 2 px `--accent` underline. **Create** is shown only to Teacher and Parent.
+- Next to it: nav links **Home**, **Documents**, **Create**. The active link has a 2 px `--accent` underline. **Create** is shown to every role.
 - Right: circular avatar (32 px, gradient, user's initial). Click opens a menu with the user's name, the nav links (mobile only), and **Log out**.
 - Under 640 px the inline nav links are hidden and appear inside the avatar menu.
 - The "View as" role switch in the prototype is **prototype only**. In the real app, role comes from the logged-in user. Do not build it.
 
 ### Exam page header (replaces the top bar while taking an exam)
-Sticky, 56 px: exam title (left), "Saved hh:mm" (muted), timer, **Save & exit** button. No nav.
+Sticky, 56 px: exam title (left), "Saved hh:mm" (muted), the peeks counter "💡 N left" (P1, only when the exam allows peeks), timer, **Save & exit** button. No nav.
 
 ### Role rules
 
 | Role | Sees Create? | Can assign exams? |
 |---|---|---|
-| Student | No | No |
-| Teacher | Yes | Yes, to many |
-| Parent | Yes | Yes (any user by email in MVP; linking is deferred) |
+| Student | Yes (practice exams, and exams for other students) | Yes, **to student accounts only**, up to 10 people per exam |
+| Teacher | Yes | Yes, to anyone by email, up to 50 people per exam |
+| Parent | Yes | Yes, to anyone by email, up to 50 people per exam (linking is deferred) |
 
-All roles can use Documents and take assigned exams.
+All roles can use Documents, create exams, and take exams assigned to them. An assignee can decline an exam they don't want (section 6.1).
 
 ## 5. Routes
 
@@ -127,21 +129,24 @@ All roles can use Documents and take assigned exams.
 | `/` | Home | all |
 | `/documents` | Library | all |
 | `/documents/[id]` | Viewer | owner |
-| `/create` | Create exam | teacher, parent |
+| `/create` | Create exam | all |
 | `/exams/[id]/take` | Exam taking (focused layout) | assignee or creator |
 | `/exams/[id]/status` | Teacher status table | creator |
 | `/exams/[id]/result` | Result and answer key | assignee or creator |
+| `/exams/[id]/print` | Print view (question paper, answer sheet, answer key) | assignee or creator |
 
-Unauthenticated users redirect to `/login`. A student opening `/create` sees the notice "Only teachers and parents can create exams." and a link Home.
+Unauthenticated users redirect to `/login`.
 
 ## 6. Screens
 
 ### 6.1 Home (`/`)
-- Header row: h1 "Home", subtitle "Your exams, nothing else.", and for Teacher/Parent a primary **Create exam** button (links to `/create`).
-- Section **Open**: list of exams that are applicable to the user and not past the deadline.
-- Section **Closed**: list of exams past the deadline, or submitted.
-- Section **Created by you** (Teacher/Parent only): their created exams with the line "12 submitted, 3 in progress, 5 not started" and a **View status** secondary button.
-- Each exam row: title (600 weight), meta "Assigned by {name} · closes in 2d" (use "You" if self-created), a status pill, and exactly one action button.
+- Header row: h1 "Home", subtitle "Your exams, nothing else.", and a primary **Create exam** button for every role (links to `/create`).
+- Section **Open**: list of exams that are applicable to the user and still accepting answers (the backend decides; the 60 seconds after `closesAt` still count as open).
+- Section **Closed**: list of exams that have ended, or that the user submitted.
+- Declined exams appear in neither list.
+- Section **Created by you**: the exams the user created (any role) with the line "12 submitted, 3 in progress, 5 not started, 1 declined" (the declined part only when above 0) and a **View status** secondary button.
+- Every exam row also has a quiet text button **Print** (next to the main action, and next to **Decline** on exams that can be declined). It opens `/exams/[id]/print` in a new tab (section 6.9). Declined exams are not listed, so they cannot be printed.
+- Each exam row: title (600 weight), meta "Assigned by {name} · closes in 2d" (always show the creator's name; use "You" if self-created), a status pill, and exactly one action button.
 
 | State | Pill | Button |
 |---|---|---|
@@ -149,7 +154,9 @@ Unauthenticated users redirect to `/login`. A student opening `/create` sees the
 | In progress, open | `warn`, "In progress" | **Resume** (primary) |
 | Submitted | `ok`, "Submitted · 34/40" | **View result** |
 | Missed (closed, never submitted) | `bad`, "Missed" | **View result** |
+| Closing (past `closesAt`, within the 60 s grace window) | `warn`, "Closing…" | **Resume** (primary) |
 
+- **Decline:** on an open exam that is **Not started** and was assigned by someone else, show a quiet text button **Decline** next to Start. It opens an AlertDialog "Decline this exam?" (body "It will be removed from your list. {creator} will see that you declined.") with Cancel and Decline. It calls `POST /api/exams/:id/decline` and removes the row. There is no undo in the MVP.
 - Deadline text: "closes in 5h", "closes in 2d", "closed Oct 8". Relative format under 7 days, otherwise absolute.
 - **Empty states:** Open: "No open exams. Exams you create or are assigned appear here." Closed: "Nothing closed yet."
 - **Loading:** three skeleton rows in each list.
@@ -161,13 +168,13 @@ Unauthenticated users redirect to `/login`. A student opening `/create` sees the
   - Choose file: `<input type="file" accept="application/pdf,image/jpeg,image/png,text/plain" multiple>`.
   - Choose from photos: `<input type="file" accept="image/*" multiple>`.
   - One photo per upload (decided). No multi-page "keep scanning" flow.
-- **Drop zone** (desktop only, hidden under 640 px): dashed 2 px `#c4a8f5` border, `--tint` background, text "Drag files here to upload (PDF, JPG, PNG, TXT · up to 25 MB)".
+- **Drop zone** (desktop only, hidden under 640 px): dashed 2 px `#c4a8f5` border, `--tint` background, text "Drag files here to upload (PDF, JPG, PNG, TXT · up to 20 MB)".
 - **Tools row:** a search input (placeholder "Search documents", filters by name, client-side) and a sort select (**Newest**, **Name**). No grid toggle.
 - **List:** one row per document: checkbox, file-type tile, name (link to the viewer, 600 weight), meta "Oct 14 · 12 pages".
 - **Upload progress:** while uploading, a row at the top of the list shows the filename, a progress bar (gradient fill), and "Uploading…". On failure the row turns `bad` with the message and a **Retry** link.
-- **Validation:** reject unsupported types and files over 25 MB before upload with a toast: "{name} isn't supported. Use PDF, JPG, PNG, or TXT under 25 MB."
+- **Validation:** reject unsupported types and files over 20 MB before upload with a toast: "{name} isn't supported. Use PDF, JPG, PNG, or TXT under 20 MB."
 - **Upload mechanics (direct to S3, never through the app server):**
-  1. `POST /api/documents/upload-url` with `{ name, type, sizeBytes }`. Response: `{ docId, uploadUrl, headers }`.
+  1. `POST /api/documents/upload-url` with `{ name, type, sizeBytes }`, where `type` is the file's **MIME type** (for example `application/pdf`), not the short label. Response: `{ docId, uploadUrl, headers }`.
   2. `PUT` the file to `uploadUrl` with an `XMLHttpRequest`, sending the returned `headers` (the `Content-Type` must match what was signed). Drive the progress bar from `xhr.upload.onprogress`.
   3. On success, `POST /api/documents/:docId/complete`. The response is the finished `Doc`; replace the progress row with the normal row.
   4. If any step fails, the row shows the failure state with **Retry**, which restarts from step 1. Never leave a half-created row in the list after a failed upload.
@@ -187,19 +194,20 @@ Unauthenticated users redirect to `/login`. A student opening `/create` sees the
 - **Loading:** a page-shaped grey placeholder. **Error:** "We couldn't open this file." with Retry and Back.
 
 ### 6.4 Create exam (`/create`)
-Teacher and Parent only. One page, no wizard.
+Open to every role. One page, no wizard.
 
 **Layout:** h1 "Create exam", subtitle "Pick sources, set the marks, generate." Under 720 px everything stacks into one column. At 720 px and up it is two columns: left 260 px, right flexible.
 
 **Left card: Sources (N)**
 - A checkable list of the user's documents (name only). Pre-checked from `?sources=id,id` if present.
 - At least one source is required.
+- Under the list, a helper line: "Up to 10 files, 20 MB and 100 pages in total." If `POST /api/generate` answers `422` naming a file (a file alone over the page cap, or a set over the caps), show a `bad` notice with the message as written and uncheck nothing.
 
 **Right column, in this order:**
 1. **Question type** card: segmented control with **Multiple choice** and **Free text**. Selected segment uses the gradient, white text.
 2. **Total marks** card: chips **30**, **40**, **50**. Selected chip uses the gradient. Default 30. (A custom total is deferred.)
 3. **Questions per mark value** card: five stepper rows, one for each of 1 to 5 marks. Each row: label ("1 mark", "2 marks", coloured per the mark-value colours, bold), a **−** button, the count, a **+** button, and a right-aligned "= N marks" subtotal. Counts cannot go below 0. Below the rows, a checkbox "Shuffle order (default: low to high marks)".
-4. **Exam details** card: **Title** (text), **Closes in** (select: 1 hour, 1 day, 2 days, 1 week, plus "Pick date and time" which reveals a datetime input), **Assign to** (optional, comma-separated emails; helper "Leave empty for a personal practice exam"), **Answer key visible** (select: Anytime, After submission, After the exam closes).
+4. **Exam details** card: **Title** (text), **Closes in** (select: 1 hour, 1 day, 2 days, 1 week, plus "Pick date and time" which reveals a datetime input), **Assign to** (optional, comma-separated emails; helper "Leave empty for a personal practice exam"; a student sees "Student emails only · up to 10 people", a teacher or parent sees "Up to 50 people"), and **Peeks allowed** (P1: a stepper from 0 to 10, label "Peeks allowed", helper "Takers can reveal an answer mid-exam for half marks. 0 turns it off."; the default is 3 when Assign to is empty and 0 when emails are entered; the value follows that default until the user edits it).
 5. A results region (empty until generation starts).
 
 **Sticky footer (always visible, white, top border):**
@@ -211,24 +219,28 @@ Teacher and Parent only. One page, no wizard.
 - **Generate is disabled unless total equals target and at least one source is selected.**
 
 **Generation flow**
-1. Clicking Generate calls `POST /api/generate` with the settings. The response is `{ jobId }` immediately (it does not wait for the questions). Show a card in the results region: "Writing question 3 of 12…", a gradient progress bar, and a **Cancel** button.
-2. Poll `GET /api/generate/:jobId` every 1.5 seconds. The response is `{ status: "running" | "done" | "failed" | "cancelled", progress: { done, total }, questions?, failedSources?, error? }`. Update the progress text and bar from `progress`. When `status` is `done`, stop polling and render `questions`. Stop polling when the user leaves the page.
-3. **Cancel** calls `DELETE /api/generate/:jobId`, stops polling, and clears the card.
-4. Give up with the failure notice if a poll fails 3 times in a row or the job runs longer than 3 minutes.
-3. If a source file couldn't be read, show a notice naming the file: "We couldn't read {name}. Try a clearer photo or a different file." Generation continues with the other sources if any remain.
-4. On any other failure show a `bad` notice with **Try again**.
+1. Above the Generate button, a quiet line: "Selected files are sent to an AI service to write questions." Clicking Generate calls `POST /api/generate` with the settings. The response is `{ jobId }` immediately (it does not wait for the questions). Show a card in the results region: "Writing question 3 of 12…", a gradient progress bar, and a **Cancel** button.
+2. Poll `GET /api/generate/:jobId` every 1.5 seconds. The response is `{ status: "queued" | "running" | "done" | "failed" | "cancelled", progress: { done, total }, questions?, failedSources?, error? }`. Update the progress text and bar from `progress`. When `status` is `done`, stop polling and render `questions`.
+3. **Cancel** calls `DELETE /api/generate/:jobId`, stops polling, and clears the card. Also call `DELETE` when the user leaves the page while a job is running, and when the app gives up (step 4), so the job stops spending.
+4. Give up with the failure notice if a poll fails 3 times in a row or the job runs longer than **6 minutes** (send the `DELETE` first). Generation usually finishes within about 2 minutes; the backend's hard limit is 8 minutes.
+5. If a source file couldn't be read, show a notice naming the file (from `failedSources`): "We couldn't read {name}. Try a clearer photo or a different file." Generation continues with the other sources if any remain.
+6. On `failed`, show a `bad` notice with the job's `error` text exactly as written (the backend writes it for end users) and **Try again**. On `429 rate_limited` from `POST /api/generate`, show the message as written and no retry button.
+
+Questions and answers are **plain text** (Unicode maths such as x², √, ½ is fine). Render them as text, never as HTML or Markdown.
 
 **Generated question list**
 - Heading "Generated questions · {N} marks".
 - One card per question: coloured mark badge ("3 marks"), "from {file name}" (meta), and right-aligned text buttons **Edit**, **Regenerate**, **Delete**. Then the numbered question text. For multiple choice, show the four options and mark the correct one with a ✓ and the word "correct".
 - Order: ascending by marks by default. If Shuffle is checked, order is random. Changing Shuffle after generating re-orders the existing list without regenerating.
-- **Edit** makes the question text (and options) editable inline with Save and Cancel. **Regenerate** replaces only that question with a new one of the same marks. **Delete** removes it.
-- If deletions leave the total below the target, show a notice above the list: "You deleted {n} marks. Add a {k}-mark question?" with an **Add** button that generates one question of `min(gap, 5)` marks.
+- **Edit** makes the question text (and options) editable inline with Save and Cancel. **Regenerate** replaces only that question with a new one of the same marks. It calls `POST /api/generate/regenerate` with `{ marks, sourceIds, type, avoid }`, where `avoid` is the text of every question currently in the list, so the replacement doesn't repeat one. **Delete** removes it.
+- If deletions leave the total below the target, show a notice above the list: "You deleted {n} marks. Add a {k}-mark question?" with an **Add** button that generates one question of `min(gap, 5)` marks (the same call as Regenerate, with `avoid` set the same way).
 - Under the list: secondary **Regenerate all** and primary **Publish exam**.
-- **Publish exam** is disabled while the total of the remaining questions does not equal the target, or the title is empty. On success: toast "Exam published" and go Home.
+- **Publish exam** is disabled while the total of the remaining questions does not equal the target, or the title is empty. It calls `POST /api/exams` with an `Idempotency-Key` header holding a UUID generated once per publish attempt and **reused if the user retries** (so a flaky connection never creates two exams). The body sends `closesInSeconds` (or an absolute `closesAt` for the date picker; never compute the deadline from the device clock), `assigneeEmails`, `maxPeeks`, and the questions (with `sourceDocId` and `sourceDocName` as returned by generation).
+- On success: toast "Exam published" and go Home. If the response lists `unknownEmails`, show a `Notice` before leaving: "We couldn't find an account for: {emails}. They didn't get the exam." with **Done**. For a student creator, an email that belongs to a non-student account is reported the same way.
 
 **Answer key**
 - Created at publish time from the generated model answers. A "Review answer key" secondary button opens an inline editable list of one answer per question. Auto-drafted by default and editable.
+- There is no visibility setting. The rule is fixed and enforced by the backend: **the creator sees the key; everyone else sees it once the exam is over** (after `acceptingUntil`). A creator who is also taking the exam does not see the key during their own unfinished attempt. The screens only render what the backend returns (`keyVisible`).
 
 ### 6.5 Taking an exam (`/exams/[id]/take`)
 Focused layout: exam page header only (see section 4). Content centered, max width 640 px.
@@ -239,30 +251,38 @@ Focused layout: exam page header only (see section 4). Content centered, max wid
 - **Multiple choice:** options as full-width cards with a letter ("A.") and text. Selected: `--accent` border, `--tint` background, 4 px `--accent2` inset left edge, weight 600. Hover `--tint`.
 - **Free text:** a textarea, minimum height 120 px, placeholder "Type your answer".
 - Footer row: **Back** (disabled on the first question) and **Next** (primary). On the last question the primary button is **Review**.
-- Under the footer: meta "Closes Oct 18, 6:00 PM" (the absolute deadline, always shown).
-- **Timer** (header): "42:10 left", bold, tabular numbers. At under 5 minutes it turns `--bad`. Driven by the server deadline, not a local countdown start, so refreshing never resets it.
+- Under the footer: meta "Closes Oct 18, 6:00 PM" (the absolute deadline, always shown), and a quiet text link **Print this exam** that opens `/exams/[id]/print` in a new tab, so the exam stays open. Printing does not start the attempt or change it in any way.
+- **Timer** (header): "42:10 left", bold, tabular numbers. At under 5 minutes it turns `--bad`. Driven by the server deadline, not a local countdown start, so refreshing never resets it. At 0 it reads "Closing…" until the app has submitted (the backend accepts answers for 60 seconds after `closesAt`, until `acceptingUntil`).
 - **Autosave:** every answer change is saved (debounce 500 ms for text). The header shows "Saved 10:42" using the time of the last successful save. If a save fails, show "Not saved. Retrying…" in `--bad` and retry.
 - **Save & exit:** saves, shows a toast "Progress saved. Resume any time from Home.", and goes Home. The row then shows Resume.
 - **Review page** (after the last question): h1 "Review before you submit", a line "2 unanswered: question 3, 7" (or "All questions answered."), the dots row (click to jump), and **Back to questions** and primary **Submit exam**.
 - **Submit exam** shows no extra dialog when everything is answered. If any question is unanswered, show a confirmation AlertDialog "Submit with 2 unanswered questions?" with Cancel and Submit.
-- **Deadline passes mid-exam:** the timer reaches 0, the app saves the current answers, submits them, shows a toast "Time's up. Your answers were submitted.", and goes to the result page.
+- **Deadline passes mid-exam:** the timer reaches 0 and the app calls `POST /api/exams/:id/submit` **with the current answers in the body** (it does not autosave first), shows a toast "Time's up. Your answers were submitted.", and goes to the result page. If submit answers `409 exam_closed` (the grace window ended first), show the toast "This exam has closed. Your last saved answers were submitted." and go to the result page. Autosave answering `409` (closed or already submitted) does the same.
 - **Open after deadline:** redirect to the result page (or Home with a toast "This exam is closed") if never started.
-- **Resume:** reopening restores all answers and the last question the user was on.
+- **Resume:** reopening restores all answers, the last question the user was on, and any revealed answers.
+- **Peeks (P1; only when the exam's `maxPeeks` is above 0):**
+  - The header shows "💡 N left" (from `peeksLeft`).
+  - Each question has a quiet text button **Reveal answer**. It opens an AlertDialog "Reveal this answer?" (body "Revealed questions score at most half marks. You have N peeks left.") with Cancel and Reveal. Revealing calls `POST /api/exams/:id/reveal` with `{ questionId }`.
+  - On success the question shows the answer in a `warn` Notice ("Answer: {text}" or the model answer) with the label "Revealed · half marks at most". Revealing the same question again is free. The answer stays on screen after a reload (the exam response carries `revealed`).
+  - `409` "No peeks left." disables the button; `403` means peeking is off, so the control must not be shown. The user can still answer normally after a peek.
 
 ### 6.6 Teacher status (`/exams/[id]/status`)
 - Header: **← Back**, h1 exam title.
-- Subtitle: counts, for example "2 submitted, 1 in progress, 1 not started".
-- Table: **Student**, **Status** (pill), **Score**, **Submitted**. Header cells 12 px uppercase muted on `--bg`. Scores show "—" until graded.
-- Under the table: secondary **Assign to more people** (opens a small dialog with an emails input).
+- Subtitle: counts, for example "2 submitted, 1 in progress, 1 not started" (plus ", 1 declined" when above 0).
+- Table: **Student**, **Status** (pill: Not started, In progress, Submitted, or `bad`-outline "Declined"), **Score**, **Submitted**. Header cells 12 px uppercase muted on `--bg`. Scores show "—" until graded.
+- Header action: secondary **Print** (opens `/exams/[id]/print`).
+- Under the table: secondary **Assign to more people** (opens a small dialog with an emails input and the cap text from section 6.4; the response's `unknown` emails are shown in a `Notice`).
 - Empty (no assignees): "Not assigned." with the **Assign** button.
 - On mobile the table scrolls horizontally inside its card, the page does not.
 
 ### 6.7 Result (`/exams/[id]/result`)
-- Header: **← Back**, h1 "{exam title}: result".
-- Subtitle: "Score 34 / 40" (when graded).
-- One card per question: number badge, a correctness pill (`ok` "✓ Correct" or `bad` "✗ Incorrect"), the question, "Your answer: …", "Correct answer: …".
-- Multiple choice is auto-graded. Free text shows "Compare with the model answer" and a self-check pair of buttons **I got it** / **I missed it** (updates the score locally in MVP).
-- If the answer key is hidden by the visibility rule, replace the "Correct answer" lines with "Answer key available after {date or rule}." There must be no empty gap.
+- Header: **← Back**, h1 "{exam title}: result", and a secondary **Print** button (opens `/exams/[id]/print`).
+- Subtitle: "Score 34 / 40" (when graded). Scores can end in .5 (half marks) and are shown with one decimal only when needed. When peeks were used (P1) add a second line "Score without the peek penalty: 36 / 40" (`scoreBeforePeeks`).
+- When `maxPeeks` is above 0 and `peeksUsed` is 0, show an `ok` badge "No peeks". Otherwise, when `peeksUsed` is above 0, show a neutral line "Peeks used: N of M" (P1).
+- **If `keyVisible` is true:** one card per question: number badge, a correctness pill (`ok` "✓ Correct" or `bad` "✗ Incorrect"), the question, "Your answer: …", "Correct answer: …". Revealed questions also carry a neutral "Answer revealed" marker (P1).
+- **If `keyVisible` is false:** the backend omits all correctness data, so **do not render the ✓ or ✗ pills or any "Correct answer" line**. Each card shows the question and "Your answer: …" only, and a line under the subtitle says "Answers available after {keyAvailableAt}." with no empty gap. Questions the user revealed still show their revealed answer (the backend includes it).
+- Multiple choice is auto-graded. Free text shows "Compare with the model answer" and a self-check pair of buttons **I got it** / **I missed it** (updates the score locally in MVP; a revealed question counts for at most half its marks).
+- Before `acceptingUntil` the result of an unfinished attempt isn't available (`409`); show "Submit the exam to see results." with a link back.
 
 ### 6.8 Auth
 
@@ -298,6 +318,35 @@ Two ways in: **Sign in with Google**, or **email and password**. `/login` and `/
 
 **Accessibility:** inputs have visible labels, the role chips are a radio group (`role="radiogroup"`, arrow-key selectable), and errors use `aria-live="polite"`.
 
+### 6.9 Print view (`/exams/[id]/print`)
+
+Lets anyone who can open the exam print it, so it can be taken on paper, and save a PDF through the browser's print dialog ("Save as PDF"). This is **browser printing only**: the screen uses `window.print()` and a print stylesheet. There is no server-generated PDF and no new backend endpoint.
+
+**Data:** `GET /api/exams/:id` only (questions, `maxPeeks` is ignored, `keyVisible`, and the key fields when `keyVisible` is true). Also `GET /api/me` for the name line. Opening or printing changes nothing on the server: it does not start an attempt, use a peek, or record anything. A `404` shows the same not-found state as the other exam pages.
+
+**Screen layout (not printed):**
+- A toolbar card with the exam title, a hint "Choose Save as PDF in the print dialog to keep a copy.", checkboxes, and a primary **Print** button (`window.print()`). Hide the Print button where `window.print` does not exist.
+- Checkboxes: **Question paper** (always on and disabled if it is the only part), **Answer sheet** (multiple-choice exams only; default on), **Answer key** (default on only when `keyVisible` is true; when false the checkbox is disabled with the text "Available after {date}", using the result's `keyAvailableAt` rule: after the exam is over; and it never appears in the output), **Name line** (default on).
+- Below the toolbar a live preview of the pages in white sheets with a soft shadow, max width 794 px. The preview uses the same components as the printed output.
+
+**Printed output** (`@media print`; the toolbar, app bar, buttons, shadows, gradients, pills and background colours are removed; everything is black on white; Helvetica as everywhere, body 11 pt):
+- **Page setup:** `@page { size: auto; margin: 18mm 16mm }`, so the user picks A4 or Letter in the dialog. Do not use fixed page heights; the layout must work on both. Set `print-color-adjust` so no backgrounds are forced.
+- **Question paper**
+  - Header block on the first page only: exam title (18 pt, 700), a meta line "Set by {creator name} · {N} questions · {total} marks", and, if the name line is on, a row "Name: ______________  Date: ____________  Score: ______ / {total}".
+  - One instruction line: multiple choice "Choose one answer for each question. Marks are shown in brackets." Free text "Answer all questions in the space provided. Marks are shown in brackets."
+  - Each question is a block that must not split across pages (`break-inside: avoid`): a bold number "1.", the question text (keep line breaks, `white-space: pre-wrap`), and the marks at the right, "[2 marks]" ("[1 mark]" for one). Multiple choice: the four options on separate lines "A.", "B.", "C.", "D.", indented. Free text: **3 ruled answer lines per mark** (1 mark is 3 lines, 5 marks is 15), each 8 mm high, drawn with a bottom border.
+  - Spacing: 6 mm between questions. Never leave a question number on one page and its text on the next (`break-after: avoid` on the number row).
+  - A footer on every page with the exam title in small grey-less (black, 9 pt) text, using a fixed-position element. Page numbers use `@page` margin boxes only where the browser supports them; do not depend on them.
+- **Answer sheet** (multiple choice only; starts on a new page): title "Answer sheet: {exam title}", the name line if on, then a grid "1 ○ A ○ B ○ C ○ D" per question, in two columns when there are more than 10 questions. The circles are outlined 4 mm circles, large enough to shade.
+- **Answer key** (only when `keyVisible`; starts on a new page): title "Answer key: {exam title}" and "For the teacher, parent or marker. Not for students." Multiple choice: "1. B: {option text} [2 marks]" per question. Free text: the question number, the question text, then "Model answer:" and the model answer text, with the marks.
+- **Order:** question paper, then answer sheet, then answer key, each starting on its own page. Selected parts only.
+- Questions and answers are plain text with Unicode maths and print as written. There are no figures, because questions are self-contained.
+- A paper exam has no timer, so the printed pages do not show a deadline.
+
+**Edge cases:** an exam with 60 questions prints over several pages without clipping or overlapping; very long question text wraps; an empty selection is impossible (the paper part cannot be turned off); a user who cannot open the exam sees not-found.
+
+**Components:** `PrintToolbar` and `PrintSheet` (pure components that take the exam data and the options, used by both the preview and the print output).
+
 ## 7. Shared components
 
 Build these once and reuse.
@@ -316,10 +365,12 @@ Build these once and reuse.
 | `SelectionBar` | Fixed bottom bar for the library |
 | `EmptyState` | One sentence plus an optional primary action |
 | `Notice` | Orange inline notice (used for warnings, not errors) |
+| `PeeksCounter` | P1. "💡 N left" in the exam header, text always present |
+| `PrintToolbar`, `PrintSheet` | Print view (section 6.9). The sheet renders the question paper, answer sheet and answer key from the exam data, with a print stylesheet |
 
-## 8. Data shapes the frontend expects
+## 8. API calls and data shapes
 
-Define these in `types.ts`. The backend implements them. Mock them locally first.
+**The contract is `backend-spec.md` section 8.** This section lists the calls the screens make and the facts they depend on; it does not repeat request and response shapes. Define types in `types.ts` from the backend spec and mock them locally first.
 
 ```ts
 type Role = "student" | "parent" | "teacher";
@@ -333,53 +384,45 @@ interface Doc {
 }
 
 interface Question {
-  id: string; marks: 1 | 2 | 3 | 4 | 5; text: string; sourceDocId: string;
+  id: string; marks: 1 | 2 | 3 | 4 | 5; text: string;
+  sourceDocId: string; sourceDocName: string;   // display only
   options?: string[];          // multiple choice only, length 4
-  correctIndex?: number;       // multiple choice only
-  modelAnswer?: string;        // free text only
+  correctIndex?: number;       // present only when the backend allows it
+  modelAnswer?: string;        // free text only; same rule
 }
 
-interface Exam {
-  id: string; title: string; createdBy: { id: string; name: string };
-  closesAt: string;            // ISO, the single source of truth for the deadline
-  totalMarks: number;
-  type: "mcq" | "free";
-  answerKeyVisibility: "anytime" | "after_submit" | "after_close";
-  questions: Question[];       // omitted from list endpoints
-}
-
-type AttemptStatus = "not_started" | "in_progress" | "submitted" | "missed";
-
-interface Attempt {
-  examId: string; userId: string; status: AttemptStatus;
-  answers: Record<string, string>;   // questionId -> option text or free text
-  lastQuestionIndex: number;
-  score?: number; submittedAt?: string; savedAt?: string;
-}
+type AttemptStatus = "not_started" | "in_progress" | "submitted" | "missed" | "declined";
+// "missed" is derived by the backend; "declined" attempts are never listed.
 ```
 
-**API surface the screens call.** All paths are relative (`/api/...`) and are implemented by the AWS backend (section 8.1). Names are the contract the frontend codes against; the backend must match them or tell the frontend what changed.
+**Calls the screens make** (all relative `/api/...`, implemented by the AWS backend):
 
-| Call | Used by |
-|---|---|
-| `GET /api/me` | shell, role gating |
-| `POST /api/auth/signup` `{name, email, password, role}`, `POST /api/auth/login` `{email, password}`, `POST /api/auth/logout` | auth screens, avatar menu |
-| `POST /api/auth/google` `{credential, role?}` returning `{user}` (`200` existing, `201` new); `422` code `role_required` when a new user sent no role | Google button (section 6.8) |
-| `GET /api/documents`, `DELETE /api/documents/:id` | library |
-| `POST /api/documents/upload-url`, then `PUT` to S3, then `POST /api/documents/:id/complete` | upload (section 6.2) |
-| `GET /api/documents/:id/file` returning `{ url }` (presigned, short-lived) | viewer |
-| `POST /api/generate` `{sourceIds, type, counts, shuffle}` returning `{ jobId }` | create |
-| `GET /api/generate/:jobId` (poll), `DELETE /api/generate/:jobId` (cancel) | create |
-| `POST /api/generate/regenerate` `{questionId or marks, sourceIds}` returning `{ jobId }` (same polling) | regenerate and add |
-| `POST /api/exams` | publish |
-| `GET /api/exams?scope=open|closed|created` | home |
-| `GET /api/exams/:id`, `GET /api/exams/:id/status` | take, status |
-| `PUT /api/exams/:id/attempt` (autosave), `POST /api/exams/:id/submit` | take |
-| `POST /api/exams/:id/assign` `{emails}` | create, status |
+| Call | Used by | Facts the UI depends on |
+|---|---|---|
+| `GET /api/me` | shell, role gating | `{ user, serverTime }` |
+| `POST /api/auth/signup`, `/auth/login`, `/auth/logout` | auth | generic `401` text, `409` on duplicate email |
+| `POST /api/auth/google` `{credential, role?}` | Google button | `200` existing, `201` new, `422 role_required`, `409` "already linked to another sign-in" |
+| `GET /api/documents`, `DELETE /api/documents/:id` | library | only the caller's `ready` documents |
+| `POST /api/documents/upload-url` (`type` = MIME), `PUT` to S3, `POST /api/documents/:id/complete` | upload | 20 MB cap; `422` on type or size mismatch |
+| `GET /api/documents/:id/file` | viewer | `{ url, expiresAt }`, refetch once on `403` |
+| `POST /api/generate` `{sourceIds, type, counts, shuffle}` | create | `202 {jobId}`; `422` naming a file when caps are exceeded; `429` limits |
+| `GET /api/generate/:jobId`, `DELETE /api/generate/:jobId` | create | poll every 1.5 s; `error` text is user-ready |
+| `POST /api/generate/regenerate` `{marks, sourceIds, type, avoid[]}` | regenerate, add | same polling; separate daily limit |
+| `POST /api/exams` (optional `Idempotency-Key` header) | publish | body has `closesInSeconds` or `closesAt`, `assigneeEmails`, `maxPeeks`, `questions`; no key-visibility field; response `{ id, unknownEmails, serverTime }` |
+| `GET /api/exams?scope=open\|closed\|created` | home | declined exams are never returned; `created` has `counts` including `declined`; each exam has `createdBy`, `attemptStatus`, `score` |
+| `GET /api/exams/:id` | take | `{ exam, attempt, keyVisible, acceptingUntil, serverTime }`; `attempt` carries `answers`, `lastQuestionIndex`, and (P1) `revealed` and `peeksLeft` |
+| `PUT /api/exams/:id/attempt` (autosave) | take | `409` when closed or submitted |
+| `POST /api/exams/:id/submit` `{answers?, lastQuestionIndex?}` | take, auto-submit at zero | answers in the body; accepted until `acceptingUntil`; idempotent |
+| `POST /api/exams/:id/reveal` `{questionId}` (P1) | take | `{ questionId, correctIndex or modelAnswer, peeksLeft }`; `403` off, `409` none left or key already visible |
+| `POST /api/exams/:id/decline` | home | idempotent; only while not started |
+| `GET /api/exams/:id/status` | status | creator only; rows include `declined` |
+| `POST /api/exams/:id/assign` `{emails}` | create, status | `{ assigned, alreadyAssigned, unknown }`; role and cap rules apply |
+| `GET /api/exams/:id/result` | result | `keyVisible`, `keyAvailableAt`, `score`, `scoreBeforePeeks`, `peeksUsed`, `maxPeeks`, per-question `revealed`; correctness fields are absent when the key is hidden |
 
 Rules that live on the server but affect the UI:
-- The deadline (`closesAt`) is checked on every read and write. A submit after the deadline is auto-accepted only if the saved attempt existed before it.
-- A student never receives `correctIndex` or `modelAnswer` before the visibility rule allows it.
+- One deadline cutoff: `acceptingUntil` = `closesAt` + 60 seconds. The server uses it for autosave, submit, list classification and key visibility; the frontend only displays it.
+- The creator sees the answer key; everyone else sees it after the exam is over. A student never receives `correctIndex` or `modelAnswer` outside that rule (the only exception is a question they revealed).
+- Scores may end in .5. Never round them.
 
 ### 8.1 Backend integration (AWS) and deployment
 
@@ -433,7 +476,8 @@ Consequences the frontend relies on:
 
 - **Time:** show relative times ("closes in 5h") for under 7 days. Use the user's local timezone.
 - **Toasts:** bottom center, dark ink background, white text, auto-dismiss after about 2.5 seconds. One at a time.
-- **Confirmation dialogs:** only for deleting documents and submitting with unanswered questions.
+- **Confirmation dialogs:** only for deleting documents, submitting with unanswered questions, declining an exam, and (P1) revealing an answer.
+- **Generation in flight:** leaving the page sends `DELETE /api/generate/:jobId` for a running job.
 - **Unsaved changes:** the Create page warns with the browser's `beforeunload` prompt if questions are generated but not published.
 - **Keyboard:** all buttons and rows are reachable by Tab. Exam options accept 1 to 4 as shortcuts and arrow keys for Back and Next (optional if time allows).
 - **Accessibility:** every icon-only button has `aria-label`. Pills and badges include text. Contrast must stay at least 4.5:1 for text. Focus rings are visible (2 px `--accent`, offset 2 px). Respect `prefers-reduced-motion` by turning off the action bar slide and progress transitions.
@@ -445,7 +489,8 @@ Consequences the frontend relies on:
 1. **Shell and auth:** tokens, Helvetica, `AppBar`, login and signup, route guards. In the first hour, deploy the empty skeleton to Vercel with the `/api/*` rewrite pointed at the AWS backend's health endpoint, and confirm a login round-trip works. This catches rewrite, cookie, and CORS problems on day one.
 2. **Documents:** library, upload with the sheet, camera input, validation, progress, selection bar, delete dialog, viewer.
 3. **Create exam:** sources, type, target chips, steppers, sticky footer total, generation with progress, question list with edit, regenerate, delete, shuffle, exam details, publish.
-4. **Home and taking:** Open and Closed lists, take screen with dots, timer, autosave, Save & exit, review page, submit, result page, teacher status.
+4. **Home and taking:** Open and Closed lists with Decline, take screen with dots, timer, autosave, Save & exit, review page, submit (auto-submit with answers at zero), result page (hidden-key state), teacher status, and the print view (`/exams/[id]/print`, section 6.9) with its Print buttons.
+5. **Peeks (P1, build last, first to cut):** "Peeks allowed" stepper on Create, `PeeksCounter`, Reveal answer with its dialog, revealed state on resume, result score with and without the penalty and the "No peeks" badge. The types and requests carry `maxPeeks`, `revealed` and `peeksLeft` from the start, so adding this later needs no rework.
 
 Build against mock data first, then connect real endpoints. Do not start slice N+1 until slice N works end to end.
 
@@ -455,37 +500,50 @@ A reviewer can confirm each of these by clicking through the app.
 
 - [ ] No font other than Helvetica renders anywhere (inspect computed styles on buttons, inputs, table, timer).
 - [ ] 375 px width: no horizontal page scroll on any screen.
-- [ ] Student does not see Create in the nav and gets a notice on `/create`.
+- [ ] Print: from Home, the exam page, the result page and the status page, **Print** opens a view where the question paper, the answer sheet (multiple choice only) and the key can be chosen. Printing (or Save as PDF) on A4 and on Letter gives clean black-on-white pages: no toolbar or buttons, no question split across pages, 60 questions flow over several pages, free-text questions have ruled lines in proportion to their marks, and the answer key is offered only when the key is visible to that person. Opening or printing does not start an attempt.
+- [ ] A student sees Create, can publish a practice exam, and can assign only to student emails (up to 10); a teacher or parent can assign up to 50 people.
 - [ ] Signup offers both "Sign up with Google" and an email form, and a role must be chosen for either.
 - [ ] A new Google user who chose no role is asked for one, and ends signed in with the chosen role (the same credential is resent).
 - [ ] An existing Google user signs in directly and sees no role chips.
 - [ ] If the Google script is blocked, the email form still works and a clear message replaces the Google button.
 - [ ] A failed password login shows the generic error and the "Signed up with Google?" hint, and never says which part was wrong.
 - [ ] The Google credential is never written to storage, logs, or a URL.
-- [ ] Upload accepts PDF, JPG, PNG, TXT, rejects others and files over 25 MB with the specified message; camera item opens the camera on a phone.
+- [ ] Upload accepts PDF, JPG, PNG, TXT, rejects others and files over 20 MB with the specified message; camera item opens the camera on a phone.
 - [ ] Selecting documents shows the bottom bar with the correct count; Generate questions opens Create with those sources checked.
 - [ ] Deleting asks for confirmation and removes only the chosen documents.
 - [ ] Viewer scrolls multi-page PDFs inside the app and zoom works.
 - [ ] Generate is disabled until total marks equals the target; the footer shows under, at, and over states with correct colours and text.
 - [ ] Questions appear in ascending marks order by default and reorder when Shuffle is toggled.
 - [ ] Deleting a question shows the "Add a k-mark question?" notice and Add restores the total.
-- [ ] Publish creates an exam that appears in Open (for assignees) with the right deadline text.
+- [ ] Publish creates an exam that appears in Open (for assignees) with the right deadline text. With no assignees it appears in the creator's own Open list.
+- [ ] Retrying a failed publish reuses the same `Idempotency-Key` and never creates a second exam.
+- [ ] Unknown assignee emails are listed in a warning after publish and after Assign.
+- [ ] An assignee can decline a not-started exam; it leaves both lists and the creator's status shows "Declined".
+- [ ] The Create page has no answer-key visibility control.
 - [ ] Taking an exam: answers autosave, "Saved hh:mm" updates, Save & exit then Resume restores answers and position.
 - [ ] Refreshing during an exam does not reset the timer.
 - [ ] Review page lists unanswered questions; submitting with blanks asks for confirmation.
-- [ ] When the deadline passes, the exam auto-submits and shows the result.
-- [ ] Result page shows the right correct, incorrect, and hidden-key states.
+- [ ] When the deadline passes, the timer shows "Closing…", the app submits with the current answers in the request body (no autosave first), and the result page opens.
+- [ ] A `409 exam_closed` on submit or autosave shows the closed toast and goes to the result page.
+- [ ] Result page shows the right correct, incorrect, and hidden-key states; with the key hidden there are no ✓ or ✗ pills and the line "Answers available after {date}." appears.
+- [ ] A creator who is also taking their own exam sees no answer key until they submit (or the exam is over).
+- [ ] A near-the-limit answer shows half marks correctly (for example 27.5 / 40).
 - [ ] Teacher status table shows the three statuses with counts in the subtitle.
 - [ ] On the deployed Vercel site, `/api/*` requests reach the AWS backend and login persists across refresh (cookie works through the rewrite).
 - [ ] A 20 MB PDF uploads successfully, showing real progress, with no request to the app server carrying the file body.
 - [ ] An uploaded file opens in the viewer; waiting past the URL expiry and scrolling or reloading still works (URL refetched once).
 - [ ] Generation returns a job immediately, progress text advances while polling, and Cancel stops it and clears the card.
+- [ ] The AI notice appears above Generate; leaving the page or giving up at 6 minutes sends `DELETE` for the job.
+- [ ] A `422` naming a file, and a `429`, show the backend's message as written.
+- [ ] Regenerate sends `marks`, `sourceIds`, `type` and `avoid`, and the replacement doesn't repeat an existing question.
+- [ ] Questions render as plain text (a question containing `<b>` shows the characters).
+- [ ] (P1) With peeks enabled: the header counter drops on each new reveal, revealing the same question twice costs nothing, revealed answers survive a reload, and the result shows the score with and without the penalty and "No peeks" when none were used.
 - [ ] With the backend temporarily unreachable, reads show "Can't reach the server. Retrying…" and writes keep the user's input on screen.
 - [ ] Changing the device clock does not change the exam timer or deadline text.
 
 ## 12. Out of scope (do not build)
 
-Password reset, other sign-in providers, Google One Tap, screens for linking or unlinking sign-in methods, parent-student linking and the parent progress view, folders and tags, rename, launching generation from anywhere other than the library and viewer buttons, multi-page scan flow, HEIC, custom marks totals, per-attempt durations, dark mode, notifications, profile pages, analytics. See "Deferred" in `goals.md`.
+Password reset, other sign-in providers, Google One Tap, screens for linking or unlinking sign-in methods, parent-student linking and the parent progress view, folders and tags, rename, launching generation from anywhere other than the library and viewer buttons, multi-page scan flow, HEIC, custom marks totals, recording results of a paper exam in the app, a true offline mode (PWA), server-generated PDFs, printing an exam before it is published, per-attempt durations, dark mode, notifications, profile pages, analytics, XP, points, streaks, levels, and leaderboards (peeks only have the counter, the badge, and the two scores). See "Deferred" in `goals.md`.
 
 ## 13. Decisions already made
 
@@ -495,7 +553,13 @@ Password reset, other sign-in providers, Google One Tap, screens for linking or 
 - Library button label is **Generate questions**. The top-bar and Home button label is **Create exam**.
 - Vibrant violet and pink palette with per-mark and per-file-type colours (section 3).
 - Deadline is a single `closesAt`. Saving does not pause it.
-- Answer key visibility defaults: Anytime for self-created practice exams, After the exam closes for assigned exams (pre-selected in the Create form).
+- No per-exam answer-key setting. Fixed rule: the creator sees the key; others see it once the exam is over (after the 60-second grace window). A creator taking their own exam sees it only after submitting.
+- One cutoff, `acceptingUntil` = `closesAt` + 60 s. At zero the app submits with the answers in the body.
+- Students can create exams and assign only to students (cap 10). Teachers and parents assign to anyone (cap 50). Assignees can decline.
+- Peeking mid-exam for half marks is a P1 feature with minimal gamification (counter, "No peeks" badge, score with and without penalty). Creators set the number of peeks (default 3 for self-practice, 0 when assigning).
+- Generation gives up at 6 minutes and sends `DELETE`. Upload cap is 20 MB.
+- Exams can be printed so they can be taken on paper: browser printing only (a print route and a print stylesheet), parts chosen by checkbox (question paper, answer sheet for multiple choice, answer key when visible). Paper results are not recorded in the app.
+- The API contract lives in `backend-spec.md` section 8.
 - Deployment: frontend on Vercel, backend on AWS, joined by a Vercel `/api/*` rewrite (same-origin, cookie auth, no CORS for API calls).
 - Uploads go directly from the browser to S3 with presigned URLs. Files are viewed through short-lived presigned URLs.
 - Question generation is a job with polling (not streaming), so it works regardless of gateway or proxy timeouts and does not depend on which AWS compute is chosen.

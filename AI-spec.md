@@ -55,7 +55,7 @@ Set `LLM_MODEL` to choose. Prices are per million tokens, input and output. **Ch
 |---|---|---|
 | `claude-opus-5-5` (default) | $4 / $20 | Most capable of the three. 1M-token context. |
 | `claude-sonnet-5-5` | $2 / $10 | About half the cost. Evaluate it on the golden set (section 13); if quality holds, it is the cheaper choice. |
-| `claude-haiku-4-5` | $1 / $5 | 200K-token context and a lower PDF page limit. Use only if the golden set shows acceptable quality. Takes different thinking settings, so confirm the settings below before switching. |
+| `claude-haiku-4-5` | $1 / $5 | 200K-token context and a lower PDF page limit. Use only if the golden set shows acceptable quality. Takes different thinking settings, and it **rejects `output_config.effort`**, so leave `LLM_EFFORT` empty (the code then sends no effort) and confirm the other settings below before switching. |
 
 Choosing a cheaper model is the owner's decision, made from the golden-set results, not something to do silently in code. The code must work with any of these by changing only the environment variable.
 
@@ -63,10 +63,10 @@ Choosing a cheaper model is the owner's decision, made from the golden-set resul
 
 - **Do not send `temperature`, `top_p`, or `top_k`.** Current models reject non-default sampling parameters with a 400.
 - **Thinking:** on the default model thinking is always on. Leave the `thinking` setting unset (or adaptive). Never send `disabled` or a `budget_tokens` value (both return a 400 on the default model). Thinking tokens are billed as output.
-- **Effort:** set `output_config.effort` explicitly from `LLM_EFFORT` (default `medium`). The default model's own default is `medium`; setting it explicitly protects you from a change. Tune by evaluation: lower is cheaper and faster, higher helps 4 and 5 mark questions.
+- **Effort:** set `output_config.effort` explicitly from `LLM_EFFORT` (default `medium`; an empty value sends none). The default model's own default is `medium`; setting it explicitly protects you from a change. Tune by evaluation: lower is cheaper and faster, higher helps 4 and 5 mark questions.
 - **No assistant prefill.** It is rejected on current models. Control the format with structured output (section 6), not by prefilling.
 - **`max_tokens`:** 16,000 per call. A call asks for at most 15 questions (section 5.3), which fits comfortably. If you raise `max_tokens` above this, use streaming and the SDK's final-message helper to avoid HTTP timeouts.
-- **Timeouts:** per call `LLM_TIMEOUT_SECONDS` (default 240). The whole job must finish inside the worker's limit (10 minutes). The SDK retries 408, 409, 429, and 5xx automatically (default 2 retries); keep that, and do not add a second retry layer on top of it for the same errors.
+- **Timeouts and retries:** per call `LLM_TIMEOUT_SECONDS` (default **120**). Set the SDK's maximum retries to **1** explicitly (it retries 408, 409, 429, and 5xx), so one call can take at most about 240 seconds, and do not add a second retry layer for the same errors. The whole job runs under an **8-minute deadline** set by the worker (`backend-spec.md` 7.2); if the deadline hits, the job fails with the too-long message.
 - **Structured output:** use the API's JSON-schema structured output (`output_config.format`). **Forced tool choice is not available on the default model** (it returns a 400), so do not use `tool_choice` `any` or `tool` as the way to get JSON. If the Go SDK version in use has no typed field for structured output, check the SDK repository for the supported way to set it; do not fall back to raw HTTP.
 
 ### 3.4 Things to verify in the Go SDK before coding
@@ -115,7 +115,7 @@ One implementation calls the API. A fake returns canned output for tests. A `Pro
 | Type | How it is sent | Preprocessing |
 |---|---|---|
 | PDF | a document block (base64 PDF) | none; the model reads text and page images. A scanned PDF works the same way |
-| JPG, PNG | an image block (base64) | **Downscale** so the longest side is at most 2000 px and re-encode as JPEG (quality about 85) if the file is over 4 MB. **Apply EXIF orientation** first, because phone photos are often stored rotated. Never upscale. Check the API's current per-image size and pixel limits before launch |
+| JPG, PNG | an image block (base64) | **Downscale** when the longest side is over 2000 px, and re-encode as JPEG (quality about 85) if the file is over 4 MB or was downscaled. **Apply EXIF orientation** first, because phone photos are often stored rotated. Never upscale. Check the API's current per-image size and pixel limits before launch |
 | TXT | a text block | decode UTF-8; reject (as unreadable) if it is not valid text; strip control characters |
 
 Rules:
@@ -137,7 +137,7 @@ Sources are labelled `doc-1`, `doc-2`, and so on, in the stable order. The label
 | Total PDF pages per job | 100 | keeps cost and time predictable |
 | Input tokens per job (measured) | 200,000 | a cost guard (section 10.2) |
 | Questions per call | 15 | keeps each response small and reliable. A request for 30 1-mark questions is two calls of 15 |
-| Calls per job | 10 | five mark values, each at most two chunks |
+| Calls per job | 10 first-attempt calls | five mark values, each at most two chunks. Each call may be retried once (a shortfall or `max_tokens` retry), so at most 20 in total |
 
 If a job exceeds a byte or page cap, fail it before calling the model with: "These files are too large to use together. Select fewer or smaller files."
 
@@ -151,7 +151,7 @@ Every call in one job shares the same prefix and differs only at the end:
    2. a **cache breakpoint** (`cache_control`, default 5-minute lifetime) on the last source block;
    3. a text part with the per-call instruction: the type, the marks, the count, the `Avoid` list, and the language rule.
 
-Documents go first, instructions after. This keeps the large part cacheable across the up to ten calls in a job. After the first call writes the cache, later calls read it at a fraction of the input price. Confirm it works by checking the cache-read token count in each response's usage (a zero on later calls means something in the prefix is changing).
+Documents go first, instructions after. This keeps the large part cacheable across the up to ten calls in a job. **The first call runs alone** so that it writes the cache; the remaining calls then run concurrently (at most 3 at a time, `backend-spec.md` 7.2) and read it at a fraction of the input price. Confirm it works by checking the cache-read token count in each response's usage (a zero on later calls means something in the prefix is changing).
 
 ### 5.5 System prompt requirements
 
@@ -274,7 +274,7 @@ A question is kept only if all of these hold. Otherwise it is dropped and counte
 | Response is not valid JSON or fails the schema | Count the questions as missing and use the shortfall retry (7.4) |
 | Count short after retry | Fail the job (7.4) |
 | 429 or 5xx after the SDK's own retries | Fail the job with "The AI service is busy. Try again in a minute." |
-| Call exceeds `LLM_TIMEOUT_SECONDS`, or the job nears the worker's time limit | Stop, fail the job with "That took too long. Try again." |
+| Call exceeds `LLM_TIMEOUT_SECONDS` (after the one SDK retry), or the 8-minute job deadline is hit | Stop, fail the job with "That took too long. Try again." |
 | 401 or 403 from the API (bad or missing key) | Fail the job with a generic message; log loudly; this is a deployment error, not a user error |
 | Model lists unreadable sources | Continue with the rest; report them in `failedSources` (the frontend shows which files to retry) |
 | Cancel requested | Stop between calls (`backend-spec.md` 7.2) |
@@ -315,7 +315,7 @@ The generated material is for school-age users. The system prompt asks for age-a
 2. **One call per mark value** with at most 15 questions per call: bounded output.
 3. **Effort** (`LLM_EFFORT`): lower effort costs less; raise only if evaluation shows a quality gain.
 4. **Model choice** (`LLM_MODEL`): section 3.2.
-5. **Per-user limits**: `GEN_MAX_RUNNING` and `GEN_MAX_PER_DAY` (`backend-spec.md` 7.5).
+5. **Hard daily counters** per user (generate 10, regenerate 30) and globally (200 jobs), plus the soft running limit `GEN_MAX_RUNNING` (`backend-spec.md` 7.5).
 
 ### 10.2 Input-size guard
 
@@ -331,11 +331,11 @@ Assume 60,000 input tokens of files, five mark values (five calls), about 4,000 
 | Without caching, default model | about $1.60 per job |
 | With caching, `claude-sonnet-5-5` | about $0.40 per job |
 
-At the default limit of 20 jobs per user per day, the worst case for one user is about $15 a day on the default model. For the first release, consider lowering `GEN_MAX_PER_DAY` (for example to 10) and setting a monthly spend limit on the API key with the provider (`deployment-spec.md` section 3).
+At the default limit of 10 generate jobs per user per day, one user's worst case is about $7.50 a day on the default model, plus up to 30 single-question regenerates. The global cap of 200 jobs a day bounds the total at roughly $150 a day on the default model if every job costs $0.75, which is high for a demo, so lower `GEN_MAX_GLOBAL_PER_DAY` to match your budget. The **monthly spend limit on the API key at the provider is a prerequisite for the production deploy** (`deployment-spec.md`) and is the final guard.
 
 ## 11. Observability and records
 
-- **Per job, store** (add to the Job record, `backend-spec.md` 6.1): `PromptVersion`, `Model`, `Effort`, total input, output, cache-read and cache-write tokens, number of calls, number of questions requested, kept and dropped, and whether any source failed. This gives cost per job and per user without reading logs.
+- **Per job, store** (the Job record, `backend-spec.md` 6.1; it expires after 24 hours, so the per-call logs below are the long-term cost record): `PromptVersion`, `Model`, `Effort`, total input, output, cache-read and cache-write tokens, number of calls, number of questions requested, kept and dropped, and whether any source failed. This gives cost per job and per user without reading logs.
 - **Per call, log** the fields in 9.4.
 - **Review regularly** (and after any prompt or model change): drop rate, shortfall-retry rate, refusal rate, cost per job, time per job.
 
@@ -348,13 +348,16 @@ These join the variables in `backend-spec.md` section 11.
 | `LLM_API_KEY` | none (required) | provider key |
 | `LLM_MODEL` | `claude-opus-5-5` | model ID |
 | `LLM_EFFORT` | `medium` | `low`, `medium`, `high` (and higher only if the model supports it) |
-| `LLM_TIMEOUT_SECONDS` | `240` | per-call timeout |
+| `LLM_TIMEOUT_SECONDS` | `120` | per-call timeout (SDK max retries is fixed at 1) |
 | `GEN_MAX_FILES` | `10` | files per job |
 | `GEN_MAX_TOTAL_BYTES` | `20971520` | raw bytes per job (20 MB) |
 | `GEN_MAX_PDF_PAGES` | `100` | pages per job |
 | `GEN_MAX_INPUT_TOKENS` | `200000` | measured input tokens per job |
 | `GEN_MAX_PER_CALL` | `15` | questions per call |
-| `GEN_MAX_RUNNING`, `GEN_MAX_PER_DAY` | `2`, `20` | per-user limits |
+| `GEN_MAX_RUNNING` | `2` | soft limit on running jobs per user |
+| `GEN_MAX_PER_DAY` | `10` | generate jobs per user per UTC day |
+| `GEN_MAX_REGEN_PER_DAY` | `30` | regenerate jobs per user per UTC day |
+| `GEN_MAX_GLOBAL_PER_DAY` | `200` | all jobs, all users, per UTC day |
 
 Fail fast at startup if `LLM_API_KEY` is missing. Never include any of these in the frontend.
 
@@ -407,15 +410,13 @@ A command (`make ai-eval`) runs generation on each file for both question types 
 
 Any change to the system prompt, the schema, the model, or the effort bumps `PromptVersion`, and the golden set is re-run and compared with the previous results before it ships. Do not tune the prompt against one failing example without checking the rest.
 
-## 14. Changes needed in other specs
+## 14. How the other specs reflect this file
 
-**Done together with this file** (applied to `goals.md`, `backend-spec.md`, `deployment-spec.md`): the AI goal, authority of this file over `backend-spec.md` section 7, the default model and its settings, the Job usage fields, and the new environment variables.
-
-**Needed in `frontend-spec.md`** (not applied; update that file before building the Create screen):
-1. **AI notice.** Near the Generate button on the Create exam screen, show a quiet one-line note: "Selected files are sent to an AI service to write questions."
-2. **Regenerate and "Add a question".** The request should carry the texts of the questions already in the exam, as an optional `avoid` list, so a replacement does not repeat an existing question. Add `avoid` to `POST /generate/regenerate` (and to `POST /generate` if desired).
-3. **Plain-text questions.** Questions and answers are plain text with Unicode math; the screens render them as text. If you later want formatted maths (LaTeX), that is a frontend change and a prompt change together.
-4. **Failure messages.** Show the job's `error` text as written (the messages in section 8 are written for end users), and keep showing `failedSources` by file name.
+Applied together with this file: `goals.md` (the AI goals), `backend-spec.md` (authority of this file over section 7, the job lifecycle and limits, the Job usage field, the configuration table), `deployment-spec.md` (default model, the spend-limit gate), and `frontend-spec.md`:
+1. **AI notice** near the Generate button: "Selected files are sent to an AI service to write questions."
+2. **Regenerate** carries the texts of the questions already in the exam as `avoid` (`backend-spec.md` 8.4).
+3. **Plain-text questions.** Questions and answers are plain text with Unicode math and are rendered as text, never as HTML. Formatted maths (LaTeX) would be a frontend change and a prompt change together.
+4. **Failure messages.** The job's `error` text is shown as written (the messages in section 8 are written for end users), and `failedSources` is shown by file name.
 
 ## 15. Acceptance checklist
 
@@ -451,10 +452,9 @@ AI grading of free-text answers, tutoring or chat, document summaries, retrieval
 - Questions are self-contained, plain text, and never depend on figures in the source.
 
 **Open: decide before or during the build**
-- **Model and cost:** run the golden set on the default model and on `claude-sonnet-5-5`, then choose. The default is more capable and costs about twice as much.
+- **Model and cost:** launch on `claude-opus-5-5`; in the first test pass on Day 3 run the golden set on `claude-sonnet-5-5` and switch with the environment variable if quality holds. The default costs about twice as much.
 - **Go SDK checks** in section 3.4 (structured output, images, token counting, fallbacks).
 - **Refusal rate** on biology and chemistry material, and whether to enable server-side fallbacks.
-- **Daily limit** per user (20 or lower) and the provider-side monthly spend limit.
+- **The global daily cap** (`GEN_MAX_GLOBAL_PER_DAY`) sized to your budget, and the provider-side monthly spend limit (set before the production deploy).
 - **Legal and privacy review** for minors' data and the provider's terms (section 9.3).
 - **Per-image and per-request limits** at the provider: confirm them before launch, because camera photos are large.
-- The changes listed for `frontend-spec.md` in section 14.
