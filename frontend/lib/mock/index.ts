@@ -186,7 +186,13 @@ export function mockFetch(method: string, rawPath: string, body: unknown): Respo
   }
 
   // AI
-  if (route === "GET /ai/models") return json(200, { models, serverTime: st() });
+  if (route === "GET /ai/models") {
+    // Test triggers (mock only): ?mockModels=fail or ?mockModels=empty on the page URL.
+    const trigger = typeof window === "undefined" ? null : new URLSearchParams(window.location.search).get("mockModels");
+    if (trigger === "fail") return err(500, "internal", "Something went wrong.");
+    if (trigger === "empty") return json(200, { models: [], serverTime: st() });
+    return json(200, { models, serverTime: st() });
+  }
   if (route === "GET /ai/usage") return json(200, { serverTime: st(), ...usage });
 
   // Generation

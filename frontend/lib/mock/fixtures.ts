@@ -13,8 +13,12 @@ export const docs: Doc[] = [
 export const models: AiModel[] = [
   { id: "gemini-3.1-flash-lite", name: "Gemini 3.1 Flash-Lite", provider: "gemini", tier: "cheapest",
     priceInPerMTok: 0.25, priceOutPerMTok: 1.5, approxJobCost: { small: 0.03, heavy: 0.1 }, default: true },
-  { id: "claude-haiku", name: "Claude Haiku", provider: "anthropic", tier: "balanced",
-    priceInPerMTok: 1, priceOutPerMTok: 5, approxJobCost: { small: 0.08, heavy: 0.3 }, default: false },
+  { id: "claude-haiku-4-5", name: "Claude Haiku 4.5", provider: "anthropic", tier: "cheap",
+    priceInPerMTok: 1, priceOutPerMTok: 5, approxJobCost: { small: 0.08, heavy: 0.2 }, default: false },
+  { id: "claude-sonnet-5-5", name: "Claude Sonnet 5.5", provider: "anthropic", tier: "balanced",
+    priceInPerMTok: 2, priceOutPerMTok: 10, approxJobCost: { small: 0.17, heavy: 0.4 }, default: false },
+  { id: "claude-opus-5-5", name: "Claude Opus 5.5", provider: "anthropic", tier: "most capable",
+    priceInPerMTok: 4, priceOutPerMTok: 20, approxJobCost: { small: 0.33, heavy: 0.8 }, default: false },
 ];
 
 const zeroTokens = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
@@ -23,7 +27,7 @@ export const usage = {
   today: { jobs: 2, calls: 9, spendUsd: 0.31, tokens: { ...zeroTokens, input: 9000, output: 2500 } },
   byModel: [
     { id: "gemini-3.1-flash-lite", name: "Gemini 3.1 Flash-Lite", jobs: 18, calls: 70, spendUsd: 1.9, tokens: zeroTokens },
-    { id: "claude-haiku", name: "Claude Haiku", jobs: 3, calls: 18, spendUsd: 1.52, tokens: zeroTokens },
+    { id: "claude-haiku-4-5", name: "Claude Haiku 4.5", jobs: 3, calls: 18, spendUsd: 1.52, tokens: zeroTokens },
   ],
   running: 1,
   recent: [
