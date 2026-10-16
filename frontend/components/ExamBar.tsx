@@ -13,10 +13,12 @@ export interface ExamBarProps {
   /** serverTime minus device time, fixed once per load. */
   offsetMs: number;
   exiting?: boolean;
+  /** A submit has started: Save & exit is off. */
+  exitDisabled?: boolean;
   onSaveExit: () => void;
 }
 
-export function ExamBar({ title, save, peeksLeft, closesAtIso, offsetMs, exiting, onSaveExit }: ExamBarProps) {
+export function ExamBar({ title, save, peeksLeft, closesAtIso, offsetMs, exiting, exitDisabled, onSaveExit }: ExamBarProps) {
   const text = autosaveText(save);
   const failing = save.status === "retrying";
   return (
@@ -31,7 +33,7 @@ export function ExamBar({ title, save, peeksLeft, closesAtIso, offsetMs, exiting
         <span role="status" className="sr-only">{failing ? text : ""}</span>
         {peeksLeft !== undefined && <span className="order-4 text-sm min-[481px]:order-none">💡 {peeksLeft} left</span>}
         <Timer closesAtIso={closesAtIso} offsetMs={offsetMs} className="order-2 min-[481px]:order-none" />
-        <Button variant="outline" className="order-4 max-[480px]:ml-auto min-[481px]:order-none" onClick={onSaveExit} disabled={exiting} aria-busy={exiting || undefined}>Save &amp; exit</Button>
+        <Button variant="outline" className="order-4 max-[480px]:ml-auto min-[481px]:order-none" onClick={onSaveExit} disabled={exiting || exitDisabled} aria-busy={exiting || undefined}>Save &amp; exit</Button>
       </div>
     </header>
   );

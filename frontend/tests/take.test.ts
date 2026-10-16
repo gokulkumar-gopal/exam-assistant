@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { takeRedirect, answersByIndex, closesText, clampIndex, dotLabel, metaText, optionLetter } from "../lib/take";
+import { takeDecision, takeRedirect, answersByIndex, closesText, clampIndex, dotLabel, metaText, optionLetter } from "../lib/take";
 
 describe("metaText", () => {
   it("is 1-based with the marks", () => {
@@ -71,5 +71,29 @@ describe("takeRedirect", () => {
   });
   it("goes to the result when already submitted", () => {
     expect(takeRedirect("submitted", until, before)).toBe("result");
+  });
+});
+
+describe("takeDecision (open time)", () => {
+  const closes = Date.parse("2026-10-18T12:00:00Z");
+  const accepts = closes + 60_000;
+  const at = (s: number) => closes + s * 1000;
+  it("takes the exam before the deadline, whatever the status", () => {
+    for (const st of [undefined, "not_started", "in_progress"]) expect(takeDecision(st, at(-1), closes, accepts)).toBe("take");
+  });
+  it("a submitted attempt always goes to the result", () => {
+    expect(takeDecision("submitted", at(-100), closes, accepts)).toBe("result");
+    expect(takeDecision("submitted", at(10), closes, accepts)).toBe("result");
+  });
+  it("past acceptingUntil goes to the result for every status", () => {
+    for (const st of [undefined, "not_started", "in_progress"]) expect(takeDecision(st, accepts, closes, accepts)).toBe("result");
+  });
+  it("inside the grace window an in-progress attempt submits its resumed answers", () => {
+    expect(takeDecision("in_progress", closes, closes, accepts)).toBe("submit-resumed");
+    expect(takeDecision("in_progress", accepts - 1, closes, accepts)).toBe("submit-resumed");
+  });
+  it("inside the grace window a never-started exam (or no attempt) goes Home as closed, never auto-submitted", () => {
+    expect(takeDecision("not_started", at(10), closes, accepts)).toBe("home-closed");
+    expect(takeDecision(undefined, at(10), closes, accepts)).toBe("home-closed");
   });
 });

@@ -15,7 +15,7 @@ import { submitDialogTitle, unansweredIndexes, unansweredLine } from "@/lib/subm
 
 export function ReviewPage() {
   const router = useRouter();
-  const { exam, byIndex, goTo, submit, submitting } = useAttemptScreen();
+  const { exam, byIndex, goTo, submit, submitting, markFocusQuestion } = useAttemptScreen();
   const total = exam.questions.length;
   const takeHref = `/exams/${encodeURIComponent(exam.id)}/take`;
   const headingRef = useRef<HTMLHeadingElement>(null);
@@ -23,7 +23,7 @@ export function ReviewPage() {
   const missing = unansweredIndexes(byIndex, total).length;
 
   // Arriving on a new page: focus the heading so a screen reader starts at the top of it.
-  useEffect(() => { headingRef.current?.focus(); }, []);
+  useEffect(() => { headingRef.current?.focus(); markFocusQuestion(); }, [markFocusQuestion]);
 
   if (total === 0) {
     return <main className="page pt-5"><EmptyState>This exam has no questions.</EmptyState></main>;

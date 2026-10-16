@@ -12,7 +12,7 @@ const MAX_ANSWER = 5000;
 const reviewHref = (id: string) => `/exams/${encodeURIComponent(id)}/review`;
 
 export default function Page() {
-  const { exam, answers, byIndex, index, setAnswer, goTo } = useAttemptScreen();
+  const { exam, answers, byIndex, index, setAnswer, goTo, takeFocusQuestion } = useAttemptScreen();
   const questions = exam.questions;
   const total = questions.length;
   const q = questions[index];
@@ -21,6 +21,11 @@ export default function Page() {
   const refocusPrimary = useRef(false);
   const headingId = "take-question";
   const encoded = encodeURIComponent(exam.id);
+
+  // Arriving from the review page (Back to questions or a dot): put focus on the question heading, never the body.
+  useEffect(() => {
+    if (takeFocusQuestion()) document.getElementById(headingId)?.focus();
+  }, [takeFocusQuestion]);
 
   // Next turns into the Review link on the last question (a different element): keep keyboard focus on it.
   useEffect(() => {
@@ -75,7 +80,7 @@ export default function Page() {
         <div className="mx-auto max-w-[640px]">
           <DotNav answers={byIndex} current={index} onSelect={goTo} />
           <p className="mb-1 text-[13px] text-muted" aria-live="polite">{metaText(index, total, q.marks)}</p>
-          <h1 id={headingId} className="mb-4 whitespace-pre-wrap break-words text-[20px] leading-snug tracking-normal">{q.text}</h1>
+          <h1 id={headingId} tabIndex={-1} className="mb-4 focus:outline-none whitespace-pre-wrap break-words text-[20px] leading-snug tracking-normal">{q.text}</h1>
           {q.options && q.options.length > 0 ? (
             <OptionGroup
               key={q.id}

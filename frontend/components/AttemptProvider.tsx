@@ -8,9 +8,9 @@ import { useParams, useRouter } from "next/navigation";
 import { api, ApiError, serverNow } from "@/lib/api";
 import { useAttempt } from "@/lib/attempt";
 import { createAutosaver, keepaliveOk, shouldFlushOnEvent, type AutosaveState } from "@/lib/autosave";
-import { autoSubmitAtZero, submitExam } from "@/lib/submit";
+import { autoSubmitAtZero, canSaveAndExit, submitExam, withTimeout, type SubmitPhase } from "@/lib/submit";
 import { scheduleAt } from "@/lib/timer";
-import { answersByIndex, clampIndex, takeRedirect } from "@/lib/take";
+import { answersByIndex, clampIndex, takeDecision } from "@/lib/take";
 import type { Attempt, ExamResponse } from "@/lib/types";
 import { EmptyState } from "@/components/EmptyState";
 import { ExamBar } from "@/components/ExamBar";
@@ -18,6 +18,9 @@ import { Notice } from "@/components/Notice";
 
 export const CLOSED_TOAST = "This exam has closed. Your last saved answers were submitted.";
 export const TIMES_UP_TOAST = "Time's up. Your answers were submitted.";
+export const NOT_OPEN_TOAST = "This exam is closed";
+/** A submit request that has not answered by then counts as failed (the loop retries; submit is idempotent). */
+const SUBMIT_TIMEOUT_MS = 20_000;
 const NETWORK_TOAST = "Couldn't reach the server. Try again.";
 
 export interface AttemptScreen {
@@ -33,6 +36,10 @@ export interface AttemptScreen {
   /** Manual submit. Resolves true when the app is leaving for the result page, false on failure (answers kept). */
   submit: () => Promise<boolean>;
   submitting: boolean;
+  /** Set by the review page when it hands over to the take page, so the question heading takes focus. */
+  markFocusQuestion: () => void;
+  /** True once (and clears) when the review page asked the take page to focus its question heading. */
+  takeFocusQuestion: () => boolean;
 }
 
 const Ctx = createContext<AttemptScreen | null>(null);
@@ -71,11 +78,17 @@ export function AttemptProvider({ children }: { children: React.ReactNode }) {
     return () => { alive = false; };
   }, [id, tries]);
 
-  const redirect = data
-    ? takeRedirect(data.attempt?.status, data.exam.acceptingUntil ?? data.acceptingUntil ?? data.exam.closesAt, serverNow())
-    : null;
+  // Decided once per load (not on re-render): what opening this exam does at this moment.
+  const decision = useMemo(() => {
+    if (!data) return null;
+    const accepting = data.exam.acceptingUntil ?? data.acceptingUntil ?? data.exam.closesAt;
+    return takeDecision(data.attempt?.status, serverNow(), Date.parse(data.exam.closesAt), Date.parse(accepting));
+  }, [data]);
+  const redirect = decision === "result" || decision === "home-closed" ? decision : null;
   useEffect(() => {
     if (redirect === "result") router.replace(`/exams/${encodeURIComponent(id)}/result`);
+    // Never started and past closesAt (fs 6.5): not submitted blank, just Home.
+    if (redirect === "home-closed") { toast(NOT_OPEN_TOAST); router.replace("/"); }
   }, [redirect, id, router]);
 
   if (error === "gone") {
@@ -123,11 +136,17 @@ function Attempting({ data, children }: { data: ExamResponse; children: React.Re
   // One way out of the attempt: a toast (if any), then the result page with history replaced so Back never
   // returns to the exam. Autosave is stopped first: nothing may be put after the attempt ended.
   const finished = useRef(false);
+  const alive = useRef(true); // false once the take/review route was left: a late outcome must not navigate
+  useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
+  const focusQuestion = useRef(false);
+  const markFocusQuestion = useCallback(() => { focusQuestion.current = true; }, []);
+  const takeFocusQuestion = useCallback(() => { const v = focusQuestion.current; focusQuestion.current = false; return v; }, []);
   const submitting = useRef(false); // a manual or deadline submit is running; its answer decides the outcome
   const leave = useCallback((message: string | null) => {
     if (finished.current) return;
     finished.current = true;
     saverRef.current?.dispose();
+    if (!alive.current) return; // the user left (Home, Back): keep the submit, skip the hijack
     if (message) toast(message);
     router.replace(`/exams/${encodeURIComponent(examId)}/result`);
   }, [router, examId]);
@@ -156,8 +175,8 @@ function Attempting({ data, children }: { data: ExamResponse; children: React.Re
     return () => {
       window.removeEventListener("pagehide", onLeave);
       document.removeEventListener("visibilitychange", onLeave);
-      // One best-effort final save (a no-op after a submit: the saver is already disposed).
-      void saver.flush();
+      // One best-effort final save, unless a submit has started (it carries the answers itself).
+      if (!submitting.current && !finished.current) void saver.flush();
       saver.dispose();
       saverRef.current = null;
     };
@@ -184,16 +203,19 @@ function Attempting({ data, children }: { data: ExamResponse; children: React.Re
 
   // Deadline: at zero submit once with the in-memory answers (no autosave first). The server accepts this until
   // acceptingUntil; only a "closed" answer, or running out of grace while offline, ends in the closed handling.
+  const [phase, setPhase] = useState<SubmitPhase>("idle");
+  const zeroSkipped = useRef(false); // zero came while a manual submit was running
   const zero = useRef<ReturnType<typeof autoSubmitAtZero> | null>(null);
   const runZero = useCallback(async () => {
     if (finished.current) return;
     zero.current ??= autoSubmitAtZero({
-      submit: (answers, lastQuestionIndex) => submitExam(examId, answers, lastQuestionIndex),
+      submit: (answers, lastQuestionIndex) => withTimeout(submitExam(examId, answers, lastQuestionIndex), SUBMIT_TIMEOUT_MS),
       snapshot: () => latest.current,
       stopAutosave: () => saverRef.current?.dispose(),
       canRetry: () => serverNow() < acceptingMs,
     });
     submitting.current = true;
+    setPhase("submitting");
     const r = await zero.current();
     submitting.current = false;
     leave(r === "ok" ? TIMES_UP_TOAST : CLOSED_TOAST);
@@ -201,7 +223,7 @@ function Attempting({ data, children }: { data: ExamResponse; children: React.Re
   useEffect(() => {
     if (Number.isNaN(closesMs)) return;
     // scheduleAt re-arms for far deadlines (a single setTimeout overflows above ~24.8 days).
-    return scheduleAt(closesMs, () => Date.now() + offsetMs, () => { if (!submitting.current) void runZero(); });
+    return scheduleAt(closesMs, () => Date.now() + offsetMs, () => { if (submitting.current) zeroSkipped.current = true; else void runZero(); });
   }, [closesMs, offsetMs, runZero]);
   // Past the grace window the exam is over whatever else is happening.
   useEffect(() => {
@@ -214,23 +236,26 @@ function Attempting({ data, children }: { data: ExamResponse; children: React.Re
     if (submitting.current || finished.current) return false;
     submitting.current = true;
     setBusy(true);
+    setPhase("submitting");
     try {
-      const r = await submitExam(examId, latest.current.answers, latest.current.lastQuestionIndex);
+      const r = await withTimeout(submitExam(examId, latest.current.answers, latest.current.lastQuestionIndex), SUBMIT_TIMEOUT_MS);
       submitting.current = false;
       leave(r === "ok" ? null : CLOSED_TOAST);
       return true; // stay busy: the page is being replaced
     } catch {
       submitting.current = false;
       setBusy(false);
+      setPhase("idle");
       toast.error(NETWORK_TOAST);
       // The deadline passed while this was failing: the deadline submit takes over with the same answers.
-      if (serverNow() >= closesMs) void runZero();
+      if (zeroSkipped.current || serverNow() >= closesMs) void runZero();
       return false;
     }
   }, [examId, leave, closesMs, runZero]);
 
   const [exiting, setExiting] = useState(false);
   const saveExit = async () => {
+    if (submitting.current || finished.current) return; // a submit has started: nothing to save, never go Home
     setExiting(true);
     const r = await (saverRef.current?.flush() ?? Promise.resolve("saved" as const));
     if (r === "saved") {
@@ -245,10 +270,10 @@ function Attempting({ data, children }: { data: ExamResponse; children: React.Re
 
   const byIndex = answersByIndex(exam.questions, a.answers);
   const value = useMemo<AttemptScreen>(
-    () => ({ exam, attempt, answers: a.answers, byIndex, index, setAnswer, goTo: a.goTo, submit, submitting: busy }),
+    () => ({ exam, attempt, answers: a.answers, byIndex, index, setAnswer, goTo: a.goTo, submit, submitting: busy || phase !== "idle", markFocusQuestion, takeFocusQuestion }),
     // byIndex derives from exam + answers
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [exam, attempt, a.answers, index, setAnswer, a.goTo, submit, busy],
+    [exam, attempt, a.answers, index, setAnswer, a.goTo, submit, busy, phase, markFocusQuestion, takeFocusQuestion],
   );
 
   return (
@@ -260,6 +285,7 @@ function Attempting({ data, children }: { data: ExamResponse; children: React.Re
         closesAtIso={exam.closesAt}
         offsetMs={offsetMs}
         exiting={exiting}
+        exitDisabled={!canSaveAndExit(phase)}
         onSaveExit={saveExit}
       />
       {children}

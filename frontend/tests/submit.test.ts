@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "../lib/api";
 import { createAutosaver } from "../lib/autosave";
-import { autoSubmitAtZero, submitExam, submitDialogTitle, unansweredIndexes, unansweredLine } from "../lib/submit";
+import { autoSubmitAtZero, canSaveAndExit, submitExam, withTimeout, submitDialogTitle, unansweredIndexes, unansweredLine } from "../lib/submit";
 
 beforeEach(() => { vi.useFakeTimers(); });
 afterEach(() => { vi.useRealTimers(); });
@@ -109,5 +109,43 @@ describe("autoSubmitAtZero", () => {
     await vi.advanceTimersByTimeAsync(3000);
     expect(await p).toBe("gave-up");
     expect(submit).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("canSaveAndExit", () => {
+  it("is allowed only while no submit has started", () => {
+    expect(canSaveAndExit("idle")).toBe(true);
+    expect(canSaveAndExit("submitting")).toBe(false);
+    expect(canSaveAndExit("done")).toBe(false);
+  });
+});
+
+describe("withTimeout", () => {
+  it("passes the result through before the limit", async () => {
+    await expect(withTimeout(Promise.resolve(5), 1000)).resolves.toBe(5);
+  });
+  it("rejects when the promise has not settled by the limit, so a retry loop can go on", async () => {
+    const p = withTimeout(new Promise<number>(() => undefined), 20_000);
+    const seen = p.then(() => "ok", (e: Error) => e.message);
+    await vi.advanceTimersByTimeAsync(19_999);
+    let settled = false; void seen.then(() => { settled = true; });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(await seen).toBe("timeout");
+  });
+  it("passes a rejection through", async () => {
+    await expect(withTimeout(Promise.reject(new Error("boom")), 1000)).rejects.toThrow("boom");
+  });
+});
+
+describe("autoSubmitAtZero stops autosave on every trigger", () => {
+  it("calls stopAutosave again for a repeated trigger (idempotent), submit still once", async () => {
+    const stop = vi.fn();
+    const submit = vi.fn(async () => "ok" as const);
+    const t = autoSubmitAtZero({ submit, snapshot: () => ({ answers: {}, lastQuestionIndex: 0 }), stopAutosave: stop });
+    await t(); await t();
+    expect(stop).toHaveBeenCalledTimes(2);
+    expect(submit).toHaveBeenCalledTimes(1);
   });
 });

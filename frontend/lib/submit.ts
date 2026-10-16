@@ -43,6 +43,20 @@ export function unansweredLine(answers: readonly (string | undefined)[], n: numb
 export const submitDialogTitle = (count: number): string =>
   `Submit with ${count} unanswered question${count === 1 ? "" : "s"}?`;
 
+/** Where a submit stands: nothing started, one running (manual or deadline), or the attempt is over. */
+export type SubmitPhase = "idle" | "submitting" | "done";
+
+/** Save & exit makes no sense once a submit has started (it would claim a save and send the user Home). */
+export const canSaveAndExit = (phase: SubmitPhase): boolean => phase === "idle";
+
+/** Reject with Error("timeout") if `p` has not settled in `ms`; the request itself is not cancelled (submit is idempotent). */
+export function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const id = setTimeout(() => reject(new Error("timeout")), ms);
+    p.then((v) => { clearTimeout(id); resolve(v); }, (e) => { clearTimeout(id); reject(e); });
+  });
+}
+
 export interface AutoSubmitDeps {
   submit: (answers: Record<string, string>, lastQuestionIndex: number) => Promise<SubmitOutcome>;
   /** The newest in-memory answers and index; read once, at the first trigger. */
@@ -64,8 +78,8 @@ export function autoSubmitAtZero(d: AutoSubmitDeps): () => Promise<SubmitOutcome
   let run: Promise<SubmitOutcome | "gave-up"> | null = null;
   const sleep = d.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
   return () => {
+    d.stopAutosave(); // idempotent; also on repeat triggers (a remounted saver must not outlive the deadline)
     run ??= (async () => {
-      d.stopAutosave();
       const { answers, lastQuestionIndex } = d.snapshot();
       for (;;) {
         try {
