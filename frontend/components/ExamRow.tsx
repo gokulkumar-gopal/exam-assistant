@@ -26,7 +26,7 @@ export function ExamRow({
   const showDecline = mode === "attempt" && !!onDecline && canDecline(exam, userId, nowMs);
 
   return (
-    <li className="card flex flex-col gap-2 px-3.5 py-3 sm:flex-row sm:items-center sm:gap-3">
+    <li data-exam-id={exam.id} className="card flex flex-col gap-2 px-3.5 py-3 sm:flex-row sm:items-center sm:gap-3">
       <div className="min-w-0 flex-1">
         <div className="break-words font-semibold">{exam.title}</div>
         <div className="break-words text-[13px] text-muted">{examMeta(exam, userId, nowMs)}</div>
@@ -51,10 +51,10 @@ export function ExamRow({
           Print
         </a>
         {mode === "created" ? (
-          <Link href={`/exams/${id}/status`} className="btn-secondary">View status</Link>
+          <Link href={`/exams/${id}/status`} data-primary className="btn-secondary">View status</Link>
         ) : (
           view?.action && (
-            <Link href={href} className={view.action === "View result" ? "btn-secondary" : "btn-primary"}>
+            <Link href={href} data-primary className={view.action === "View result" ? "btn-secondary" : "btn-primary"}>
               {view.action}
             </Link>
           )

@@ -31,6 +31,9 @@ export default function Page() {
   const { user } = useMe();
   const [data, setData] = useState<StatusResponse | null>(null);
   const [error, setError] = useState<{ denied: boolean } | null>(null);
+  const [refreshFailed, setRefreshFailed] = useState(false);
+  const tableHeading = useRef<HTMLHeadingElement>(null);
+  const opener = useRef<Element | null>(null);
   const [assignOpen, setAssignOpen] = useState(false);
   const [assignKey, setAssignKey] = useState(0);
   const seqRef = useRef({ n: 0 });
@@ -44,10 +47,12 @@ export default function Page() {
       if (mine !== seq.n) return;
       setData(r);
       setError(null);
+      setRefreshFailed(false);
     } catch (e) {
       if (mine !== seq.n) return;
       // Only the creator may open this page: 403/404 look the same and say nothing more.
       if (!silent) setError({ denied: e instanceof ApiError && (e.status === 403 || e.status === 404) });
+      else setRefreshFailed(true);
     }
   }, [id]);
 
@@ -58,7 +63,8 @@ export default function Page() {
     return () => { seq.n++; };
   }, [load]);
 
-  function openAssign() {
+  function openAssign(e: React.MouseEvent<HTMLElement>) {
+    opener.current = e.currentTarget;
     setAssignKey((k) => k + 1);
     setAssignOpen(true);
   }
@@ -107,18 +113,25 @@ export default function Page() {
               Print
             </a>
           </div>
+          {refreshFailed && (
+            <div>
+              <Notice tone="bad">Couldn&apos;t refresh the list. Try again.</Notice>
+              <button type="button" className="btn-secondary mb-3" onClick={() => void load(true)}>Retry</button>
+            </div>
+          )}
           {rows.length === 0 ? (
             <EmptyState action={assignButton("Assign")}>Not assigned.</EmptyState>
           ) : (
             <>
+              <h2 ref={tableHeading} tabIndex={-1} className="sr-only">Students</h2>
               <div className="card overflow-hidden" data-testid="status-card">
                 <Table className="min-w-[540px]">
                   <TableHeader>
                     <TableRow className="hover:bg-bg">
-                      <TableHead className={TH}>Student</TableHead>
-                      <TableHead className={TH}>Status</TableHead>
-                      <TableHead className={TH}>Score</TableHead>
-                      <TableHead className={TH}>Submitted</TableHead>
+                      <TableHead scope="col" className={TH}>Student</TableHead>
+                      <TableHead scope="col" className={TH}>Status</TableHead>
+                      <TableHead scope="col" className={TH}>Score</TableHead>
+                      <TableHead scope="col" className={TH}>Submitted</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
@@ -151,6 +164,11 @@ export default function Page() {
             examId={id}
             role={user?.role}
             existing={rows.map((r) => r.email)}
+            finalFocus={() => {
+              // The empty-state Assign button leaves the DOM once the table appears: land on the table heading.
+              if (opener.current?.isConnected) return true;
+              return tableHeading.current ?? true;
+            }}
             onAssigned={() => void load(true)}
           />
         </>

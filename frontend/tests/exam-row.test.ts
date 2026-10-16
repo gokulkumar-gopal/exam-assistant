@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { canDecline, countsLine, examMeta, rowView } from "../lib/exam-row";
+import { canDecline, focusCandidates, countsLine, examMeta, rowView } from "../lib/exam-row";
 import type { ExamListItem } from "../lib/types";
 
 const CLOSES = Date.parse("2026-10-16T12:00:00Z");
@@ -108,5 +108,15 @@ describe("canDecline", () => {
   });
   it("created-list rows (no attemptStatus): no", () => {
     expect(canDecline({ ...base, attemptStatus: undefined }, "u_me", before)).toBe(false);
+  });
+});
+
+describe("focusCandidates", () => {
+  it("middle row: next, then previous", () => expect(focusCandidates(["a", "b", "c"], "b")).toEqual(["c", "a"]));
+  it("last row: previous only", () => expect(focusCandidates(["a", "b", "c"], "c")).toEqual(["b"]));
+  it("first row: next only", () => expect(focusCandidates(["a", "b"], "a")).toEqual(["b"]));
+  it("only row or unknown id: none", () => {
+    expect(focusCandidates(["a"], "a")).toEqual([]);
+    expect(focusCandidates(["a"], "z")).toEqual([]);
   });
 });

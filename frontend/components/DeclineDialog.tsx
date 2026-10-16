@@ -1,5 +1,5 @@
 "use client";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { api, ApiError } from "@/lib/api";
 import type { ExamListItem } from "@/lib/types";
 import { Button } from "@/components/ui/button";
@@ -17,19 +17,23 @@ const GENERIC_STALE = "This exam can't be declined any more.";
  * so the creator name never blanks out. On 403/404/409 it closes and calls `onStale` with the server's message.
  */
 export function DeclineDialog({
-  exam, open, onOpenChange, onDeclined, onStale,
+  exam, open, onOpenChange, onDeclined, onStale, finalFocus,
 }: {
   exam: ExamListItem | null;
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onDeclined: (examId: string) => void;
   onStale: (message: string) => void;
+  /** Where focus goes when the dialog finishes closing (true = back to the opener). */
+  finalFocus?: () => boolean | HTMLElement | null;
 }) {
   const [busy, setBusy] = useState(false);
+  const inflight = useRef(false);
   const [error, setError] = useState<string | null>(null);
 
   async function confirm() {
-    if (!exam || busy) return;
+    if (!exam || inflight.current) return;
+    inflight.current = true;
     setBusy(true);
     setError(null);
     try {
@@ -45,6 +49,7 @@ export function DeclineDialog({
         setError("Couldn't decline this exam. Try again.");
       }
     } finally {
+      inflight.current = false;
       setBusy(false);
     }
   }
@@ -58,7 +63,7 @@ export function DeclineDialog({
         onOpenChange(o);
       }}
     >
-      <AlertDialogContent>
+      <AlertDialogContent finalFocus={finalFocus}>
         <AlertDialogHeader>
           <AlertDialogTitle>Decline this exam?</AlertDialogTitle>
           <AlertDialogDescription>

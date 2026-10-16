@@ -372,7 +372,10 @@ export function mockFetch(method: string, rawPath: string, body: unknown, idempo
       if (trigger === `fail${scope[0].toUpperCase()}${scope.slice(1)}`) return err(500, "internal", "Something went wrong.");
       if (trigger === "empty") return json(200, { serverTime: st(), exams: [] });
       for (const e of state.exams) if (e.closingDemo) e.closesAt = iso(Date.now() - 20_000);
+      // ?mockHome=declLast (Biology sorts last in Open) | declOnly (it is the only Open row): focus checks.
+      if (trigger === "declLast") for (const e of state.exams) if (e.id === "e1") e.closesAt = iso(Date.now() + 30 * 24 * HOUR);
       const list = state.exams.filter((e) => {
+        if (trigger === "declOnly" && scope === "open") return e.id === "e1" && e.attempt?.status === "not_started";
         if (scope === "created") return e.mine;
         if (!e.attempt || e.attempt.status === "declined") return false;
         const isClosed = over(e) || e.attempt.status === "submitted";
@@ -457,7 +460,9 @@ export function mockFetch(method: string, rawPath: string, body: unknown, idempo
       // Test triggers (mock only): ?mockStatus=403|404|500|slow.
       const t = typeof window === "undefined" ? null : new URLSearchParams(window.location.search).get("mockStatus");
       const reply = (): Response => {
-        if (t === "500") return err(500, "internal", "Something went wrong.");
+        // failAfterAssign: the table refetch that follows an assign fails (500), so the stale-table notice shows.
+        const g = globalThis as unknown as { __mockAssigned?: boolean };
+        if (t === "500" || (t === "failAfterAssign" && g.__mockAssigned)) return err(500, "internal", "Something went wrong.");
         if (t === "404") return err(404, "not_found", "That item isn't available.");
         if (!exam.mine || t === "403") return err(403, "forbidden", "You don't have access to that.");
         const rows = rosterOf(exam);
@@ -487,6 +492,7 @@ export function mockFetch(method: string, rawPath: string, body: unknown, idempo
       const assigned = known.filter((x) => !already.includes(x));
       const cap = state.user.role === "student" ? 10 : 50;
       if (roster.length + assigned.length > cap) return err(422, "validation", `You can assign up to ${cap} people in total.`, { emails: "over cap" });
+      (globalThis as unknown as { __mockAssigned?: boolean }).__mockAssigned = true;
       for (const x of assigned) roster.push({ userId: `u_${x}`, name: titleCase(x.split("@")[0]), email: x, status: "not_started" });
       exam.assigned.push(...assigned);
       return json(200, { assigned, alreadyAssigned: already, unknown });

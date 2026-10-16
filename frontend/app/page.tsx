@@ -1,9 +1,11 @@
 "use client";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import Link from "next/link";
 import { toast } from "sonner";
 import { useMe } from "@/lib/session";
 import { useExamList, type Scope } from "@/lib/useExamList";
+import { focusCandidates } from "@/lib/exam-row";
+import { firstUsable } from "@/lib/exam-order";
 import type { ExamListItem } from "@/lib/types";
 import { ExamRow, ExamRowSkeleton } from "@/components/ExamRow";
 import { DeclineDialog } from "@/components/DeclineDialog";
@@ -55,7 +57,7 @@ function Section({
   }
   return (
     <section aria-labelledby={`h-${scope}`} className="mb-6">
-      <h2 id={`h-${scope}`} className="h-section mb-2">{title}</h2>
+      <h2 id={`h-${scope}`} tabIndex={-1} className="h-section mb-2 outline-none">{title}</h2>
       {body}
     </section>
   );
@@ -70,6 +72,20 @@ export default function Page() {
   // The row stays set while the dialog animates closed; only `declineOpen` flips.
   const [declining, setDeclining] = useState<ExamListItem | null>(null);
   const [declineOpen, setDeclineOpen] = useState(false);
+
+  // Row ids to focus once the dialog has closed (its opener leaves the DOM with the row). Undefined = default.
+  const focusIds = useRef<string[] | undefined>(undefined);
+  function planFocus(removedId: string) {
+    const ids = (openList.exams ?? []).filter((e) => e.attemptStatus !== "declined").map((e) => e.id);
+    focusIds.current = focusCandidates(ids, removedId);
+  }
+  function resolveFocus(): boolean | HTMLElement | null {
+    const ids = focusIds.current;
+    focusIds.current = undefined;
+    if (ids === undefined) return true;
+    const find = (id: string) => document.querySelector<HTMLElement>(`[data-exam-id="${CSS.escape(id)}"] [data-primary]`);
+    return firstUsable(ids.map(find), (e) => e !== null) ?? document.getElementById("h-open");
+  }
 
   function startDecline(e: ExamListItem) {
     setDeclining(e);
@@ -98,11 +114,14 @@ export default function Page() {
         exam={declining}
         open={declineOpen}
         onOpenChange={setDeclineOpen}
+        finalFocus={resolveFocus}
         onDeclined={(id) => {
+          planFocus(id);
           openList.remove(id);
           void openList.refetch();
         }}
         onStale={(message) => {
+          if (declining) planFocus(declining.id);
           toast(message);
           void openList.refetch();
           void closed.refetch();

@@ -56,3 +56,10 @@ export function canDecline(exam: ExamListItem, userId: string | undefined, nowMs
     nowMs < Date.parse(exam.closesAt)
   );
 }
+
+/** Focus candidates after a row leaves the list: the next row, then the previous one (ids in display order). */
+export function focusCandidates(ids: string[], removedId: string): string[] {
+  const i = ids.indexOf(removedId);
+  if (i < 0) return [];
+  return [ids[i + 1], ids[i - 1]].filter((x): x is string => x !== undefined);
+}

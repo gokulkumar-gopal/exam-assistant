@@ -26,7 +26,7 @@ function resultText(r: AssignResponse): string {
  * `existing` is who is already on the exam (counts toward the cap). Remount (key) to reset.
  */
 export function AssignDialog({
-  open, onOpenChange, examId, role, existing, onAssigned,
+  open, onOpenChange, examId, role, existing, onAssigned, finalFocus,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -34,6 +34,8 @@ export function AssignDialog({
   role: Role | undefined;
   existing: string[];
   onAssigned: () => void;
+  /** Where focus goes when the dialog finishes closing (true = back to the opener). */
+  finalFocus?: () => boolean | HTMLElement | null;
 }) {
   const uid = useId();
   const [text, setText] = useState("");
@@ -67,7 +69,7 @@ export function AssignDialog({
 
   return (
     <Dialog open={open} onOpenChange={(o) => { if (!busy) onOpenChange(o); }}>
-      <DialogContent>
+      <DialogContent finalFocus={finalFocus}>
         <DialogHeader>
           <DialogTitle>Assign to more people</DialogTitle>
           <DialogDescription>{assignHelper(role)}</DialogDescription>
