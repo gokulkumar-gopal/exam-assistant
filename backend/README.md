@@ -32,4 +32,4 @@ Write the failing test first, watch it fail for the right reason, then write the
 
 ## Smoke test
 
-`scripts/smoke.sh` needs `BASE_URL`. For now it only checks `/health`; the full sign-up-to-result flow arrives in B-4.6.
+`make smoke BASE_URL=http://127.0.0.1:8080` runs `scripts/smoke.sh` against a running backend (for example `make run` in another terminal; it needs only `curl`). It prints `ok: <step>` for each step: health, sign-up, `/me`, upload URL, PDF upload, complete, document list, generate, poll (up to 8 minutes), practice exam, open-exam list (retried up to 10 s), exam detail, autosave, submit, result. It exits 1 at the first failure and prints `FAIL: <step>: <detail>`. Set `SMOKE_ORIGIN` when the server's `ALLOWED_ORIGINS` does not include `http://localhost:3000`.
