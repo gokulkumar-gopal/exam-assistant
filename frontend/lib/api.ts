@@ -1,5 +1,6 @@
 // Same-origin API client (fs 8, 8.1). Paths are given without the /api prefix.
 import type { ApiErrorBody } from "./types";
+import { reachability as sharedReach, type Reachability } from "./reachability";
 
 export class ApiError extends Error {
   status: number;
@@ -23,7 +24,14 @@ export interface ApiDeps {
   redirect?: (url: string) => void;
   currentPath?: () => string;
   mock?: boolean;
+  reach?: Reachability;
 }
+
+/** fs 8.1: a write that fails this way toasts this text and keeps the user's input. */
+export const NETWORK_TOAST = "Couldn't reach the server. Try again.";
+/** fs 8.1 "502, 503, 504, or network error". */
+export const isNetworkError = (e: unknown): boolean =>
+  e instanceof ApiError && (e.status === 0 || e.status === 502 || e.status === 503 || e.status === 504);
 
 const RETRY_DELAYS = [1000, 2000, 4000];
 const RETRYABLE = new Set([502, 503, 504]);
@@ -36,6 +44,7 @@ export function createApi(deps: ApiDeps = {}) {
   const redirect = deps.redirect ?? ((url: string) => { if (hasWindow) window.location.assign(url); });
   const currentPath =
     deps.currentPath ?? (() => (hasWindow ? window.location.pathname + window.location.search : "/"));
+  const reach = deps.reach ?? sharedReach;
   const useMock = deps.mock ?? process.env.NEXT_PUBLIC_MOCK_API === "true";
 
   let offsetMs = 0;
@@ -58,7 +67,7 @@ export function createApi(deps: ApiDeps = {}) {
       try {
         res = await mockFetch(method, path, body, opts?.idempotencyKey);
       } catch {
-        throw new ApiError(0, "network", "Couldn't reach the server. Try again.");
+        throw new ApiError(0, "network", NETWORK_TOAST);
       }
     } else {
       const headers: Record<string, string> = {};
@@ -73,7 +82,7 @@ export function createApi(deps: ApiDeps = {}) {
           body: body === undefined ? undefined : JSON.stringify(body),
         });
       } catch {
-        throw new ApiError(0, "network", "Couldn't reach the server. Try again.");
+        throw new ApiError(0, "network", NETWORK_TOAST);
       }
     }
     if (res.status === 204) return undefined as T;
@@ -103,15 +112,21 @@ export function createApi(deps: ApiDeps = {}) {
 
   async function api<T>(method: Method, path: string, body?: unknown, opts?: ApiOpts): Promise<T> {
     const isRead = method === "GET";
-    for (let i = 0; ; i++) {
-      try {
-        return await attempt<T>(method, path, body, opts);
-      } catch (err) {
-        const retryable = err instanceof ApiError && (err.status === 0 || RETRYABLE.has(err.status));
-        // Reads retry 1/2/4 s; writes never retry here (callers keep form state).
-        if (!isRead || opts?.noRetry || !retryable || i >= RETRY_DELAYS.length) throw err;
-        await sleep(RETRY_DELAYS[i]);
+    let marked = false;
+    try {
+      for (let i = 0; ; i++) {
+        try {
+          return await attempt<T>(method, path, body, opts);
+        } catch (err) {
+          const retryable = err instanceof ApiError && (err.status === 0 || RETRYABLE.has(err.status));
+          // Reads retry 1/2/4 s; writes never retry here (callers keep form state).
+          if (!isRead || opts?.noRetry || !retryable || i >= RETRY_DELAYS.length) throw err;
+          if (!marked) { marked = true; reach.begin(); }
+          await sleep(RETRY_DELAYS[i]);
+        }
       }
+    } finally {
+      if (marked) reach.end();
     }
   }
 

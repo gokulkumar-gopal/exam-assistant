@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useParams } from "next/navigation";
 import { ArrowLeft } from "lucide-react";
 import { api, ApiError } from "@/lib/api";
+import { useForbiddenRedirect } from "@/lib/forbidden";
 import { useMe } from "@/lib/session";
 import { scoreCell, statusPill, statusSubtitle, submittedCell } from "@/lib/status";
 import type { StatusResponse } from "@/lib/types";
@@ -36,6 +37,7 @@ export default function Page() {
   const opener = useRef<Element | null>(null);
   const [assignOpen, setAssignOpen] = useState(false);
   const [assignKey, setAssignKey] = useState(0);
+  const onForbidden = useForbiddenRedirect();
   const seqRef = useRef({ n: 0 });
 
   const load = useCallback(async (silent = false) => {
@@ -50,11 +52,12 @@ export default function Page() {
       setRefreshFailed(false);
     } catch (e) {
       if (mine !== seq.n) return;
-      // Only the creator may open this page: 403/404 look the same and say nothing more.
-      if (!silent) setError({ denied: e instanceof ApiError && (e.status === 403 || e.status === 404) });
+      // Only the creator may open this page: 403 toasts and goes Home (fs 8.1); 404 shows the empty state.
+      if (onForbidden(e)) return;
+      if (!silent) setError({ denied: e instanceof ApiError && e.status === 404 });
       else setRefreshFailed(true);
     }
-  }, [id]);
+  }, [id, onForbidden]);
 
   useEffect(() => {
     const seq = seqRef.current;
@@ -73,7 +76,7 @@ export default function Page() {
     return (
       <main className="page pt-5">
         <EmptyState action={<Link href="/" className="btn-secondary">Home</Link>}>
-          You can&apos;t view this page.
+          That item isn&apos;t available.
         </EmptyState>
       </main>
     );

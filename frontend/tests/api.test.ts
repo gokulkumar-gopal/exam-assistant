@@ -116,3 +116,38 @@ describe("api client", () => {
     });
   });
 });
+
+describe("api client reachability (fs 8.1 'Can't reach the server. Retrying…')", () => {
+  it("marks a read as retrying while it waits and clears it afterwards", async () => {
+    const { createReachability } = await import("../lib/reachability");
+    const reach = createReachability();
+    const seen: boolean[] = [];
+    const f = vi.fn().mockRejectedValueOnce(new TypeError("net")).mockResolvedValueOnce(json(200, { ok: 1 }));
+    const { api } = createApi({ fetch: f as never, sleep: async () => void seen.push(reach.retrying()), reach });
+    await api("GET", "/x");
+    expect(seen).toEqual([true]);
+    expect(reach.retrying()).toBe(false);
+  });
+  it("clears after the retries are exhausted, and never marks a write", async () => {
+    const { createReachability } = await import("../lib/reachability");
+    const reach = createReachability();
+    const f = vi.fn(async () => json(503, { error: { code: "x", message: "x" } }));
+    const { api } = createApi({ fetch: f as never, sleep: noSleep, reach });
+    await expect(api("GET", "/x")).rejects.toMatchObject({ status: 503 });
+    expect(reach.retrying()).toBe(false);
+    const seen: boolean[] = [];
+    const w = createApi({ fetch: f as never, sleep: async () => void seen.push(true), reach });
+    await expect(w.api("POST", "/x", {})).rejects.toBeDefined();
+    expect(seen).toEqual([]);
+  });
+});
+
+describe("isNetworkError (fs 8.1 write failures toast)", () => {
+  it("is true for network, 502, 503 and 504 only", async () => {
+    const { isNetworkError, NETWORK_TOAST } = await import("../lib/api");
+    for (const s of [0, 502, 503, 504]) expect(isNetworkError(new ApiError(s, "x", "m"))).toBe(true);
+    for (const s of [400, 401, 403, 404, 409, 422, 500]) expect(isNetworkError(new ApiError(s, "x", "m"))).toBe(false);
+    expect(isNetworkError(new Error("x"))).toBe(false);
+    expect(NETWORK_TOAST).toBe("Couldn't reach the server. Try again.");
+  });
+});

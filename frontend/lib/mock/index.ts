@@ -232,7 +232,12 @@ function stickyFlag(name: string): string | null {
 
 const acceptingUntil = (e: MockExam) => iso(Date.parse(e.closesAt) + GRACE);
 const over = (e: MockExam) => Date.now() >= Date.parse(e.closesAt) + GRACE;
-const keyVisible = (e: MockExam) => e.mine || over(e);
+/** bs 9.2: an in_progress attempt past the grace window is finalized on read into a submitted one (its answers kept). */
+function finalizeOnRead(e: MockExam) {
+  if (e.attempt?.status === "in_progress" && over(e)) e.attempt.status = "submitted";
+}
+/** bs 9.4: visible once over; else for the creator unless they are mid-way through their own attempt (a row that is not submitted). */
+const keyVisible = (e: MockExam) => over(e) || (e.mine && (!e.attempt || e.attempt.status === "submitted"));
 /** MCQ answers are stored as the option text (bs 9.3: exact match with options[correctIndex]). */
 const isRight = (q: Question, a: string | undefined) =>
   a !== undefined && q.correctIndex !== undefined && a === q.options?.[q.correctIndex];
@@ -286,6 +291,7 @@ function rosterCounts(e: MockExam) {
 }
 
 function listItem(e: MockExam, scope: string): ExamListItem {
+  finalizeOnRead(e);
   const base: ExamListItem = {
     id: e.id, title: e.title, createdBy: e.createdBy, closesAt: e.closesAt,
     acceptingUntil: acceptingUntil(e), totalMarks: totalMarks(e), type: e.type,
@@ -293,7 +299,7 @@ function listItem(e: MockExam, scope: string): ExamListItem {
   if (scope === "created") {
     return { ...base, counts: rosterCounts(e) };
   }
-  const status = (over(e) && e.attempt?.status !== "submitted" ? "missed" : e.attempt?.status) as AttemptStatus;
+  const status = (over(e) && e.attempt?.status === "not_started" ? "missed" : e.attempt?.status) as AttemptStatus;
   const g = e.attempt?.status === "submitted" ? grade(e) : null;
   return { ...base, attemptStatus: status, ...(g?.score != null ? { score: g.score, maxScore: totalMarks(e) } : {}) };
 }
@@ -314,6 +320,9 @@ export function mockFetch(method: string, rawPath: string, body: unknown, idempo
   // Remember the sticky page-URL flags on every call (the first call of a page carries the query string).
   stickyFlag("mockSubmit"); stickyFlag("mockClose");
   const [path, qs = ""] = rawPath.split("?");
+  // Test trigger (mock only, sticky): ?mockDown=1 makes every request except GET /me fail like a dropped network
+  // (reads show "Can't reach the server. Retrying…" then Retry; writes toast and keep input). ?mockDown= clears it.
+  if (stickyFlag("mockDown") && path !== "/me") throw new TypeError("mock network failure");
   const query = new URLSearchParams(qs);
   const as = <T>() => (body ?? {}) as T;
   const seg = path.split("/").filter(Boolean);
@@ -732,6 +741,9 @@ export function mockFetch(method: string, rawPath: string, body: unknown, idempo
     }
     if (method === "GET" && sub === "result") {
       if (!exam.attempt) return err(404, "not_found", "That item isn't available.");
+      finalizeOnRead(exam);
+      // Test trigger (mock only): ?mockResult=403 refuses the result GET (toast and Home, fs 8.1); clear with ?mockResult=.
+      if (stickyFlag("mockResult") === "403") return err(403, "forbidden", "You don't have access to that.");
       // Mock-only page-URL flag (see seedResultFixtures), honoured for e14 and e15 only: hidden | leak | fractional | unfinished.
       const flag = ["e14", "e15", "e21", "e22", "e23"].includes(exam.id) ? stickyFlag("mockResult") : null;
       const isOver = over(exam);

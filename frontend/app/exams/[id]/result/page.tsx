@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useParams } from "next/navigation";
 import { ArrowLeft } from "lucide-react";
 import { api, ApiError } from "@/lib/api";
+import { useForbiddenRedirect } from "@/lib/forbidden";
 import { keyAvailableLine, peekLines, resultCardData, scoreSubtitle, selfCheckScore, setCheck, type Check, type Checks } from "@/lib/key";
 import type { ResultResponse } from "@/lib/types";
 import { EmptyState } from "@/components/EmptyState";
@@ -34,6 +35,7 @@ export default function Page() {
   const [view, setView] = useState<View>({ kind: "loading" });
   // Self-check choices are local only: the spec has no endpoint for them (fs 6.7, bs 9.3).
   const [checks, setChecks] = useState<Checks>({});
+  const onForbidden = useForbiddenRedirect();
   const heading = useRef<HTMLHeadingElement>(null);
   const seqRef = useRef({ n: 0 });
 
@@ -46,11 +48,12 @@ export default function Page() {
       if (mine === seq.n) setView({ kind: "ok", data });
     } catch (e) {
       if (mine !== seq.n) return;
+      if (onForbidden(e)) return;
       if (e instanceof ApiError && e.status === 409) setView({ kind: "unfinished" });
-      else if (e instanceof ApiError && (e.status === 403 || e.status === 404)) setView({ kind: "denied" });
+      else if (e instanceof ApiError && e.status === 404) setView({ kind: "denied" });
       else setView({ kind: "error" });
     }
-  }, [encoded]);
+  }, [encoded, onForbidden]);
 
   useEffect(() => {
     const seq = seqRef.current;

@@ -1,5 +1,5 @@
 // Direct-to-S3 upload (fs 6.2, 8.1). The file body goes ONLY to the presigned S3 URL, never to /api.
-import { api as sharedApi, ApiError } from "./api";
+import { api as sharedApi, ApiError, isNetworkError, NETWORK_TOAST } from "./api";
 import type { Doc, UploadUrlBody, UploadUrlResponse } from "./types";
 
 export const MAX_UPLOAD_BYTES = 20_971_520;
@@ -102,7 +102,7 @@ const defaultPut: PutFile = async (url, headers, file, onProgress, signal) => {
 };
 
 const isAbort = (s?: AbortSignal) => !!s?.aborted;
-const apiMessage = (e: unknown, fallback: string) => (e instanceof ApiError ? e.message : fallback);
+const apiMessage = (e: unknown, fallback: string) => (isNetworkError(e) ? NETWORK_TOAST : e instanceof ApiError ? e.message : fallback);
 
 export async function uploadFile(file: File, onProgress: (fraction: number) => void, deps: UploadDeps = {}): Promise<Doc> {
   const api = deps.api ?? sharedApi;

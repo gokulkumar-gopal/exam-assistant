@@ -1,7 +1,8 @@
 "use client";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import { api, ApiError } from "@/lib/api";
+import { api, ApiError, isNetworkError, NETWORK_TOAST } from "@/lib/api";
+import { toast } from "sonner";
 import type { Doc, DocsResponse } from "@/lib/types";
 import {
   addDoc, deleteTitle, filterAndSortDocs, generateHref, pruneSelection, type DocSort,
@@ -75,8 +76,11 @@ export default function Page() {
     setDocs((d) => (d ? d.filter((x) => !gone.has(x.id)) : d));
     setSelected((s) => new Set([...s].filter((id) => !gone.has(id))));
     setDeleting(false);
+    const network = results.some((r) => r.status === "rejected" && isNetworkError(r.reason));
     if (failedCount === 0) {
       setConfirming(false);
+    } else if (network) {
+      toast.error(NETWORK_TOAST); // one error surface: toast for network failures, inline otherwise
     } else {
       setDeleteError(
         failedCount === 1
