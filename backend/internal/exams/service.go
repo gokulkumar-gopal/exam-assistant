@@ -16,6 +16,7 @@ type Service struct {
 	exams    store.ExamStore
 	attempts store.AttemptStore
 	clk      clock.Clock
+	fin      Finalizer // lazy finalize hook; nil means none (wired in B-4.4)
 }
 
 // NewService builds a Service.
