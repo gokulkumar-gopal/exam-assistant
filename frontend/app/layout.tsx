@@ -1,5 +1,4 @@
 import type { Metadata } from "next";
-import { Suspense } from "react";
 import "./globals.css";
 import { SessionProvider } from "@/lib/session";
 import { Toaster } from "@/components/ui/sonner";
@@ -15,9 +14,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     <html lang="en">
       <body>
         <SessionProvider>
-          <Suspense fallback={null}>
-            <Shell>{children}</Shell>
-          </Suspense>
+          <Shell>{children}</Shell>
         </SessionProvider>
         <Toaster />
       </body>

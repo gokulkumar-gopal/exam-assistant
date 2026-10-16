@@ -3,14 +3,13 @@
 // unauthenticated visitor on a protected route to /login?next=<path+query>.
 // The guard only redirects; it never reads or stores credentials.
 import { useEffect } from "react";
-import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { AppBar } from "@/components/AppBar";
 import { useSession } from "@/lib/session";
-import { isExamTakePath, isPublicPath, loginUrl } from "@/lib/routes";
+import { isExamTakePath, isPublicPath, loginUrl, returnPath } from "@/lib/routes";
 
 export function Shell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
-  const search = useSearchParams().toString();
   const router = useRouter();
   const { user, loading, error, loggedOut, refresh } = useSession();
   const isPublic = isPublicPath(pathname);
@@ -18,8 +17,11 @@ export function Shell({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     if (isPublic || loading || user || error) return;
     // After Log out go to plain /login; otherwise remember where to return.
-    router.replace(loggedOut ? "/login" : loginUrl(pathname + (search ? `?${search}` : "")));
-  }, [isPublic, loading, user, error, loggedOut, pathname, search, router]);
+    // The query is read here, in the effect, rather than via useSearchParams: that hook forces a
+    // Suspense boundary around the whole shell, and a late-hydrating boundary can see the session
+    // already resolved (user set) while the server HTML said "Loading…", which is React error #418.
+    router.replace(loggedOut ? "/login" : loginUrl(returnPath(pathname, window.location.search)));
+  }, [isPublic, loading, user, error, loggedOut, pathname, router]);
 
   if (isPublic) return <>{children}</>;
   if (error && !user) {

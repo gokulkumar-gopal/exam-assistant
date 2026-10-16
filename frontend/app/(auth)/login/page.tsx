@@ -1,5 +1,5 @@
 "use client";
-import { useRef, useState } from "react";
+import { Suspense, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { api, ApiError } from "@/lib/api";
@@ -13,7 +13,16 @@ import { GoogleButton } from "@/components/GoogleButton";
 import { RoleChips } from "@/components/RoleChips";
 import { Input } from "@/components/ui/input";
 
+// useSearchParams needs its own Suspense boundary (the layout no longer provides one).
 export default function LoginPage() {
+  return (
+    <Suspense fallback={null}>
+      <LoginForm />
+    </Suspense>
+  );
+}
+
+function LoginForm() {
   const router = useRouter();
   const next = useSearchParams().get("next");
   const { refresh } = useMe();
