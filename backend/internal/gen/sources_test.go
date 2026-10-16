@@ -3,9 +3,11 @@ package gen
 import (
 	"bytes"
 	"encoding/binary"
+	"errors"
 	"hash/crc32"
 	"image"
 	"image/color"
+	"image/gif"
 	"image/jpeg"
 	"image/png"
 	"math/rand"
@@ -352,10 +354,10 @@ func TestPNGOver4MBReencodedJPEG(t *testing.T) {
 
 func TestDownscaleRejectsBombBeforeDecoding(t *testing.T) {
 	_, err := Downscale(bombPNG(30000, 30000))
-	if err == nil || !strings.Contains(err.Error(), "pixels") {
+	if err == nil || !strings.Contains(err.Error(), "too many pixels") {
 		t.Fatalf("err = %v", err)
 	}
-	if _, err := Downscale(bombPNG(4000, 4000)); err != nil && strings.Contains(err.Error(), "pixels") {
+	if _, err := Downscale(bombPNG(4000, 4000)); err != nil && strings.Contains(err.Error(), "too many pixels") {
 		t.Errorf("16 MP must pass the pixel guard: %v", err) // fails later on the truncated body, not on the cap
 	}
 }
@@ -396,5 +398,65 @@ func TestToQuestionMapsLabelAndAssignsID(t *testing.T) {
 	}
 	if f, ok := (RawQuestion{Marks: 3, Text: "t", ModelAnswer: "m", Source: "doc-2"}).ToQuestion(l2d); !ok || f.ModelAnswer != "m" || f.Options != nil || f.CorrectIndex != nil {
 		t.Errorf("%+v", f)
+	}
+}
+
+func TestDownscaleRejectsGIF(t *testing.T) {
+	var b bytes.Buffer
+	pal := color.Palette{color.Black, color.White}
+	g := &gif.GIF{}
+	for i := 0; i < 2; i++ {
+		g.Image = append(g.Image, image.NewPaletted(image.Rect(0, 0, 8, 8), pal))
+		g.Delay = append(g.Delay, 1)
+	}
+	if err := gif.EncodeAll(&b, g); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Downscale(b.Bytes()); !errors.Is(err, ErrUnsupportedImage) {
+		t.Errorf("err = %v", err)
+	}
+	src, _, failed := PrepareSources([]store.Document{doc("a", "a.jpg", "image/jpeg")}, map[string][]byte{"a": b.Bytes()})
+	if len(src) != 0 || len(failed) != 1 {
+		t.Fatal(src, failed)
+	}
+}
+
+func TestDownscaleRejectsOtherFormats(t *testing.T) {
+	for name, in := range map[string][]byte{
+		"bmp":  append([]byte("BM"), make([]byte, 60)...),
+		"tiff": append([]byte("II*\x00"), make([]byte, 60)...),
+		"webp": append([]byte("RIFF\x24\x00\x00\x00WEBPVP8 "), make([]byte, 60)...),
+	} {
+		if _, err := Downscale(in); err == nil {
+			t.Errorf("%s: want an error", name)
+		}
+	}
+}
+
+func TestPNGDeclaredAsJPEGStillWorks(t *testing.T) {
+	in := pngBytes(t, gradient(50, 40))
+	src, _, failed := PrepareSources([]store.Document{doc("a", "a.jpg", "image/jpeg")}, map[string][]byte{"a": in})
+	if len(failed) != 0 || len(src) != 1 || src[0].ContentType != "image/png" {
+		t.Fatal(src, failed)
+	}
+}
+
+func TestPixelCapIs25Megapixels(t *testing.T) {
+	ok := image.Config{Width: 5000, Height: 5000}
+	if err := checkConfig(ok, "png"); err != nil {
+		t.Errorf("exactly 25 MP rejected: %v", err)
+	}
+	if err := checkConfig(image.Config{Width: 5000, Height: 5001}, "png"); !errors.Is(err, ErrImageTooLarge) {
+		t.Errorf("25 MP + 5000 pixels: %v", err)
+	}
+	if err := checkConfig(image.Config{Width: 25_000_001, Height: 1}, "jpeg"); !errors.Is(err, ErrImageTooLarge) {
+		t.Errorf("25 MP + 1 pixel: %v", err)
+	}
+	if err := checkConfig(image.Config{Width: 5000, Height: 5000}, "gif"); !errors.Is(err, ErrUnsupportedImage) {
+		t.Error("gif must be unsupported")
+	}
+	// End to end, through DecodeConfig, with header-only fixtures.
+	if _, err := Downscale(bombPNG(5000, 5001)); !errors.Is(err, ErrImageTooLarge) {
+		t.Errorf("5000x5001 header: %v", err)
 	}
 }

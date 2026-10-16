@@ -20,15 +20,32 @@ const (
 	maxImageSide   = 2000
 	reencodeBytes  = 4 << 20 // re-encode as JPEG above this size
 	jpegQuality    = 85
-	maxImagePixels = 40_000_000 // decoded-size guard against decompression bombs
+	maxImagePixels = 25_000_000 // decoded-size guard against decompression bombs
 )
 
 // ErrImageTooLarge is returned for an image whose header claims more than maxImagePixels.
 var ErrImageTooLarge = errors.New("image has too many pixels")
 
+// ErrUnsupportedImage is returned for image data that is not a JPEG or a PNG, whatever
+// content type the document declared.
+var ErrUnsupportedImage = errors.New("image is not a JPEG or PNG")
+
+// checkConfig applies the format and pixel guards to a decoded image header.
+func checkConfig(cfg image.Config, format string) error {
+	if format != "jpeg" && format != "png" {
+		return ErrUnsupportedImage
+	}
+	if cfg.Width <= 0 || cfg.Height <= 0 || int64(cfg.Width)*int64(cfg.Height) > maxImagePixels {
+		return ErrImageTooLarge
+	}
+	return nil
+}
+
 // Downscale prepares a JPEG or PNG for the model (AI-spec 5.1). The pixel count in the
 // header is checked with image.DecodeConfig before anything is decoded, so a small file
-// that claims 30000x30000 pixels is rejected without allocating. The EXIF orientation of
+// that claims 30000x30000 pixels is rejected without allocating. The cap is 25 megapixels:
+// worst-case transient memory is about 25 MP x 4 B = 100 MB for an 8-bit image decoded to
+// RGBA, and 200 MB for a 16-bit one (the scaled copy is at most 2000x2000). The EXIF orientation of
 // a JPEG is applied, a longest side over 2000 px is scaled down (never up), and the result
 // is re-encoded as JPEG (quality 85) when it was scaled, rotated, or is over 4 MB.
 // Otherwise the input is returned unchanged. Scaling happens before rotation so the
@@ -39,8 +56,11 @@ func Downscale(img []byte) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("image header: %w", err)
 	}
-	if cfg.Width <= 0 || cfg.Height <= 0 || int64(cfg.Width)*int64(cfg.Height) > maxImagePixels {
-		return nil, ErrImageTooLarge
+	// Only the real format counts, not the declared content type; GIF and other formats some
+	// dependency registers are refused (an animated GIF would allocate every frame while
+	// the cap only covers the first).
+	if err := checkConfig(cfg, format); err != nil {
+		return nil, err
 	}
 	orient := 1
 	if format == "jpeg" {

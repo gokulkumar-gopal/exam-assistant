@@ -1,6 +1,7 @@
 package gen
 
 import (
+	"errors"
 	"log/slog"
 	"slices"
 	"sort"
@@ -85,7 +86,7 @@ func prepareOne(contentType string, data []byte) (ct string, out []byte, reason 
 	case "image/jpeg", "image/png":
 		out, err := Downscale(data)
 		if err != nil {
-			if err == ErrImageTooLarge {
+			if errors.Is(err, ErrImageTooLarge) {
 				return "", nil, tooLargeImageReason, err
 			}
 			return "", nil, unreadableFileReason, err
