@@ -5,6 +5,7 @@ import type {
   AssignBody, AttemptBody, CreateExamBody, GenerateBody, GoogleBody, RegenerateBody, RevealBody, SignupBody, SubmitBody, UploadUrlBody,
 } from "../types";
 import { consumeUploadFailure } from "./s3";
+import { mockFileUrl } from "./files";
 import { demoUser, docs as seedDocs, makeQuestion, models, rao, usage } from "./fixtures";
 
 interface MockExam {
@@ -172,7 +173,11 @@ export function mockFetch(method: string, rawPath: string, body: unknown): Respo
   }
   if (route === "GET /documents/:id/file") {
     if (!state.docs.some((d) => d.id === id)) return err(404, "not_found", "That item isn't available.");
-    return json(200, { url: `/mock/file-${id}`, expiresAt: iso(Date.now() + 10 * 60_000) });
+    // Request log for verification (ids only, never URLs). Fetch triggers live in ./files.
+    const w = globalThis as unknown as { __mockFileLog?: string[] };
+    (w.__mockFileLog ??= []).push(`presign:${id}`);
+    const doc = state.docs.find((d) => d.id === id)!;
+    return json(200, { url: `${mockFileUrl(doc.type)}?sig=${Date.now()}`, expiresAt: iso(Date.now() + 10 * 60_000) });
   }
   if (route === "DELETE /documents/:id") {
     if ((globalThis as { __mockDeleteFail?: string[] }).__mockDeleteFail?.includes(id)) return err(500, "internal", "Something went wrong. Try again.");
