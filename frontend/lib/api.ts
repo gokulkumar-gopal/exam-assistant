@@ -15,7 +15,7 @@ export class ApiError extends Error {
 }
 
 export type Method = "GET" | "POST" | "PUT" | "DELETE";
-export interface ApiOpts { idempotencyKey?: string; noRetry?: boolean }
+export interface ApiOpts { idempotencyKey?: string; noRetry?: boolean; /** Let the request outlive the page (body must be under 64 KB). */ keepalive?: boolean }
 
 export interface ApiDeps {
   fetch?: typeof fetch;
@@ -69,6 +69,7 @@ export function createApi(deps: ApiDeps = {}) {
           method,
           headers,
           credentials: "same-origin",
+          keepalive: opts?.keepalive || undefined,
           body: body === undefined ? undefined : JSON.stringify(body),
         });
       } catch {
