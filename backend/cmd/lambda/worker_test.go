@@ -5,9 +5,11 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gokulkumar/exam-assistant/backend/internal/config"
 	"github.com/gokulkumar/exam-assistant/backend/internal/gen"
+	"github.com/gokulkumar/exam-assistant/backend/internal/gen/prompt"
 )
 
 type recordingRunner struct {
@@ -55,6 +57,11 @@ func TestBuildWorkerWiresStoresBlobAndPlaceholderGenerators(t *testing.T) {
 	cfg.Mode = "worker"
 	cfg.GenMaxPerCall = 12
 	cfg.LLMEffort = "low"
+	cfg.LLMTimeoutSeconds = 90
+	cfg.GenMaxTotalBytes = 1234
+	cfg.GenMaxPDFPages = 7
+	cfg.GenMaxInputTokens = 4321
+	cfg.LLMMonthlyBudgetUSD = 12.5
 	w, err := buildWorker(cfg, anonymous())
 	if err != nil {
 		t.Fatal(err)
@@ -62,10 +69,14 @@ func TestBuildWorkerWiresStoresBlobAndPlaceholderGenerators(t *testing.T) {
 	if w.Jobs == nil || w.Docs == nil || w.Blob == nil || w.Clock == nil || w.Gens == nil {
 		t.Fatalf("worker not fully wired: %+v", w)
 	}
-	if w.Cfg.MaxPerCall != 12 || w.Cfg.Effort != "low" {
-		t.Errorf("cfg = %+v", w.Cfg)
+	want := gen.WorkerConfig{
+		MaxPerCall: 12, Effort: "low", PromptVersion: prompt.PromptVersion, CallTimeout: 90 * time.Second,
+		MaxTotalBytes: 1234, MaxPDFPages: 7, MaxInputTokens: 4321, BudgetMicros: 12_500_000,
 	}
-	if _, err := w.Gens.For("claude-haiku-4-5"); !errors.Is(err, gen.ErrGeneratorsNotConfigured) {
+	if w.Cfg != want {
+		t.Errorf("cfg = %+v, want %+v", w.Cfg, want)
+	}
+	if _, err := w.Gens("claude-haiku-4-5"); !errors.Is(err, gen.ErrGeneratorsNotConfigured) {
 		t.Errorf("placeholder factory error = %v", err)
 	}
 }

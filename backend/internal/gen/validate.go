@@ -39,6 +39,7 @@ const (
 type CallSpec struct {
 	Type  string // "mcq" | "free"
 	Marks int
+	Count int // questions asked for (PlanCalls sets it; Validate ignores it)
 }
 
 // htmlElements are the element names whose opening tags are rejected (AI-spec 7.1 "no HTML

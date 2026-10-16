@@ -155,7 +155,7 @@ func TestValidateDropsPerAISpec71(t *testing.T) {
 func TestValidateStripsControlAndInvisibleCharactersInsteadOfDropping(t *testing.T) {
 	q := mcq("Wh\x00at\u202e is\u200b os\u2066mo\ufeffsis\x7f?\u0085")
 	q.Options = []string{"al\x01pha", "be\u200bta", "gam\u202dma", "del\x08ta"}
-	kept, dropped, _ := Validate([]RawQuestion{q}, CallSpec{"mcq", 2}, vLabels, nil)
+	kept, dropped, _ := Validate([]RawQuestion{q}, CallSpec{Type: "mcq", Marks: 2}, vLabels, nil)
 	if dropped != 0 || len(kept) != 1 {
 		t.Fatalf("kept=%d dropped=%d", len(kept), dropped)
 	}
@@ -167,18 +167,18 @@ func TestValidateStripsControlAndInvisibleCharactersInsteadOfDropping(t *testing
 	}
 	// Characters stripped before counting: 600 real runes plus junk is still 600.
 	junk := strings.Repeat("a\u200b", 600)
-	if k, d, _ := Validate([]RawQuestion{mcq(junk)}, CallSpec{"mcq", 2}, vLabels, nil); len(k) != 1 || d != 0 {
+	if k, d, _ := Validate([]RawQuestion{mcq(junk)}, CallSpec{Type: "mcq", Marks: 2}, vLabels, nil); len(k) != 1 || d != 0 {
 		t.Errorf("stripped length not used: kept=%d dropped=%d", len(k), d)
 	}
 	// Distinct only after stripping is still a duplicate option.
 	dup := mut(mcq("Stripped dup q"), opts("al\u200bpha", "alpha", "c", "d"))
-	if k, d, _ := Validate([]RawQuestion{dup}, CallSpec{"mcq", 2}, vLabels, nil); len(k) != 0 || d != 1 {
+	if k, d, _ := Validate([]RawQuestion{dup}, CallSpec{Type: "mcq", Marks: 2}, vLabels, nil); len(k) != 0 || d != 1 {
 		t.Errorf("dup after strip: kept=%d dropped=%d", len(k), d)
 	}
 }
 
 func TestValidateTrimsText(t *testing.T) {
-	kept, _, _ := Validate([]RawQuestion{mcq("  padded question \n")}, CallSpec{"mcq", 2}, vLabels, nil)
+	kept, _, _ := Validate([]RawQuestion{mcq("  padded question \n")}, CallSpec{Type: "mcq", Marks: 2}, vLabels, nil)
 	if len(kept) != 1 || kept[0].Text != "padded question" {
 		t.Errorf("kept = %+v", kept)
 	}
@@ -186,7 +186,7 @@ func TestValidateTrimsText(t *testing.T) {
 
 func TestValidateKeepsEntitiesLiteral(t *testing.T) {
 	// AI-spec 7.1 says plain text only: tags are rejected but entities are not decoded.
-	kept, _, _ := Validate([]RawQuestion{mcq("Why is &lt;script&gt; escaped as &amp;lt; in HTML?")}, CallSpec{"mcq", 2}, vLabels, nil)
+	kept, _, _ := Validate([]RawQuestion{mcq("Why is &lt;script&gt; escaped as &amp;lt; in HTML?")}, CallSpec{Type: "mcq", Marks: 2}, vLabels, nil)
 	if len(kept) != 1 || kept[0].Text != "Why is &lt;script&gt; escaped as &amp;lt; in HTML?" {
 		t.Errorf("kept = %+v", kept)
 	}
@@ -194,7 +194,7 @@ func TestValidateKeepsEntitiesLiteral(t *testing.T) {
 
 func TestValidateMapsSourceToDocument(t *testing.T) {
 	r2 := mut(mcq("From the second document"), func(q *RawQuestion) { q.Source = "doc-2" })
-	kept, _, _ := Validate([]RawQuestion{mcq("From the first document"), r2}, CallSpec{"mcq", 2}, vLabels, nil)
+	kept, _, _ := Validate([]RawQuestion{mcq("From the first document"), r2}, CallSpec{Type: "mcq", Marks: 2}, vLabels, nil)
 	if len(kept) != 2 {
 		t.Fatalf("kept = %d", len(kept))
 	}
@@ -216,19 +216,19 @@ func TestValidateKeepsInputOrderAndCountsEachDropOnce(t *testing.T) {
 		mut(mcq(""), func(q *RawQuestion) { q.Marks = 9; q.Source = "nope"; q.Options = nil; q.CorrectIndex = ip(7) }),
 		mcq("Third kept question"),
 	}
-	kept, dropped, _ := Validate(raw, CallSpec{"mcq", 2}, vLabels, nil)
+	kept, dropped, _ := Validate(raw, CallSpec{Type: "mcq", Marks: 2}, vLabels, nil)
 	if dropped != 2 || len(kept) != 3 || kept[0].Text != "First kept question" ||
 		kept[1].Text != "Second kept question" || kept[2].Text != "Third kept question" {
 		t.Errorf("kept=%+v dropped=%d", kept, dropped)
 	}
-	if k, d, _ := Validate(nil, CallSpec{"mcq", 2}, vLabels, nil); len(k) != 0 || d != 0 {
+	if k, d, _ := Validate(nil, CallSpec{Type: "mcq", Marks: 2}, vLabels, nil); len(k) != 0 || d != 0 {
 		t.Errorf("empty input: %v %d", k, d)
 	}
 }
 
 func TestValidateDoesNotAliasInput(t *testing.T) {
 	r := mcq("Alias check question")
-	kept, _, _ := Validate([]RawQuestion{r}, CallSpec{"mcq", 2}, vLabels, nil)
+	kept, _, _ := Validate([]RawQuestion{r}, CallSpec{Type: "mcq", Marks: 2}, vLabels, nil)
 	kept[0].Options[0] = "changed"
 	*kept[0].CorrectIndex = 3
 	if r.Options[0] != "alpha" || *r.CorrectIndex != 1 {
@@ -237,7 +237,7 @@ func TestValidateDoesNotAliasInput(t *testing.T) {
 }
 
 func TestValidateDuplicates(t *testing.T) {
-	spec := CallSpec{"mcq", 2}
+	spec := CallSpec{Type: "mcq", Marks: 2}
 	base := "Explain how photosynthesis converts light energy into chemical energy in plants"
 	tests := []struct {
 		name  string
@@ -274,7 +274,7 @@ func TestValidateDuplicates(t *testing.T) {
 }
 
 func TestValidateDuplicateKeepsTheFirstOccurrence(t *testing.T) {
-	kept, _, _ := Validate([]RawQuestion{mcq("Same words here"), mcq("same words here"), mcq("Another thing entirely")}, CallSpec{"mcq", 2}, vLabels, nil)
+	kept, _, _ := Validate([]RawQuestion{mcq("Same words here"), mcq("same words here"), mcq("Another thing entirely")}, CallSpec{Type: "mcq", Marks: 2}, vLabels, nil)
 	if len(kept) != 2 || kept[0].Text != "Same words here" {
 		t.Errorf("kept = %+v", kept)
 	}
@@ -351,7 +351,7 @@ func TestDedupeIndexAgreesWithNearDuplicate(t *testing.T) {
 		for _, s := range texts {
 			raw = append(raw, free(s))
 		}
-		kept, _, _ := Validate(raw, CallSpec{"free", 2}, vLabels, nil)
+		kept, _, _ := Validate(raw, CallSpec{Type: "free", Marks: 2}, vLabels, nil)
 		var got []string
 		for _, q := range kept {
 			got = append(got, q.Text)
@@ -372,7 +372,7 @@ func TestValidateBoundedTimeOnLargeInput(t *testing.T) {
 			avoid = append(avoid, fmt.Sprintf("avoid text about topic%d section%d chapter%d", i, i, i))
 		}
 		start := time.Now()
-		kept, dropped, _ := Validate(raw, CallSpec{"free", 2}, vLabels, avoid)
+		kept, dropped, _ := Validate(raw, CallSpec{Type: "free", Marks: 2}, vLabels, avoid)
 		el := time.Since(start)
 		if len(kept) != n || dropped != 0 {
 			t.Fatalf("n=%d kept=%d dropped=%d", n, len(kept), dropped)
@@ -390,7 +390,7 @@ func TestValidateAllDuplicatesLargeInput(t *testing.T) {
 		raw = append(raw, free("the very same question text"))
 	}
 	start := time.Now()
-	kept, dropped, _ := Validate(raw, CallSpec{"free", 2}, vLabels, nil)
+	kept, dropped, _ := Validate(raw, CallSpec{Type: "free", Marks: 2}, vLabels, nil)
 	if len(kept) != 1 || dropped != 4999 || time.Since(start) > 10*time.Second {
 		t.Errorf("kept=%d dropped=%d in %v", len(kept), dropped, time.Since(start))
 	}
@@ -635,7 +635,7 @@ func TestNewIDsAssignedByWorkerNotModel(t *testing.T) {
 	}
 	now := time.Date(2026, 10, 16, 9, 0, 0, 0, time.UTC)
 	newID := newIDSource(func() time.Time { return now }, bytes.NewReader(bytes.Repeat([]byte{7}, 256)))
-	kept, dropped, _ := validate([]RawQuestion{rq, mcq("Another distinct prompt")}, CallSpec{"mcq", 2}, vLabels, nil, newID)
+	kept, dropped, _ := validate([]RawQuestion{rq, mcq("Another distinct prompt")}, CallSpec{Type: "mcq", Marks: 2}, vLabels, nil, newID)
 	if dropped != 0 || len(kept) != 2 {
 		t.Fatalf("kept=%d dropped=%d", len(kept), dropped)
 	}
@@ -656,12 +656,12 @@ func TestNewIDsAssignedByWorkerNotModel(t *testing.T) {
 	}
 	// Same clock and entropy, same ids: they come from the injected sources.
 	again := newIDSource(func() time.Time { return now }, bytes.NewReader(bytes.Repeat([]byte{7}, 256)))
-	k2, _, _ := validate([]RawQuestion{rq, mcq("Another distinct prompt")}, CallSpec{"mcq", 2}, vLabels, nil, again)
+	k2, _, _ := validate([]RawQuestion{rq, mcq("Another distinct prompt")}, CallSpec{Type: "mcq", Marks: 2}, vLabels, nil, again)
 	if k2[0].ID != kept[0].ID || k2[1].ID != kept[1].ID {
 		t.Error("ids are not deterministic for the same injected clock and entropy")
 	}
 	// Public Validate still yields valid ULIDs.
-	pk, _, _ := Validate([]RawQuestion{rq}, CallSpec{"mcq", 2}, vLabels, nil)
+	pk, _, _ := Validate([]RawQuestion{rq}, CallSpec{Type: "mcq", Marks: 2}, vLabels, nil)
 	if _, err := ulid.ParseStrict(pk[0].ID); err != nil {
 		t.Errorf("Validate id %q: %v", pk[0].ID, err)
 	}
@@ -676,7 +676,7 @@ func TestValidateReturnsDroppedTexts(t *testing.T) {
 		mut(mcq("Wh\u200bat <b>html</b> text"), func(q *RawQuestion) {}),
 		mcq("Kept two about plants"),
 	}
-	kept, dropped, texts := Validate(raw, CallSpec{"mcq", 2}, vLabels, nil)
+	kept, dropped, texts := Validate(raw, CallSpec{Type: "mcq", Marks: 2}, vLabels, nil)
 	if len(kept) != 2 || dropped != 4 {
 		t.Fatalf("kept=%d dropped=%d", len(kept), dropped)
 	}
@@ -684,7 +684,7 @@ func TestValidateReturnsDroppedTexts(t *testing.T) {
 	if !slices.Equal(texts, want) {
 		t.Errorf("dropped texts = %q, want %q", texts, want)
 	}
-	if _, _, none := Validate([]RawQuestion{mcq("Fine one")}, CallSpec{"mcq", 2}, vLabels, nil); len(none) != 0 {
+	if _, _, none := Validate([]RawQuestion{mcq("Fine one")}, CallSpec{Type: "mcq", Marks: 2}, vLabels, nil); len(none) != 0 {
 		t.Errorf("texts = %q", none)
 	}
 }

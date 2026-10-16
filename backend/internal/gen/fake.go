@@ -38,3 +38,12 @@ func (FakeGenerator) Generate(ctx context.Context, in GenInput) (GenOutput, erro
 	out.Usage = Usage{Input: 1000, Output: int64(100 * in.Count)}
 	return out, nil
 }
+
+// CountTokens implements TokenCounter trivially: one token per four bytes of sources.
+func (FakeGenerator) CountTokens(_ context.Context, in GenInput) (int, error) {
+	n := 0
+	for _, s := range in.Sources {
+		n += len(s.Bytes)
+	}
+	return n / 4, nil
+}

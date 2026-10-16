@@ -25,6 +25,9 @@ func QuotaMessage(kind string) string {
 	}
 }
 
+// BudgetMicros converts the budget in USD to whole micro-dollars.
+func BudgetMicros(usd float64) int64 { return int64(math.Round(usd * 1e6)) }
+
 // DayKey is the UTC day of t as yyyymmdd, the quota and day-index key.
 func DayKey(t time.Time) string { return t.UTC().Format("20060102") }
 
@@ -43,6 +46,6 @@ func (l QuotaLimits) Check(userID string, now time.Time, regen bool) store.Quota
 	return store.QuotaCheck{
 		UserID: userID, Day: DayKey(now), Month: MonthKey(now), Regen: regen,
 		MaxUser: l.MaxUser, MaxRegen: l.MaxRegen, MaxGlobal: l.MaxGlobal,
-		BudgetMicros: int64(math.Round(l.BudgetUSD * 1e6)),
+		BudgetMicros: BudgetMicros(l.BudgetUSD),
 	}
 }
