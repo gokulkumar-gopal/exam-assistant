@@ -28,6 +28,8 @@ const state = {
   jobs: {} as Record<string, MockJob>,
   exams: [] as MockExam[],
   seq: 100,
+  published: {} as Record<string, { id: string; unknownEmails: string[] }>,
+  publishCalls: 0,
 };
 
 function seedExams() {
@@ -96,7 +98,7 @@ function keyedQuestions(e: MockExam, visible: boolean): Question[] {
   });
 }
 
-export function mockFetch(method: string, rawPath: string, body: unknown): Response {
+export function mockFetch(method: string, rawPath: string, body: unknown, idempotencyKey?: string): Response {
   const [path, qs = ""] = rawPath.split("?");
   const query = new URLSearchParams(qs);
   const as = <T>() => (body ?? {}) as T;
@@ -264,18 +266,35 @@ export function mockFetch(method: string, rawPath: string, body: unknown): Respo
   // Exams
   if (route === "POST /exams") {
     const b = as<CreateExamBody>();
+    // Test triggers (mock only), from the page URL: ?mockPublish=failOnce|lostReply|422|403, ?mockUnknown=a@x.com,b@y.com
+    // Request log for verification: globalThis.__mockPublishLog = [{ key, body }].
+    const q = typeof window === "undefined" ? new URLSearchParams() : new URLSearchParams(window.location.search);
+    const trigger = q.get("mockPublish");
+    const g = globalThis as unknown as { __mockPublishLog?: { key: string | null; body: unknown; id?: string }[] };
+    const entry: { key: string | null; body: unknown; id?: string } = { key: idempotencyKey ?? null, body };
+    (g.__mockPublishLog ??= []).push(entry);
+    const call = ++state.publishCalls;
+    if (trigger === "failOnce" && call === 1) throw new TypeError("mock network failure");
+    if (trigger === "422") return err(422, "validation", "The closing time must be at least 1 minute from now.", { closesAt: "too soon" });
+    if (trigger === "403") return err(403, "forbidden", "You can't assign exams to that account.");
+    const replay = idempotencyKey ? state.published[idempotencyKey] : undefined;
+    if (replay) { entry.id = replay.id; return json(200, { ...replay, serverTime: st() }); }
     const closes = b.closesAt ? b.closesAt : iso(Date.now() + (b.closesInSeconds ?? 0) * 1000);
     const emails = b.assigneeEmails ?? [];
     const exam: MockExam = {
       id: `e${++state.seq}`, title: b.title, type: b.type, closesAt: closes,
       maxPeeks: b.maxPeeks ?? (emails.length === 0 ? 3 : 0),
       createdBy: { id: state.user.id, name: state.user.name },
-      questions: b.questions.map((q, i) => ({ ...q, id: `q${state.seq}-${i}` })),
+      questions: b.questions.map((qq, i) => ({ ...qq, id: `q${state.seq}-${i}` })),
       mine: true, attempt: null, assigned: emails,
     };
     if (emails.length === 0) exam.attempt = { status: "not_started", answers: {}, lastQuestionIndex: 0, revealed: [], peeksLeft: exam.maxPeeks };
     state.exams.unshift(exam);
-    const unknownEmails = emails.filter((e) => e.startsWith("unknown"));
+    const flagged = (q.get("mockUnknown") ?? "").split(",").map((e) => e.trim().toLowerCase()).filter(Boolean);
+    const unknownEmails = emails.filter((e) => e.startsWith("unknown") || flagged.includes(e));
+    entry.id = exam.id;
+    if (idempotencyKey) state.published[idempotencyKey] = { id: exam.id, unknownEmails };
+    if (trigger === "lostReply" && call === 1) throw new TypeError("mock network failure");
     return json(201, { id: exam.id, unknownEmails, serverTime: st() });
   }
   if (route === "GET /exams") {

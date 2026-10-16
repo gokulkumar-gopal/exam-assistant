@@ -9,6 +9,7 @@ import { footerState } from "@/lib/totals";
 import type { Marks, Question } from "@/lib/types";
 import { Notice } from "@/components/Notice";
 import { QuestionCard } from "@/components/QuestionCard";
+import { PublishBar, type PublishForm } from "@/components/PublishBar";
 import { cn } from "@/lib/utils";
 
 const TONE = { accent: "text-accent", ok: "text-ok", bad: "text-bad" } as const;
@@ -16,13 +17,11 @@ const TONE = { accent: "text-accent", ok: "text-ok", bad: "text-bad" } as const;
 interface Props {
   result: GeneratedResult;
   shuffle: boolean;
-  /** Publish is wired in F-2.5; until then the button only enables and disables. */
-  title: string;
+  form: PublishForm;
   onRegenerateAll: () => void;
-  onPublish?: () => void;
 }
 
-export function QuestionList({ result, shuffle, title, onRegenerateAll, onPublish }: Props) {
+export function QuestionList({ result, shuffle, form, onRegenerateAll }: Props) {
   const { params, model } = result;
   const [questions, setQuestions] = useState<Question[]>(result.questions);
   // Held in state so the shuffled order is stable across renders.
@@ -61,8 +60,9 @@ export function QuestionList({ result, shuffle, title, onRegenerateAll, onPublis
   }, [questions]);
 
   // Unsaved changes: warn while generated and unpublished. This must not cancel jobs.
+  const published = useRef(false);
   useEffect(() => {
-    const warn = (e: BeforeUnloadEvent) => { e.preventDefault(); e.returnValue = ""; };
+    const warn = (e: BeforeUnloadEvent) => { if (published.current) return; e.preventDefault(); e.returnValue = ""; };
     window.addEventListener("beforeunload", warn);
     return () => window.removeEventListener("beforeunload", warn);
   }, []);
@@ -139,7 +139,6 @@ export function QuestionList({ result, shuffle, title, onRegenerateAll, onPublis
   const gap = gapNotice(params.target, total);
   const fs = footerState(total, params.target, questions.length, true);
   const shown = orderQuestions(questions, shuffle, seed);
-  const publishDisabled = !fs.generateEnabled || !title.trim() || pending !== null;
 
   return (
     <section aria-labelledby="gen-h" className="flex flex-col">
@@ -181,12 +180,17 @@ export function QuestionList({ result, shuffle, title, onRegenerateAll, onPublis
           />
         ))}
       </ol>
-      <div className="mt-4 flex flex-wrap gap-2">
-        <button type="button" className="btn-secondary" onClick={onRegenerateAll} disabled={pending !== null}>Regenerate all</button>
-        <button type="button" className="btn-primary disabled:cursor-not-allowed disabled:opacity-50" disabled={publishDisabled} onClick={onPublish}>
-          Publish exam
-        </button>
-      </div>
+      <PublishBar
+        questions={shown}
+        type={params.type}
+        form={form}
+        marksOk={fs.generateEnabled}
+        target={params.target}
+        pending={pending !== null}
+        onChangeQuestion={(nq) => update(questionsRef.current.map((x) => (x.id === nq.id ? nq : x)))}
+        onPublished={() => { published.current = true; }}
+        extra={<button type="button" className="btn-secondary" onClick={onRegenerateAll} disabled={pending !== null}>Regenerate all</button>}
+      />
     </section>
   );
 }

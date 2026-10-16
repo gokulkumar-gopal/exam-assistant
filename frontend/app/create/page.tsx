@@ -10,6 +10,9 @@ import {
   footerState, parseSources, questionCount, sourceLimitError, totalMarks, type Counts,
 } from "@/lib/totals";
 import { defaultModelId } from "@/lib/models";
+import { PRESET_SECONDS, parseEmails, type Deadline } from "@/lib/publish";
+import type { PublishForm } from "@/components/PublishBar";
+import { Minus, Plus } from "lucide-react";
 import { ModelSelect } from "@/components/ModelSelect";
 import { GenerationCard } from "@/components/GenerationCard";
 import { QuestionList } from "@/components/QuestionList";
@@ -33,6 +36,8 @@ const CLOSES = [
 ];
 const SEG =
   "inline-flex min-h-10 flex-1 items-center justify-center rounded-lg border px-4 font-semibold focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent";
+const PEEK_BTN =
+  "inline-flex size-10 shrink-0 items-center justify-center rounded-lg border border-line bg-card text-accent hover:bg-tint focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-card";
 const FIELD = "h-10 w-full rounded-lg border border-input bg-card px-2.5 text-base outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 md:text-sm";
 
 function assignHelper(role: Role | undefined): string {
@@ -71,6 +76,7 @@ function CreateInner() {
   const [closes, setCloses] = useState("86400");
   const [closesAt, setClosesAt] = useState("");
   const [assign, setAssign] = useState("");
+  const [peeksEdited, setPeeksEdited] = useState<number | null>(null); // null: follows the default
 
   // Page state only. undefined means "send no model" (models failed, empty, or not loaded).
   const [models, setModels] = useState<AiModel[]>([]);
@@ -227,6 +233,19 @@ function CreateInner() {
     }
   }, [applyModels, chosen, counts, modelId, shuffle, target, type]);
 
+  const assignees = useMemo(() => parseEmails(assign, user?.role), [assign, user?.role]);
+  // Peeks default to 3 for a personal practice exam and 0 when people are assigned, until the user edits it.
+  const maxPeeks = peeksEdited ?? (assignees.emails.length === 0 ? 3 : 0);
+  // The deadline is the server's to compute (preset) or the user's chosen time (picker); never the device clock.
+  const deadline: Deadline | null = useMemo(() => {
+    if (closes !== "custom") return PRESET_SECONDS.includes(Number(closes)) ? { closesInSeconds: Number(closes) } : null;
+    const t = closesAt ? new Date(closesAt) : null;
+    return t && !Number.isNaN(t.getTime()) ? { closesAt: t.toISOString() } : null;
+  }, [closes, closesAt]);
+  const publishForm: PublishForm = {
+    title, deadline, assigneeEmails: assignees.emails, assignError: assignees.error, maxPeeks,
+  };
+
   const generateEnabled = fs.generateEnabled && !limitError && !running;
 
   const onCancel = useCallback(() => {
@@ -334,11 +353,26 @@ function CreateInner() {
                   value={assign}
                   onChange={(e) => setAssign(e.target.value)}
                   placeholder="name@example.com, another@example.com"
-                  aria-describedby="assign-help"
+                  aria-describedby={assignees.error ? "assign-error assign-help" : "assign-help"}
+                  aria-invalid={assignees.error !== null}
                 />
+                {assignees.error && <p id="assign-error" role="alert" className="mt-1 text-[13px] text-bad">{assignees.error}</p>}
                 <p id="assign-help" className="mt-1 text-[13px] text-muted">
                   {assignHelper(user?.role)}. Leave empty for a personal practice exam.
                 </p>
+              </div>
+              <div>
+                <span id="peeks-l" className="mb-1 block font-semibold">Peeks allowed</span>
+                <div role="group" aria-labelledby="peeks-l" className="flex items-center gap-2.5">
+                  <button type="button" className={PEEK_BTN} aria-label="Decrease peeks allowed" disabled={maxPeeks <= 0} onClick={() => setPeeksEdited(Math.max(0, maxPeeks - 1))}>
+                    <Minus className="size-4" aria-hidden />
+                  </button>
+                  <span className="w-[26px] text-center font-semibold tabular-nums" aria-live="polite">{maxPeeks}</span>
+                  <button type="button" className={PEEK_BTN} aria-label="Increase peeks allowed" disabled={maxPeeks >= 10} onClick={() => setPeeksEdited(Math.min(10, maxPeeks + 1))}>
+                    <Plus className="size-4" aria-hidden />
+                  </button>
+                </div>
+                <p className="mt-1 text-[13px] text-muted">Takers can reveal an answer mid-exam for half marks. 0 turns it off.</p>
               </div>
             </div>
           </Card>
@@ -363,7 +397,7 @@ function CreateInner() {
             key={resultKey}
             result={result}
             shuffle={shuffle}
-            title={title}
+            form={publishForm}
             onRegenerateAll={() => void onGenerate(result)}
           />
         )}
