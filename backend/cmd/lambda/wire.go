@@ -8,6 +8,7 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
+	"github.com/aws/aws-sdk-go-v2/service/lambda"
 
 	"github.com/gokulkumar/exam-assistant/backend/internal/api"
 	"github.com/gokulkumar/exam-assistant/backend/internal/auth"
@@ -51,9 +52,10 @@ func buildAPIDeps(_ context.Context, cfg config.Config, awsCfg aws.Config) (api.
 	stores := dynamo.New(dynamodb.NewFromConfig(awsCfg), cfg.Stage)
 	svc := auth.NewService(stores, auth.NewBcryptHasher(auth.BcryptCost), clk).
 		WithGoogle(deadlineVerifier{inner: newVerifier(cfg.GoogleClientID), timeout: googleVerifyTimeout})
-	// B-2.4 replaces the stub runner with the real worker invoker: until then
-	// POST /generate answers 503 "We couldn't start that. Try again.".
-	var runner gen.JobRunner = gen.StubRunner{}
+	if cfg.WorkerFunctionName == "" {
+		return api.Deps{}, errors.New("WORKER_FUNCTION_NAME is required in api mode")
+	}
+	var runner gen.JobRunner = gen.LambdaRunner{Client: lambda.NewFromConfig(awsCfg), FunctionName: cfg.WorkerFunctionName}
 	deps := api.Deps{
 		Logger:         slog.Default(),
 		Clock:          clk,

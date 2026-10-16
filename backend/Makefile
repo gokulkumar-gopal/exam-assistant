@@ -16,6 +16,8 @@ LOCAL_ENV = \
 	ALLOWED_ORIGINS=http://localhost:3000
 
 SERVER_BIN ?= $(or $(TMPDIR),/tmp)/exam-assistant-server
+# Local runs use the offline fake generator (no provider generators exist yet). Override with SERVER_FLAGS=.
+SERVER_FLAGS ?= -fake-llm
 
 .PHONY: build test run smoke ai-eval build-ApiFunction build-WorkerFunction check-env deploy destroy
 
@@ -28,7 +30,7 @@ test:
 run:
 	@# Build then run the binary: `go run` does not forward SIGTERM to the server it starts.
 	go build -o $(SERVER_BIN) ./cmd/server
-	exec env $(LOCAL_ENV) $(SERVER_BIN)
+	exec env $(LOCAL_ENV) $(SERVER_BIN) $(SERVER_FLAGS)
 
 smoke:
 	@sh scripts/smoke.sh
