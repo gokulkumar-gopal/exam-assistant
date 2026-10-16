@@ -1,0 +1,500 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Exam Assistant – Option A prototype</title>
+<style>
+  :root {
+    --bg:#faf7ff; --card:#fff; --ink:#1b1340; --muted:#6a6490; --line:#e6defa;
+    --accent:#6d28d9; --accent2:#ff4f8b; --accent-ink:#fff; --tint:#f3ecff;
+    --ok:#047857; --warn:#c2410c; --bad:#e11d48;
+    --grad:linear-gradient(135deg,#6d28d9 0%,#d946ef 60%,#ff4f8b 100%);
+    --m1:#0d9488; --m2:#2563eb; --m3:#7c3aed; --m4:#ea580c; --m5:#e11d48;
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg) linear-gradient(180deg,#efe4ff 0,var(--bg) 320px) no-repeat; color:var(--ink);
+    font-family:"Helvetica Neue", Helvetica, Arial, sans-serif; font-size:15px; line-height:1.45; }
+  button, input, select { font-family:inherit; font-size:inherit; color:inherit; }
+  a { color:inherit; text-decoration:none; }
+  .bar { position:sticky; top:0; z-index:10; background:var(--card); border-bottom:1px solid var(--line);
+    display:flex; align-items:center; gap:24px; padding:0 20px; height:56px; }
+  .logo { font-weight:700; letter-spacing:-.2px; background:var(--grad); -webkit-background-clip:text; background-clip:text;
+    color:transparent; font-size:17px; }
+  .bar nav { display:flex; gap:20px; flex:1; }
+  .bar nav a { color:var(--muted); padding:18px 0; }
+  .bar nav a.on { color:var(--ink); box-shadow:inset 0 -2px 0 var(--accent); }
+  .avatar { width:32px; height:32px; border-radius:50%; background:var(--grad); color:#fff; border:0;
+    cursor:pointer; font-weight:700; }
+  .menu { position:absolute; right:16px; top:50px; background:var(--card); border:1px solid var(--line);
+    border-radius:8px; padding:8px; min-width:200px; display:none; box-shadow:0 8px 24px rgba(0,0,0,.08); }
+  .menu.open { display:block; }
+  .menu a, .menu .item { display:block; padding:8px 10px; border-radius:6px; }
+  .menu a:hover { background:var(--bg); }
+  .menu .mnav { display:none; }
+  .menu label { display:block; padding:6px 10px; color:var(--muted); font-size:12px; }
+  .menu select { width:100%; padding:6px; border:1px solid var(--line); border-radius:6px; }
+  main { max-width:880px; margin:0 auto; padding:28px 20px 120px; }
+  h1 { font-size:24px; margin:0 0 4px; letter-spacing:-.3px; }
+  h2 { font-size:13px; margin:28px 0 8px; text-transform:uppercase; letter-spacing:.6px; color:var(--muted); }
+  .sub { color:var(--muted); margin:0 0 20px; }
+  .head { display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; margin-bottom:8px; }
+  .btn { border:1px solid var(--line); background:var(--card); border-radius:8px; padding:8px 14px; cursor:pointer; }
+  .btn:hover { background:var(--tint); border-color:#d4c4f7; }
+  .btn.primary { background:var(--grad); color:var(--accent-ink); border-color:transparent; font-weight:600;
+    box-shadow:0 4px 14px rgba(109,40,217,.28); }
+  .btn.primary:hover { filter:brightness(1.08); background:var(--grad); }
+  .btn.danger { color:var(--bad); }
+  .btn[disabled] { opacity:.4; cursor:not-allowed; filter:none; }
+  .list { background:var(--card); border:1px solid var(--line); border-radius:10px; overflow:hidden; }
+  .row { display:flex; align-items:center; gap:14px; padding:14px 16px; border-top:1px solid var(--line); }
+  .row:first-child { border-top:0; }
+  .row .grow { flex:1; min-width:0; }
+  .row .title { font-weight:600; }
+  .row .meta { color:var(--muted); font-size:13px; }
+  .pill { display:inline-block; padding:2px 9px; border-radius:99px; font-size:12px; border:1px solid var(--line); background:var(--bg); }
+  .pill.ok { color:var(--ok); border-color:#6ee7b7; background:#d1fae5; font-weight:600; }
+  .pill.warn { color:var(--warn); border-color:#fdba74; background:#ffedd5; font-weight:600; }
+  .pill.bad { color:var(--bad); border-color:#fda4af; background:#ffe4e6; font-weight:600; }
+  .thumb { width:36px; height:44px; border-radius:6px; background:#e9e9e9; flex:none; display:grid; place-items:center;
+    font-size:10px; font-weight:700; color:#fff; }
+  .thumb.PDF { background:#ff5a5f; } .thumb.JPG { background:#0d9488; } .thumb.PNG { background:#f59e0b; } .thumb.TXT { background:#2563eb; }
+  input[type=checkbox] { width:18px; height:18px; accent-color:var(--accent); }
+  .tools { display:flex; gap:10px; margin-bottom:12px; flex-wrap:wrap; }
+  .tools input[type=search], .tools select, .field input, .field select { padding:8px 10px; border:1px solid var(--line);
+    border-radius:8px; background:var(--card); }
+  .tools input[type=search] { flex:1; min-width:160px; }
+  .actionbar { position:fixed; left:0; right:0; bottom:0; background:linear-gradient(90deg,#2a0f6b,#6d28d9); color:#fff; padding:12px 20px;
+    display:none; align-items:center; gap:12px; z-index:20; }
+  .actionbar.show { display:flex; }
+  .actionbar .sp { flex:1; }
+  .actionbar .btn { color:var(--ink); }
+  .actionbar .btn.primary { color:#fff; }
+  .sheetwrap { position:relative; }
+  .sheet { position:absolute; right:0; top:44px; background:var(--card); border:1px solid var(--line); border-radius:10px;
+    padding:6px; min-width:210px; display:none; z-index:15; box-shadow:0 8px 24px rgba(0,0,0,.08); }
+  .sheet.open { display:block; }
+  .sheet button { display:block; width:100%; text-align:left; background:none; border:0; padding:10px; border-radius:6px; cursor:pointer; }
+  .sheet button:hover { background:var(--tint); }
+  .drop { border:2px dashed #c4a8f5; background:var(--tint); border-radius:12px; padding:18px; text-align:center; color:var(--accent); margin-bottom:12px; }
+  .upl { display:flex; align-items:center; gap:12px; padding:10px 16px; border-bottom:1px solid var(--line); background:var(--tint); }
+  .prog { flex:1; height:6px; background:#e3d5fb; border-radius:99px; overflow:hidden; }
+  .prog i { display:block; height:100%; width:0; background:var(--grad); transition:width .2s; }
+  .viewer { background:#e6dcfa; border-radius:10px; padding:20px; display:flex; flex-direction:column; align-items:center; gap:16px;
+    max-height:70vh; overflow:auto; }
+  .page { background:#fff; width:100%; max-width:560px; aspect-ratio:8.5/11; box-shadow:0 1px 4px rgba(0,0,0,.15);
+    padding:36px; transform-origin:top center; }
+  .page .ln { height:8px; background:#ececec; border-radius:4px; margin:10px 0; }
+  .page .ln.s { width:60%; } .page .ln.t { height:14px; width:45%; background:#d9d9d9; }
+  .cols { display:grid; grid-template-columns:260px 1fr; gap:20px; align-items:start; }
+  @media (max-width:720px) { .cols { grid-template-columns:1fr; } }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:16px; }
+  .card h3 { margin:0 0 10px; font-size:14px; }
+  .seg { display:inline-flex; border:1px solid var(--line); border-radius:8px; overflow:hidden; }
+  .seg button { border:0; background:var(--card); padding:8px 14px; cursor:pointer; }
+  .seg button.on { background:var(--grad); color:#fff; font-weight:600; }
+  .chips { display:flex; gap:8px; flex-wrap:wrap; }
+  .chip { border:1px solid var(--line); background:var(--card); border-radius:99px; padding:6px 16px; cursor:pointer; }
+  .chip:hover { background:var(--tint); }
+  .chip.on { background:var(--grad); color:#fff; border-color:transparent; font-weight:600; }
+  .stepper { display:flex; align-items:center; gap:10px; padding:8px 0; border-top:1px solid var(--line); }
+  .stepper:first-of-type { border-top:0; }
+  .stepper .lab { width:70px; }
+  .stepper .sub2 { margin-left:auto; color:var(--muted); width:80px; text-align:right; }
+  .stepper button { width:30px; height:30px; border-radius:8px; border:1px solid var(--line); background:var(--card); cursor:pointer; color:var(--accent); font-weight:700; }
+  .stepper button:hover { background:var(--tint); }
+  .stepper:nth-of-type(1) .lab { color:var(--m1); } .stepper:nth-of-type(2) .lab { color:var(--m2); }
+  .stepper:nth-of-type(3) .lab { color:var(--m3); } .stepper:nth-of-type(4) .lab { color:var(--m4); }
+  .stepper:nth-of-type(5) .lab { color:var(--m5); } .stepper .lab { font-weight:700; }
+  .stepper .n { width:26px; text-align:center; font-weight:600; }
+  .footer { position:fixed; left:0; right:0; bottom:0; background:var(--card); border-top:1px solid var(--line);
+    padding:12px 20px; display:flex; align-items:center; gap:16px; z-index:20; }
+  .footer .tot { font-weight:700; }
+  .footer .state { font-size:13px; }
+  .footer .sp { flex:1; }
+  .meter { flex:1; max-width:260px; height:8px; background:#eee; border-radius:99px; overflow:hidden; }
+  .meter i { display:block; height:100%; transition:width .2s, background .2s; }
+  .field { display:flex; flex-direction:column; gap:4px; margin-bottom:12px; }
+  .field label { font-size:12px; color:var(--muted); }
+  .q { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:14px 16px; margin-bottom:10px; }
+  .q .top { display:flex; gap:10px; align-items:center; margin-bottom:6px; }
+  .q .acts { margin-left:auto; display:flex; gap:6px; }
+  .q .acts button { border:0; background:none; color:var(--muted); cursor:pointer; padding:2px 6px; }
+  .q .acts button:hover { color:var(--ink); }
+  .badge { background:var(--ink); color:#fff; border-radius:6px; padding:2px 9px; font-size:12px; font-weight:700; }
+  .badge.m1 { background:var(--m1); } .badge.m2 { background:var(--m2); } .badge.m3 { background:var(--m3); }
+  .badge.m4 { background:var(--m4); } .badge.m5 { background:var(--m5); }
+  .exambar { position:sticky; top:0; z-index:10; background:var(--card); border-bottom:1px solid var(--line);
+    display:flex; align-items:center; gap:16px; padding:0 20px; height:56px; }
+  .exambar .sp { flex:1; }
+  .timer { font-weight:700; font-variant-numeric:tabular-nums; }
+  .timer.low { color:var(--bad); }
+  .saved { color:var(--muted); font-size:13px; }
+  .dots { display:flex; gap:8px; flex-wrap:wrap; margin:16px 0; }
+  .dot { width:30px; height:30px; border-radius:50%; border:1.5px solid var(--line); background:var(--card); cursor:pointer; font-size:12px; }
+  .dot.done { background:var(--grad); color:#fff; border-color:transparent; font-weight:700; }
+  .dot.cur { outline:2px solid var(--accent2); outline-offset:2px; }
+  .opt { display:flex; gap:10px; align-items:center; padding:12px 14px; border:1px solid var(--line); border-radius:8px;
+    margin-bottom:8px; cursor:pointer; background:var(--card); }
+  .opt:hover { background:var(--tint); }
+  .opt.sel { border-color:var(--accent); background:var(--tint); box-shadow:inset 4px 0 0 var(--accent2); font-weight:600; }
+  textarea { width:100%; min-height:120px; padding:10px; border:1px solid var(--line); border-radius:8px; font-family:inherit; font-size:inherit; }
+  table { width:100%; border-collapse:collapse; background:var(--card); border:1px solid var(--line); border-radius:10px; overflow:hidden; }
+  th, td { text-align:left; padding:12px 14px; border-top:1px solid var(--line); }
+  th { font-size:12px; text-transform:uppercase; letter-spacing:.5px; color:var(--muted); border-top:0; background:var(--bg); }
+  .notice { background:#fff4e0; border:1px solid #fdba74; color:var(--warn); border-radius:8px; padding:10px 14px; margin-bottom:14px; font-size:13px; }
+  .toast { position:fixed; left:50%; bottom:90px; transform:translateX(-50%); background:var(--ink); color:#fff;
+    padding:10px 16px; border-radius:8px; display:none; z-index:50; }
+  .proto { background:var(--grad); color:#fff; font-size:12px; text-align:center; padding:5px; }
+  .row:hover { background:#fcfaff; }
+  h1 { color:var(--ink); } h2 { color:var(--accent); }
+  @media (max-width:640px) {
+    .bar nav { display:none; } .bar { gap:12px; } .bar .grow { flex:1; }
+    .menu .mnav { display:block; }
+    main { padding:20px 16px 120px; }
+  }
+</style>
+</head>
+<body>
+<div class="proto">Prototype · Option A · fake data · use the avatar menu to switch role</div>
+
+<div class="bar" id="topbar">
+  <a class="logo" href="#home">Exam Assistant</a>
+  <nav id="nav"></nav>
+  <span class="grow"></span>
+  <button class="avatar" id="avatar" aria-label="Account menu">T</button>
+  <div class="menu" id="menu">
+    <div class="mnav" id="mnav"></div>
+    <label for="role">View as</label>
+    <select id="role">
+      <option value="student">Student</option>
+      <option value="teacher">Teacher</option>
+      <option value="parent">Parent</option>
+    </select>
+  </div>
+</div>
+
+<div id="examHeader" class="exambar" style="display:none">
+  <strong id="exTitle"></strong>
+  <span class="sp"></span>
+  <span class="saved" id="saved">Saved</span>
+  <span class="timer" id="timer">42:10 left</span>
+  <button class="btn" id="saveExit">Save &amp; exit</button>
+</div>
+
+<main id="app"></main>
+
+<div class="actionbar" id="actionbar">
+  <strong id="selCount">0 selected</strong>
+  <span class="sp"></span>
+  <button class="btn danger" id="delBtn">Delete</button>
+  <button class="btn primary" id="genBtn">Generate questions</button>
+</div>
+<div class="toast" id="toast"></div>
+
+<script>
+const $ = (s, el=document) => el.querySelector(s);
+const state = {
+  role:'teacher',
+  docs:[
+    {id:1,name:'Biology – Chapter 4 Cells.pdf',type:'PDF',pages:12,date:'Oct 14'},
+    {id:2,name:'Algebra notes (photo).jpg',type:'JPG',pages:1,date:'Oct 12'},
+    {id:3,name:'History – Industrial Revolution.pdf',type:'PDF',pages:28,date:'Oct 9'},
+    {id:4,name:'Chemistry formulas.txt',type:'TXT',pages:2,date:'Oct 3'},
+    {id:5,name:'Geometry scan.png',type:'PNG',pages:1,date:'Sep 29'}
+  ],
+  selected:new Set(),
+  genSources:new Set([1]),
+  qtype:'mcq', target:30, shuffle:false,
+  counts:{1:4,2:3,3:2,4:1,5:1},
+  questions:null, generating:false,
+  exam:{i:0, answers:{}, seconds:42*60+10}
+};
+const openExams = [
+  {t:'Biology: Cells quiz', by:'Ms. Rao', due:'closes in 2d', pill:'', btn:'Start', status:'Not started'},
+  {t:'Algebra practice set', by:'You', due:'closes in 5h', pill:'warn', btn:'Resume', status:'In progress'},
+  {t:'History mid-term prep', by:'Mr. Allen', due:'closes in 6d', pill:'', btn:'Start', status:'Not started'}
+];
+const closedExams = [
+  {t:'Chemistry basics', by:'Ms. Rao', due:'closed Oct 8', pill:'ok', btn:'View result', status:'Submitted · 34/40'},
+  {t:'Geometry drill', by:'You', due:'closed Oct 1', pill:'bad', btn:'View result', status:'Missed'}
+];
+const sampleQs = {
+  1:['Which organelle produces most of the cell’s energy?','Define osmosis.','What is the formula for the area of a triangle?','Name the powerhouse of the cell.'],
+  2:['Explain the difference between a plant and animal cell.','Solve for x: 3x + 5 = 20.','State two causes of the Industrial Revolution.'],
+  3:['Describe the function of the cell membrane.','Factorise x² + 5x + 6.'],
+  4:['Compare mitosis and meiosis in a short paragraph.'],
+  5:['Evaluate the social impact of industrialisation on urban life, with two examples.']
+};
+const examQs = [
+  {m:1,q:'Which organelle produces most of the cell’s energy?',o:['Nucleus','Mitochondrion','Ribosome','Golgi body']},
+  {m:1,q:'Define osmosis.',free:true},
+  {m:2,q:'Which structure is found only in plant cells?',o:['Cell wall','Mitochondrion','Nucleus','Cytoplasm']},
+  {m:3,q:'Explain why the cell membrane is called selectively permeable.',free:true},
+  {m:5,q:'Compare mitosis and meiosis, giving one similarity and two differences.',free:true}
+];
+
+function toast(msg){ const t=$('#toast'); t.textContent=msg; t.style.display='block'; clearTimeout(toast.h); toast.h=setTimeout(()=>t.style.display='none',2200); }
+function canCreate(){ return state.role!=='student'; }
+function totalMarks(){ return Object.entries(state.counts).reduce((s,[m,c])=>s+m*c,0); }
+
+function renderNav(route){
+  const links = [['home','Home'],['docs','Documents']];
+  if (canCreate()) links.push(['create','Create']);
+  const cur = route==='viewer' ? 'docs' : route==='status' ? 'home' : route;
+  $('#nav').innerHTML = links.map(([r,l])=>`<a href="#${r}" class="${cur===r?'on':''}">${l}</a>`).join('');
+  $('#mnav').innerHTML = links.map(([r,l])=>`<a href="#${r}">${l}</a>`).join('');
+  $('#avatar').textContent = state.role[0].toUpperCase();
+}
+
+/* ---------- Screens ---------- */
+function home(){
+  const row = e => `<div class="row"><div class="grow"><div class="title">${e.t}</div>
+      <div class="meta">Assigned by ${e.by} · ${e.due}</div></div>
+      <span class="pill ${e.pill}">${e.status}</span>
+      <button class="btn ${e.btn==='Start'||e.btn==='Resume'?'primary':''}" data-act="${e.btn}" data-t="${e.t}">${e.btn}</button></div>`;
+  return `<div class="head"><div><h1>Home</h1><p class="sub">Your exams, nothing else.</p></div>
+      ${canCreate()?'<a class="btn primary" href="#create">Create exam</a>':''}</div>
+    <h2>Open</h2><div class="list">${openExams.map(row).join('')}</div>
+    <h2>Closed</h2><div class="list">${closedExams.map(row).join('')}</div>
+    ${canCreate()?`<h2>Created by you</h2><div class="list"><div class="row"><div class="grow"><div class="title">Algebra practice set</div>
+      <div class="meta">12 submitted, 3 in progress, 5 not started</div></div><a class="btn" href="#status">View status</a></div></div>`:''}`;
+}
+
+function docs(){
+  const rows = state.docs.map(d=>`<div class="row">
+      <input type="checkbox" data-id="${d.id}" ${state.selected.has(d.id)?'checked':''} aria-label="Select ${d.name}">
+      <div class="thumb ${d.type}">${d.type}</div>
+      <div class="grow"><a class="title" href="#viewer/${d.id}">${d.name}</a>
+        <div class="meta">${d.date} · ${d.pages} page${d.pages>1?'s':''}</div></div></div>`).join('');
+  return `<div class="head"><div><h1>Documents</h1><p class="sub">Only you can see these.</p></div>
+      <div class="sheetwrap"><button class="btn primary" id="upBtn">Upload</button>
+        <div class="sheet" id="sheet">
+          <button data-up="Take photo">Take photo</button>
+          <button data-up="Choose file">Choose file</button>
+          <button data-up="Choose from photos">Choose from photos</button>
+        </div></div></div>
+    <div class="drop">Drag files here to upload (PDF, JPG, PNG, TXT · up to 25 MB)</div>
+    <div class="tools"><input type="search" placeholder="Search documents" id="q">
+      <select id="sort"><option>Newest</option><option>Name</option></select></div>
+    <div class="list" id="doclist">${rows || '<div class="row"><div class="grow meta">No documents yet. Upload your first file to get started.</div></div>'}</div>`;
+}
+
+function viewer(id){
+  const d = state.docs.find(x=>x.id==id) || state.docs[0];
+  const n = Math.min(d.pages,4);
+  const pages = Array.from({length:n},(_,i)=>`<div class="page"><div class="ln t"></div>${'<div class="ln"></div><div class="ln"></div><div class="ln s"></div>'.repeat(5)}
+      <div style="text-align:center;color:#aaa;font-size:11px;margin-top:10px">Page ${i+1} of ${d.pages}</div></div>`).join('');
+  return `<div class="head"><div style="display:flex;align-items:center;gap:10px"><a class="btn" href="#docs">← Back</a><h1 style="font-size:18px">${d.name}</h1></div>
+      <div style="display:flex;gap:8px;align-items:center">
+        <button class="btn" id="zo">−</button><button class="btn" id="zi">+</button>
+        <button class="btn primary" data-gen="${d.id}">Generate questions</button></div></div>
+    <div class="viewer" id="vw">${pages}</div>`;
+}
+
+function create(){
+  if(!canCreate()) return `<div class="notice">Students can’t create exams in this prototype. Switch role to Teacher or Parent in the avatar menu.</div>`;
+  const tot = totalMarks(), tgt = state.target;
+  const files = state.docs.map(d=>`<div class="row" style="padding:10px 0;border-top:0"><input type="checkbox" data-src="${d.id}" ${state.genSources.has(d.id)?'checked':''}>
+      <div class="grow"><div style="font-size:14px">${d.name}</div></div></div>`).join('');
+  const steppers = [1,2,3,4,5].map(m=>`<div class="stepper"><span class="lab">${m} mark${m>1?'s':''}</span>
+      <button data-m="${m}" data-d="-1" aria-label="Fewer ${m}-mark questions">−</button>
+      <span class="n">${state.counts[m]}</span>
+      <button data-m="${m}" data-d="1" aria-label="More ${m}-mark questions">+</button>
+      <span class="sub2">= ${m*state.counts[m]} marks</span></div>`).join('');
+  const color = tot===tgt?'var(--ok)':tot>tgt?'var(--bad)':'var(--accent)';
+  const msg = tot===tgt?'Ready to generate':tot>tgt?`${tot-tgt} over`:`${tgt-tot} to go`;
+  const count = Object.values(state.counts).reduce((a,b)=>a+b,0);
+  return `<h1>Create exam</h1><p class="sub">Pick sources, set the marks, generate.</p>
+    <div class="cols">
+      <div class="card"><h3>Sources (${state.genSources.size})</h3>${files}</div>
+      <div>
+        <div class="card" style="margin-bottom:14px"><h3>Question type</h3>
+          <div class="seg"><button data-type="mcq" class="${state.qtype==='mcq'?'on':''}">Multiple choice</button>
+          <button data-type="free" class="${state.qtype==='free'?'on':''}">Free text</button></div></div>
+        <div class="card" style="margin-bottom:14px"><h3>Total marks</h3>
+          <div class="chips">${[30,40,50].map(t=>`<button class="chip ${state.target===t?'on':''}" data-t="${t}">${t}</button>`).join('')}</div></div>
+        <div class="card" style="margin-bottom:14px"><h3>Questions per mark value</h3>${steppers}
+          <label style="display:flex;gap:8px;align-items:center;margin-top:10px;font-size:13px;color:var(--muted)">
+            <input type="checkbox" id="shuf" ${state.shuffle?'checked':''}> Shuffle order (default: low to high marks)</label></div>
+        <div class="card"><h3>Exam details</h3>
+          <div class="field"><label>Title</label><input value="Biology: Cells quiz"></div>
+          <div class="field"><label>Closes in</label><select><option>1 hour</option><option>1 day</option><option selected>2 days</option><option>1 week</option></select></div>
+          <div class="field"><label>Assign to (optional, emails)</label><input placeholder="Leave empty for a personal practice exam"></div>
+          <div class="field"><label>Answer key visible</label><select><option>Anytime</option><option selected>After the exam closes</option><option>After submission</option></select></div>
+        </div>
+        <div id="result"></div>
+      </div>
+    </div>
+    <div class="footer">
+      <span class="tot" style="color:${color}">${tot} / ${tgt} marks</span>
+      <div class="meter"><i style="width:${Math.min(100,tot/tgt*100)}%;background:${color}"></i></div>
+      <span class="state" style="color:${color}">${msg} · ${count} questions</span>
+      <span class="sp"></span>
+      <button class="btn primary" id="go" ${tot===tgt&&state.genSources.size?'':'disabled'}>Generate</button>
+    </div>`;
+}
+
+function generated(){
+  const list = state.questions.map((q,i)=>`<div class="q"><div class="top"><span class="badge m${q.m}">${q.m} mark${q.m>1?'s':''}</span>
+      <span class="meta">from ${q.src}</span>
+      <div class="acts"><button data-edit="${i}">Edit</button><button data-regen="${i}">Regenerate</button><button data-rm="${i}">Delete</button></div></div>
+      <div>${i+1}. ${q.text}</div>
+      ${state.qtype==='mcq'?'<div class="meta" style="margin-top:6px">A. … &nbsp; B. … &nbsp; C. … &nbsp; D. … (correct: B)</div>':''}</div>`).join('');
+  const t = state.questions.reduce((s,q)=>s+q.m,0);
+  const gap = state.target - t;
+  return `<h2>Generated questions · ${t} marks</h2>
+    ${gap>0?`<div class="notice">You deleted ${gap} marks. Add a ${Math.min(gap,5)}-mark question? <button class="btn" data-fill>Add</button></div>`:''}
+    ${list}
+    <div style="display:flex;gap:10px;margin-top:14px"><button class="btn" id="regAll">Regenerate all</button>
+    <button class="btn primary" id="publish">Publish exam</button></div>`;
+}
+
+function examScreen(){
+  const e = state.exam, qs = examQs, q = qs[e.i];
+  if (e.i === 'summary') {
+    const un = qs.map((_,i)=>i).filter(i=>!e.answers[i]);
+    return `<h1>Review before you submit</h1><p class="sub">${un.length?`${un.length} unanswered: question ${un.map(i=>i+1).join(', ')}`:'All questions answered.'}</p>
+      <div class="dots">${qs.map((_,i)=>`<button class="dot ${e.answers[i]?'done':''}" data-go="${i}">${i+1}</button>`).join('')}</div>
+      <div style="display:flex;gap:10px"><button class="btn" data-go="${qs.length-1}">Back to questions</button>
+      <button class="btn primary" id="submit">Submit exam</button></div>`;
+  }
+  const body = q.free ? `<textarea id="ans" placeholder="Type your answer">${e.answers[e.i]||''}</textarea>`
+    : q.o.map((o,i)=>`<div class="opt ${e.answers[e.i]===o?'sel':''}" data-opt="${o}"><span>${'ABCD'[i]}.</span> ${o}</div>`).join('');
+  return `<div class="dots">${qs.map((_,i)=>`<button class="dot ${e.answers[i]?'done':''} ${i===e.i?'cur':''}" data-go="${i}">${i+1}</button>`).join('')}</div>
+    <p class="meta">Question ${e.i+1} of ${qs.length} · ${q.m} mark${q.m>1?'s':''}</p>
+    <h1 style="font-size:20px;margin-bottom:16px">${q.q}</h1>${body}
+    <div style="display:flex;justify-content:space-between;margin-top:20px">
+      <button class="btn" data-go="${e.i-1}" ${e.i===0?'disabled':''}>Back</button>
+      ${e.i<qs.length-1?`<button class="btn primary" data-go="${e.i+1}">Next</button>`:'<button class="btn primary" data-go="summary">Review</button>'}</div>
+    <p class="meta" style="margin-top:20px">Closes Oct 18, 6:00 PM</p>`;
+}
+
+function status(){
+  const r = [['Aisha K.','Submitted','ok','34/40','Oct 15, 4:12 PM'],['Ben T.','In progress','warn','—','—'],
+             ['Carla M.','Not started','','—','—'],['Dev P.','Submitted','ok','28/40','Oct 15, 6:40 PM']];
+  return `<div class="head"><div style="display:flex;align-items:center;gap:10px"><a class="btn" href="#home">← Back</a><h1>Algebra practice set</h1></div></div>
+    <p class="sub">2 submitted, 1 in progress, 1 not started</p>
+    <table><tr><th>Student</th><th>Status</th><th>Score</th><th>Submitted</th></tr>
+    ${r.map(x=>`<tr><td>${x[0]}</td><td><span class="pill ${x[2]}">${x[1]}</span></td><td>${x[3]}</td><td>${x[4]}</td></tr>`).join('')}</table>
+    <div style="margin-top:14px"><button class="btn" id="assign">Assign to more people</button></div>`;
+}
+
+function results(){
+  const rs = [['Which organelle produces most of the cell’s energy?','Mitochondrion','Mitochondrion',true],
+              ['Define osmosis.','Movement of water','Movement of water across a membrane from low to high solute concentration',false],
+              ['Which structure is found only in plant cells?','Cell wall','Cell wall',true]];
+  return `<div class="head"><div style="display:flex;align-items:center;gap:10px"><a class="btn" href="#home">← Back</a><h1>Chemistry basics: result</h1></div></div>
+    <p class="sub">Score 34 / 40</p>
+    ${rs.map((r,i)=>`<div class="q"><div class="top"><span class="badge">${i+1}</span><span class="pill ${r[3]?'ok':'bad'}">${r[3]?'✓ Correct':'✗ Incorrect'}</span></div>
+      <div>${r[0]}</div><div class="meta" style="margin-top:6px">Your answer: ${r[1]}</div>
+      <div class="meta">Correct answer: ${r[2]}</div></div>`).join('')}
+    <div class="notice" style="margin-top:14px">If the key were hidden, this page would say: “Answer key available after Oct 18, 6:00 PM.”</div>`;
+}
+
+/* ---------- Router ---------- */
+let timerH;
+function route(){
+  const [r, arg] = (location.hash.slice(1) || 'home').split('/');
+  const isExam = r==='exam';
+  $('#topbar').style.display = isExam ? 'none' : 'flex';
+  $('#examHeader').style.display = isExam ? 'flex' : 'none';
+  clearInterval(timerH);
+  renderNav(r);
+  const app = $('#app');
+  const screens = {home, docs, viewer:()=>viewer(arg), create, exam:examScreen, status, results};
+  app.innerHTML = (screens[r]||home)();
+  $('#actionbar').classList.remove('show');
+  if (r==='docs') updateBar();
+  if (r==='create' && state.questions) $('#result').innerHTML = generated();
+  if (isExam) startTimer();
+  window.scrollTo(0,0);
+}
+function startTimer(){
+  $('#exTitle').textContent = 'Algebra practice set';
+  const tick = ()=>{ const s=state.exam.seconds; const m=Math.floor(s/60), x=String(s%60).padStart(2,'0');
+    const t=$('#timer'); t.textContent = `${m}:${x} left`; t.classList.toggle('low', s<300); };
+  tick(); timerH = setInterval(()=>{ state.exam.seconds=Math.max(0,state.exam.seconds-1); tick(); },1000);
+}
+function updateBar(){
+  const n = state.selected.size;
+  $('#selCount').textContent = `${n} selected`;
+  $('#actionbar').classList.toggle('show', n>0);
+}
+function makeQuestions(){
+  const out=[]; const srcs=[...state.genSources].map(id=>state.docs.find(d=>d.id===id).name);
+  for (const m of [1,2,3,4,5]) for (let i=0;i<state.counts[m];i++)
+    out.push({m, text:sampleQs[m][i%sampleQs[m].length], src:srcs[(out.length)%srcs.length]});
+  if (state.shuffle) out.sort(()=>Math.random()-.5);
+  return out;
+}
+
+/* ---------- Events ---------- */
+window.addEventListener('hashchange', route);
+$('#avatar').onclick = e=>{ e.stopPropagation(); $('#menu').classList.toggle('open'); };
+document.addEventListener('click', e=>{ if(!e.target.closest('#menu')) $('#menu').classList.remove('open');
+  if(!e.target.closest('.sheetwrap')) { const s=$('#sheet'); if(s) s.classList.remove('open'); } });
+$('#role').onchange = e=>{ state.role=e.target.value; if(location.hash==='#create'&&!canCreate()) {} route(); toast(`Viewing as ${state.role}`); };
+$('#saveExit').onclick = ()=>{ toast('Progress saved. Resume any time from Home.'); location.hash='home'; };
+$('#genBtn').onclick = ()=>{ state.genSources = new Set(state.selected); state.questions=null; location.hash='create'; };
+$('#delBtn').onclick = ()=>{ const n=state.selected.size; if(confirm(`Delete ${n} document${n>1?'s':''}? This can’t be undone.`)) {
+  state.docs = state.docs.filter(d=>!state.selected.has(d.id)); state.selected.clear(); route(); } };
+
+document.addEventListener('click', e=>{
+  const t = e.target.closest('[data-opt],button,a') || e.target;
+  if (t.id==='upBtn') { $('#sheet').classList.toggle('open'); return; }
+  if (t.dataset.up) { $('#sheet').classList.remove('open'); fakeUpload(t.dataset.up); return; }
+  if (t.dataset.gen) { state.genSources=new Set([+t.dataset.gen]); state.questions=null; location.hash='create'; return; }
+  if (t.dataset.act) {
+    if (t.dataset.act==='View result') location.hash='results';
+    else { if(t.dataset.act==='Start') state.exam={i:0,answers:{},seconds:42*60+10}; location.hash='exam'; } return; }
+  if (t.dataset.m) { const m=t.dataset.m; state.counts[m]=Math.max(0,state.counts[m]+(+t.dataset.d)); state.questions=null; route(); return; }
+  if (t.dataset.type) { state.qtype=t.dataset.type; route(); return; }
+  if (t.dataset.t && t.classList.contains('chip')) { state.target=+t.dataset.t; route(); return; }
+  if (t.id==='go') return runGenerate();
+  if (t.dataset.rm) { state.questions.splice(+t.dataset.rm,1); $('#result').innerHTML=generated(); return; }
+  if (t.dataset.regen) { state.questions[+t.dataset.regen].text += ' (regenerated)'; $('#result').innerHTML=generated(); return; }
+  if (t.dataset.edit) { const q=state.questions[+t.dataset.edit]; const v=prompt('Edit question', q.text); if(v) { q.text=v; $('#result').innerHTML=generated(); } return; }
+  if (t.dataset.fill!==undefined) { const gap=state.target-state.questions.reduce((s,q)=>s+q.m,0); const m=Math.min(gap,5);
+    state.questions.push({m,text:sampleQs[m][0],src:state.docs[0].name}); $('#result').innerHTML=generated(); return; }
+  if (t.id==='regAll') return runGenerate();
+  if (t.id==='publish') { toast('Exam published (prototype)'); setTimeout(()=>location.hash='home',700); return; }
+  if (t.id==='assign') { toast('Assign dialog would open here'); return; }
+  if (t.id==='zi' || t.id==='zo') { const vw=$('#vw'); const z=(+vw.dataset.z||1)+(t.id==='zi'?.15:-.15); vw.dataset.z=z;
+    vw.querySelectorAll('.page').forEach(p=>p.style.maxWidth=(560*z)+'px'); return; }
+  if (t.dataset.go!==undefined) { const g=t.dataset.go; state.exam.i = g==='summary'?'summary':+g; examSaved(); route(); return; }
+  if (t.dataset.opt) { state.exam.answers[state.exam.i]=t.dataset.opt; examSaved(); route(); return; }
+  if (t.id==='submit') { toast('Submitted. Score: 4 / 12 shown after grading (prototype)'); location.hash='results'; return; }
+});
+document.addEventListener('change', e=>{
+  const t=e.target;
+  if (t.dataset.id) { t.checked ? state.selected.add(+t.dataset.id) : state.selected.delete(+t.dataset.id); updateBar(); }
+  if (t.dataset.src) { t.checked ? state.genSources.add(+t.dataset.src) : state.genSources.delete(+t.dataset.src); state.questions=null; route(); }
+  if (t.id==='shuf') { state.shuffle=t.checked; state.questions=null; route(); }
+});
+document.addEventListener('input', e=>{
+  if (e.target.id==='ans') { state.exam.answers[state.exam.i]=e.target.value; examSaved(true); }
+  if (e.target.id==='q') { const v=e.target.value.toLowerCase();
+    document.querySelectorAll('#doclist .row').forEach(r=>r.style.display = r.textContent.toLowerCase().includes(v)?'':'none'); }
+});
+function examSaved(){ const d=new Date(); $('#saved').textContent = 'Saved '+d.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}); }
+function fakeUpload(kind){
+  const list=$('#doclist'); const name = kind==='Take photo'?'Camera photo.jpg':'New study file.pdf';
+  const el=document.createElement('div'); el.className='upl';
+  el.innerHTML=`<span>${name}</span><div class="prog"><i></i></div><span class="meta">Uploading…</span>`;
+  list.prepend(el); let p=0;
+  const h=setInterval(()=>{ p+=20; el.querySelector('i').style.width=p+'%';
+    if(p>=100){ clearInterval(h); state.docs.unshift({id:Date.now(),name,type:kind==='Take photo'?'JPG':'PDF',pages:1,date:'Today'}); route(); toast('Uploaded'); } },250);
+}
+function runGenerate(){
+  const res=$('#result'); res.innerHTML='<h2>Generating</h2><div class="card"><div class="meta" id="gp">Writing question 1…</div><div class="prog" style="margin-top:8px"><i id="gbar"></i></div><div style="margin-top:10px"><button class="btn" id="cancelGen">Cancel</button></div></div>';
+  const total = Object.values(state.counts).reduce((a,b)=>a+b,0); let n=0;
+  const h=setInterval(()=>{ n++; const bar=$('#gbar'); if(!bar){clearInterval(h);return;}
+    bar.style.width=(n/total*100)+'%'; $('#gp').textContent=`Writing question ${n} of ${total}…`;
+    if(n>=total){ clearInterval(h); state.questions=makeQuestions(); res.innerHTML=generated(); res.scrollIntoView({behavior:'smooth'}); } },180);
+  document.addEventListener('click', function c(e){ if(e.target.id==='cancelGen'){ clearInterval(h); res.innerHTML=''; document.removeEventListener('click',c);} });
+}
+route();
+</script>
+</body>
+</html>
