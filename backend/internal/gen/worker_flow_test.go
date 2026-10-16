@@ -736,7 +736,7 @@ func TestUnreadableSourcesLandInFailedSources(t *testing.T) {
 
 func TestJobRecordsPromptVersionModelEffortAndUsage(t *testing.T) {
 	e := newWEnv(t, map[string]int{"1": 2, "2": 1})
-	e.w.Cfg.Effort = "low"
+	e.w.Cfg.Effort = "low" // Haiku rejects effort, so none is sent and none is recorded
 	e.gen.fn = func(ctx context.Context, in GenInput) (GenOutput, error) {
 		out := validOut(in)
 		out.Usage = Usage{Input: 3000, Output: 400, CacheRead: 2000, CacheWrite: 500}
@@ -747,7 +747,7 @@ func TestJobRecordsPromptVersionModelEffortAndUsage(t *testing.T) {
 	m := haiku()
 	one := CostMicros(m, Usage{Input: 3000, Output: 400, CacheRead: 2000, CacheWrite: 500})
 	u := j.Usage
-	if j.Model != "claude-haiku-4-5" || u.PromptVersion != "pv-test" || u.Effort != "low" {
+	if j.Model != "claude-haiku-4-5" || u.PromptVersion != "pv-test" || u.Effort != "" {
 		t.Errorf("model=%q usage=%+v", j.Model, u)
 	}
 	if u.InputTokens != 6000 || u.OutputTokens != 800 || u.CacheReadTokens != 4000 || u.CacheWriteTokens != 1000 ||
@@ -1007,4 +1007,30 @@ type blockingCounter struct{ testGen }
 func (*blockingCounter) CountTokens(ctx context.Context, _ GenInput) (int, error) {
 	<-ctx.Done()
 	return 0, ctx.Err()
+}
+
+// modelOverride makes the worker see the job on another catalog model.
+type modelOverride struct {
+	store.JobStore
+	model string
+}
+
+func (m modelOverride) GetJob(ctx context.Context, id string) (store.Job, error) {
+	j, err := m.JobStore.GetJob(ctx, id)
+	j.Model = m.model
+	return j, err
+}
+
+func TestJobRecordsTheEffectiveEffortOfItsModel(t *testing.T) {
+	for _, tc := range []struct{ model, want string }{
+		{"claude-sonnet-5-5", "low"}, {"claude-opus-5-5", "low"}, {"claude-haiku-4-5", ""}, {"gemini-3.1-flash-lite", ""},
+	} {
+		e := newWEnv(t, map[string]int{"1": 1})
+		e.w.Cfg.Effort = "low"
+		e.w.Jobs = modelOverride{e.w.Jobs, tc.model}
+		e.run(t)
+		if got := e.job(t).Usage.Effort; got != tc.want {
+			t.Errorf("%s: recorded effort %q, want %q", tc.model, got, tc.want)
+		}
+	}
 }

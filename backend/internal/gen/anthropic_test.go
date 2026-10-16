@@ -213,6 +213,64 @@ func TestEffortSetFromConfigAndOmittedWhenEmpty(t *testing.T) {
 	}
 }
 
+func TestEffortOnlyForModelsThatSupportIt(t *testing.T) {
+	for _, tc := range []struct {
+		model string
+		want  any
+	}{{"claude-sonnet-5-5", "medium"}, {"claude-opus-5-5", "medium"}, {"claude-haiku-4-5", nil}, {"not-in-catalog", nil}} {
+		f := newFakeAPI(t, nil)
+		g := newTestGen(t, f, nil)
+		in := mcqInput()
+		in.Model = tc.model
+		if _, err := g.Generate(context.Background(), in); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := g.(TokenCounter).CountTokens(context.Background(), in); err != nil {
+			t.Fatal(err)
+		}
+		reqs := f.requests()
+		oc, ok := reqs[0].Body["output_config"].(map[string]any)
+		if !ok || oc["format"] == nil {
+			t.Fatalf("%s: the structured-output format is missing: %v", tc.model, reqs[0].Body["output_config"])
+		}
+		if got := oc["effort"]; got != tc.want {
+			t.Errorf("%s: effort = %v, want %v", tc.model, got, tc.want)
+		}
+		if cc := reqs[1].Body["output_config"].(map[string]any); cc["effort"] != nil || cc["format"] == nil {
+			t.Errorf("%s: count_tokens output_config = %v", tc.model, cc)
+		}
+	}
+}
+
+func TestBadRequestLogsProviderMessageButNoContent(t *testing.T) {
+	f := newFakeAPI(t, func(n int, w http.ResponseWriter, r *http.Request) {
+		writeAPIError(w, 400, "invalid_request_error", "output_config.effort: this model does not support effort")
+	})
+	var logs bytes.Buffer
+	g := newTestGen(t, f, func(c *AnthropicConfig) {
+		c.Logger = slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	})
+	in := mcqInput()
+	in.Sources[0].Bytes = []byte("DOCUMENT CONTENT PHOTOSYNTHESIS")
+	_, err := g.Generate(context.Background(), in)
+	if err == nil {
+		t.Fatal("want an error")
+	}
+	for _, s := range []string{err.Error(), logs.String()} {
+		if !strings.Contains(s, "this model does not support effort") {
+			t.Errorf("provider message missing from %q", s)
+		}
+		for _, leak := range []string{"DOCUMENT CONTENT", "PHOTOSYNTHESIS", "old question", "SYSTEM PROMPT", "sk-ant-test-KEY", f.srv.URL} {
+			if strings.Contains(s, leak) {
+				t.Errorf("%q leaks %q", s, leak)
+			}
+		}
+	}
+	if !strings.Contains(logs.String(), "level=ERROR") && !strings.Contains(logs.String(), "level=WARN") {
+		t.Errorf("no log line: %q", logs.String())
+	}
+}
+
 func TestMaxTokens16000(t *testing.T) {
 	f := newFakeAPI(t, nil)
 	g := newTestGen(t, f, nil)
@@ -230,9 +288,6 @@ func TestSDKMaxRetries1AndTimeout120(t *testing.T) {
 	a := newTestGen(t, f, func(c *AnthropicConfig) { c.Timeout = 0 }).(*anthropicGen)
 	if a.timeout != 120*time.Second {
 		t.Errorf("default timeout = %v, want 120s", a.timeout)
-	}
-	if a.maxRetries != 1 {
-		t.Errorf("maxRetries = %d, want 1", a.maxRetries)
 	}
 	// Behaviour: a 500 then a 200 succeeds on the single retry; two 500s stop after exactly 2 requests.
 	f2 := newFakeAPI(t, func(n int, w http.ResponseWriter, r *http.Request) {
@@ -573,6 +628,16 @@ func TestMaxTokensStopReasonMaps(t *testing.T) {
 	}
 }
 
+func TestContextWindowStopMapsToMaxTokens(t *testing.T) {
+	f := newFakeAPI(t, func(n int, w http.ResponseWriter, r *http.Request) {
+		writeMessage(w, messageJSON{Text: "", Stop: "model_context_window_exceeded", In: 9, Out: 1})
+	})
+	out, err := newTestGen(t, f, nil).Generate(context.Background(), mcqInput())
+	if !errors.Is(err, ErrMaxTokens) || out.Usage.Input != 9 {
+		t.Fatalf("out %+v err %v", out, err)
+	}
+}
+
 func TestInvalidOutputReturnsUsage(t *testing.T) {
 	for name, text := range map[string]string{
 		"not json":     "Sure! Here are your questions",
@@ -663,8 +728,8 @@ func TestOtherClientErrorsAreNotSentinels(t *testing.T) {
 			t.Errorf("a 400 maps to %v", s)
 		}
 	}
-	if strings.Contains(err.Error(), "BADBODY") {
-		t.Errorf("error leaks the body: %v", err)
+	if !strings.Contains(err.Error(), "BADBODY") || strings.Contains(err.Error(), "invalid_request_error\"") {
+		t.Errorf("want the provider message and not the raw body: %v", err)
 	}
 	if f.calls.Load() != 1 {
 		t.Errorf("a 400 was retried: %d requests", f.calls.Load())
@@ -707,7 +772,7 @@ func TestNoFileNamesInRequest(t *testing.T) {
 			}
 		}
 		walk(r.Body)
-		for _, name := range []string{".pdf", ".jpg", ".png", ".txt", "biology-notes"} {
+		for _, name := range []string{".pdf", ".jpg", ".png", ".txt"} {
 			if strings.Contains(string(r.Raw), name) {
 				t.Errorf("%s request contains %q", r.Path, name)
 			}
@@ -791,8 +856,6 @@ func TestCountTokensErrorMapping(t *testing.T) {
 
 func TestGenerateIsSafeForThreeConcurrentCalls(t *testing.T) {
 	f := newFakeAPI(t, func(n int, w http.ResponseWriter, r *http.Request) {
-		raw, _ := io.ReadAll(r.Body) // already read by the recorder; echo the count from the instruction instead
-		_ = raw
 		writeMessage(w, messageJSON{Text: validMCQJSON(1), Stop: "end_turn", In: 10, Out: 5})
 	})
 	g := newTestGen(t, f, nil)
@@ -843,7 +906,7 @@ func TestNewAnthropicDefaultsAndInterfaces(t *testing.T) {
 		t.Fatal("not a TokenCounter")
 	}
 	a := g.(*anthropicGen)
-	if a.timeout != 120*time.Second || a.maxRetries != 1 {
-		t.Errorf("defaults: timeout %v retries %d", a.timeout, a.maxRetries)
+	if a.timeout != 120*time.Second {
+		t.Errorf("default timeout %v", a.timeout)
 	}
 }

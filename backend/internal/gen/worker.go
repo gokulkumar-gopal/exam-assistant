@@ -51,7 +51,7 @@ const (
 // WorkerConfig is the part of the process configuration the worker needs.
 type WorkerConfig struct {
 	MaxPerCall    int           // questions per Generate call (AI-spec 5.3); 0 means 15
-	Effort        string        // recorded on the job's usage
+	Effort        string        // LLM_EFFORT; recorded on the job only for models that take it's usage
 	PromptVersion string        // recorded on the job's usage (prompt.PromptVersion; gen cannot import prompt)
 	CallTimeout   time.Duration // per Generate call (LLM_TIMEOUT_SECONDS); 0 means 120 s
 	MaxTotalBytes int64         // raw bytes of the sources (GEN_MAX_TOTAL_BYTES); 0 means 20 MiB
@@ -120,6 +120,7 @@ type runState struct {
 	failed    []store.FailedSource
 	failedIDs map[string]bool
 	poke      chan struct{} // capacity 1: "progress changed, write it now"
+	effort    string        // the effort actually sent for the job's model ("" when it takes none)
 }
 
 func newRunState(total, tasks int) *runState {
@@ -180,12 +181,13 @@ type runSnapshot struct {
 	usage                       Usage
 	cost                        int64
 	failed                      []store.FailedSource
+	effort                      string
 }
 
 func (s *runState) snap() runSnapshot {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	sn := runSnapshot{total: s.total, calls: s.calls, usage: s.usage, cost: s.cost, failed: slices.Clone(s.failed)}
+	sn := runSnapshot{total: s.total, calls: s.calls, usage: s.usage, cost: s.cost, failed: slices.Clone(s.failed), effort: s.effort}
 	for i := range s.results {
 		sn.done += len(s.results[i])
 		sn.dropped += s.dropped[i]
@@ -193,9 +195,18 @@ func (s *runState) snap() runSnapshot {
 	return sn
 }
 
+// effortFor is the configured effort when the model takes one, otherwise "" (the job records
+// what was actually sent).
+func (w *Worker) effortFor(model string) string {
+	if m, ok := LookupModel(model); ok && m.SupportsEffort {
+		return w.Cfg.Effort
+	}
+	return ""
+}
+
 func (w *Worker) jobUsage(sn runSnapshot) store.JobUsage {
 	return store.JobUsage{
-		PromptVersion: w.Cfg.PromptVersion, Effort: w.Cfg.Effort,
+		PromptVersion: w.Cfg.PromptVersion, Effort: sn.effort,
 		InputTokens: sn.usage.Input, OutputTokens: sn.usage.Output,
 		CacheReadTokens: sn.usage.CacheRead, CacheWriteTokens: sn.usage.CacheWrite,
 		CostMicros: sn.cost, Calls: sn.calls, Requested: sn.total, Kept: sn.done, Dropped: sn.dropped,
@@ -233,6 +244,7 @@ func (w *Worker) Run(ctx context.Context, jobID string) error {
 
 	plan := w.plan(job)
 	state := newRunState(requestedTotal(job), len(plan))
+	state.effort = w.effortFor(job.Model)
 	stopHB := w.startHeartbeat(gctx, cancelGen, job, state)
 	defer stopHB() // also on a panic in the generator
 

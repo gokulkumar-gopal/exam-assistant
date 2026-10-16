@@ -46,7 +46,7 @@ const (
 //
 // System, Instruction and Schema are the prompt package's System(), Instruction and Schema.
 // They are injected because prompt imports gen, so gen cannot import prompt (B-2.10 passes
-// them when it wires the factory).
+// them when it wires the factory (B-2.9).
 type AnthropicConfig struct {
 	Effort  string        // output_config.effort; empty sends none (LLM_EFFORT)
 	Timeout time.Duration // per attempt; 0 means 120s (LLM_TIMEOUT_SECONDS)
@@ -62,7 +62,6 @@ type anthropicGen struct {
 	client      anthropic.Client
 	effort      string
 	timeout     time.Duration
-	maxRetries  int
 	system      string
 	instruction func(GenInput) string
 	schema      func(kind string) map[string]any
@@ -90,7 +89,7 @@ func NewAnthropic(apiKey string, cfg AnthropicConfig) Generator {
 		log = slog.Default()
 	}
 	return &anthropicGen{
-		client: anthropic.NewClient(opts...), effort: cfg.Effort, timeout: timeout, maxRetries: anthropicMaxRetries,
+		client: anthropic.NewClient(opts...), effort: cfg.Effort, timeout: timeout,
 		system: cfg.System, instruction: cfg.Instruction, schema: cfg.Schema, log: log,
 	}
 }
@@ -138,6 +137,16 @@ func (a *anthropicGen) build(in GenInput) (anthropicRequest, error) {
 		messages: []anthropic.MessageParam{anthropic.NewUserMessage(parts...)},
 		schema:   stripItemBounds(schema),
 	}, nil
+}
+
+// effortFor is the configured effort for models that accept it. Haiku 4.5 rejects
+// output_config.effort with a 400 and an unknown model is not assumed to take it, so for
+// those the field is left out (the structured-output format is still sent).
+func (a *anthropicGen) effortFor(model string) anthropic.OutputConfigEffort {
+	if m, ok := LookupModel(model); ok && m.SupportsEffort {
+		return anthropic.OutputConfigEffort(a.effort)
+	}
+	return ""
 }
 
 // setBreakpoint puts the 5-minute cache breakpoint on block.
@@ -198,7 +207,7 @@ func (a *anthropicGen) Generate(ctx context.Context, in GenInput) (GenOutput, er
 		Messages:  req.messages,
 		OutputConfig: anthropic.OutputConfigParam{
 			Format: anthropic.JSONOutputFormatParam{Schema: req.schema},
-			Effort: anthropic.OutputConfigEffort(a.effort),
+			Effort: a.effortFor(in.Model),
 		},
 	}
 	var httpRes *http.Response
@@ -229,7 +238,7 @@ func (a *anthropicGen) Generate(ctx context.Context, in GenInput) (GenOutput, er
 		// AI-spec 9.4: the category and ids only, never the text or the explanation.
 		a.log.Warn("anthropic: the model refused the request", "category", category, "model", in.Model, "request_id", requestID)
 		return out, fmt.Errorf("anthropic: stop reason refusal (category %s, request %s): %w", category, requestID, ErrRefusal)
-	case anthropic.StopReasonMaxTokens:
+	case anthropic.StopReasonMaxTokens, anthropic.StopReasonModelContextWindowExceeded:
 		return out, fmt.Errorf("anthropic: stop reason max_tokens (request %s): %w", requestID, ErrMaxTokens)
 	}
 	var text strings.Builder
@@ -298,7 +307,11 @@ func (a *anthropicGen) CountTokens(ctx context.Context, in GenInput) (int, error
 }
 
 // mapError turns an SDK error (after the SDK's own retry) into the error contract. It never
-// wraps the SDK error: its text carries the request URL and the provider's response body.
+// wraps an API error: its text carries the request URL and the provider's whole response
+// body. For a client error that maps to no sentinel (a 400, for example) it adds the
+// provider's own error message, which names the offending parameter and never echoes the
+// request content, so a configuration mistake can be diagnosed from the logs. A transport
+// error is wrapped as it is (it can name the request URL, never a key or content).
 func (a *anthropicGen) mapError(ctx context.Context, err error) error {
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		return fmt.Errorf("anthropic: call stopped: %w", ctxErr)
@@ -314,6 +327,10 @@ func (a *anthropicGen) mapError(ctx context.Context, err error) error {
 		case apiErr.StatusCode == http.StatusRequestTimeout:
 			return fmt.Errorf("%s: %w", desc, ErrTimeout)
 		}
+		if msg := providerMessage(apiErr); msg != "" {
+			a.log.Error("anthropic: request rejected", "status", apiErr.StatusCode, "type", apiErr.Type(), "request_id", apiErr.RequestID, "provider_message", msg)
+			desc += ": " + msg
+		}
 		return errors.New(desc)
 	}
 	var ne net.Error
@@ -321,4 +338,25 @@ func (a *anthropicGen) mapError(ctx context.Context, err error) error {
 		return fmt.Errorf("anthropic: no response within %s: %w", a.timeout, ErrTimeout)
 	}
 	return fmt.Errorf("anthropic: transport error: %w", err)
+}
+
+// maxProviderMessage bounds the provider message kept in an error or log line.
+const maxProviderMessage = 300
+
+// providerMessage is error.message of the provider's error envelope on a single line, cut to
+// maxProviderMessage runes, or "" when there is none.
+func providerMessage(e *anthropic.Error) string {
+	var env struct {
+		Error struct {
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if json.Unmarshal([]byte(e.RawJSON()), &env) != nil {
+		return ""
+	}
+	msg := strings.Join(strings.Fields(env.Error.Message), " ")
+	if r := []rune(msg); len(r) > maxProviderMessage {
+		msg = string(r[:maxProviderMessage])
+	}
+	return msg
 }
