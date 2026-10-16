@@ -75,3 +75,32 @@ func TestGetExamOverHTTP(t *testing.T) {
 		}
 	}
 }
+
+// Hidden keys on the exact handler bytes, MCQ and free text, for an assignee and for a creator
+// taking their own exam (both have an unfinished attempt row).
+func TestGetExamHiddenKeysOverHTTPBytes(t *testing.T) {
+	e := newDeclEnv(t, false)
+	freeBody := `{"title":"Essay","type":"free","closesInSeconds":3600,"assigneeEmails":["asha@example.com","tia@example.com"],"questions":[` +
+		`{"marks":2,"text":"Why?","modelAnswer":"ZZ-SECRET-MODEL","sourceDocId":"d","sourceDocName":"B.pdf"}]}`
+	mcqBody := strings.Replace(examBody, `"questions"`, `"assigneeEmails":["asha@example.com","tia@example.com"],"questions"`, 1)
+	for id, body := range map[string]string{"leak-mcq-1": mcqBody, "leak-free-1": freeBody} {
+		if rec := postExam(e.h, body, id, e.teacher, ""); rec.Code != http.StatusCreated {
+			t.Fatalf("%s: %d %s", id, rec.Code, rec.Body)
+		}
+		for who, c := range map[string]*http.Cookie{"assignee": e.student, "creator taking own": e.teacher} {
+			rec := e.do("GET", "/exams/"+id, "", "", c, "")
+			if rec.Code != http.StatusOK {
+				t.Fatalf("%s %s: %d %s", id, who, rec.Code, rec.Body)
+			}
+			low := strings.ToLower(rec.Body.String())
+			for _, bad := range []string{"correctindex", "modelanswer", "zz-secret-model", `"correct`, "explanation"} {
+				if strings.Contains(low, bad) {
+					t.Errorf("%s %s: %q in %s", id, who, bad, rec.Body)
+				}
+			}
+			if !strings.Contains(low, `"keyvisible":false`) {
+				t.Errorf("%s %s: keyVisible: %s", id, who, rec.Body)
+			}
+		}
+	}
+}

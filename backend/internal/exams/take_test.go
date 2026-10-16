@@ -3,6 +3,7 @@ package exams_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"reflect"
 	"strings"
@@ -275,49 +276,83 @@ func TestGetIncludesAcceptingUntilMaxPeeksCreatedBy(t *testing.T) {
 }
 
 // Backend-spec 9.5: reading an exam, as the print view does, starts nothing and charges nothing.
+// The recorders implement every store method by hand (no embedding): reads are listed in an
+// explicit allow-list, every other method counts as a write, and a method added to the interface
+// later fails to compile here until it is classified.
 type getRecAttempts struct {
-	store.AttemptStore
+	in     store.AttemptStore
 	writes atomic.Int32
+	names  []string
 }
 
+func (r *getRecAttempts) w(name string) { r.writes.Add(1); r.names = append(r.names, name) }
 func (r *getRecAttempts) PutAttemptIfAbsent(ctx context.Context, a store.Attempt) (bool, error) {
-	r.writes.Add(1)
-	return r.AttemptStore.PutAttemptIfAbsent(ctx, a)
+	r.w("PutAttemptIfAbsent")
+	return r.in.PutAttemptIfAbsent(ctx, a)
+}
+func (r *getRecAttempts) GetAttempt(ctx context.Context, e, u string) (store.Attempt, error) {
+	return r.in.GetAttempt(ctx, e, u) // read
+}
+func (r *getRecAttempts) ListByUser(ctx context.Context, u string) ([]store.AttemptSummary, error) {
+	return r.in.ListByUser(ctx, u) // read
+}
+func (r *getRecAttempts) ListByExam(ctx context.Context, e string) ([]store.Attempt, error) {
+	return r.in.ListByExam(ctx, e) // read
 }
 func (r *getRecAttempts) Save(ctx context.Context, e, u string, a map[string]string, i int, n time.Time) error {
-	r.writes.Add(1)
-	return r.AttemptStore.Save(ctx, e, u, a, i, n)
+	r.w("Save")
+	return r.in.Save(ctx, e, u, a, i, n)
 }
 func (r *getRecAttempts) Submit(ctx context.Context, a store.Attempt) error {
-	r.writes.Add(1)
-	return r.AttemptStore.Submit(ctx, a)
+	r.w("Submit")
+	return r.in.Submit(ctx, a)
 }
 func (r *getRecAttempts) Decline(ctx context.Context, e, u string) error {
-	r.writes.Add(1)
-	return r.AttemptStore.Decline(ctx, e, u)
+	r.w("Decline")
+	return r.in.Decline(ctx, e, u)
 }
 func (r *getRecAttempts) Reveal(ctx context.Context, e, u, q string, m int, n time.Time) (store.RevealResult, error) {
-	r.writes.Add(1)
-	return r.AttemptStore.Reveal(ctx, e, u, q, m, n)
+	r.w("Reveal")
+	return r.in.Reveal(ctx, e, u, q, m, n)
 }
 
 type getRecExams struct {
-	store.ExamStore
+	in     store.ExamStore
 	writes atomic.Int32
 }
 
 func (r *getRecExams) PutExam(ctx context.Context, x store.Exam) error {
 	r.writes.Add(1)
-	return r.ExamStore.PutExam(ctx, x)
+	return r.in.PutExam(ctx, x)
+}
+func (r *getRecExams) GetExam(ctx context.Context, id string) (store.Exam, error) {
+	return r.in.GetExam(ctx, id) // read
+}
+func (r *getRecExams) GetExams(ctx context.Context, ids []string) (map[string]store.Exam, error) {
+	return r.in.GetExams(ctx, ids) // read
+}
+func (r *getRecExams) ListByCreator(ctx context.Context, c string, n int) ([]store.ExamSummary, error) {
+	return r.in.ListByCreator(ctx, c, n) // read
+}
+
+// noopFin is the carve-out marker: lazy finalize is the one write a GET may make (spec 9.2), and
+// it goes through the Finalizer, not through Get. A no-op finalizer isolates what Get itself writes.
+type noopFin struct{ calls atomic.Int32 }
+
+func (f *noopFin) FinalizeIfExpired(_ context.Context, a store.Attempt, _ store.Exam, _ time.Time) (store.Attempt, error) {
+	f.calls.Add(1)
+	return a, nil
 }
 
 func TestGetDoesNotStartAttemptOrChargePeek(t *testing.T) {
 	e := newEnv(t)
 	e.seedFull(t, "e1", "t1", "mcq")
 	e.seedAttempt(t, "e1", "s1", store.AttemptNotStarted, nil)
-	ra := &getRecAttempts{AttemptStore: e.attempts}
-	rx := &getRecExams{ExamStore: e.exams}
-	svc := exams.NewService(e.users, rx, ra, clock.NewFake(t0))
+	ra := &getRecAttempts{in: e.attempts}
+	rx := &getRecExams{in: e.exams}
+	clk := clock.NewFake(t0)
+	svc := exams.NewService(e.users, rx, ra, clk)
+	svc.SetFinalizer(&noopFin{})
 	ctx := context.Background()
 	for _, u := range []store.User{e.student, e.teacher, e.student} {
 		if _, err := svc.Get(ctx, u, "e1"); err != nil {
@@ -325,7 +360,18 @@ func TestGetDoesNotStartAttemptOrChargePeek(t *testing.T) {
 		}
 	}
 	if ra.writes.Load() != 0 || rx.writes.Load() != 0 {
-		t.Fatalf("writes: attempts %d exams %d", ra.writes.Load(), rx.writes.Load())
+		t.Fatalf("writes: attempts %d %v exams %d", ra.writes.Load(), ra.names, rx.writes.Load())
+	}
+	// after the exam is over, with an in_progress row and a creator row-less read: still no Get writes
+	e.seedAttempt(t, "e1", "p1", store.AttemptInProgress, nil)
+	clk.Set(closes.Add(time.Hour))
+	for _, u := range []store.User{e.student, e.teacher, e.parent} {
+		if _, err := svc.Get(ctx, u, "e1"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if ra.writes.Load() != 0 || rx.writes.Load() != 0 {
+		t.Fatalf("post-over writes: attempts %d %v exams %d", ra.writes.Load(), ra.names, rx.writes.Load())
 	}
 	a, err := e.attempts.GetAttempt(ctx, "e1", "s1")
 	if err != nil || a.Status != store.AttemptNotStarted || a.StartedAt != nil || len(a.Revealed) != 0 {
@@ -372,5 +418,83 @@ func TestCreatorWhoIsAssigneeFollowsOwnAttempt(t *testing.T) {
 	v := e.get(t, e.teacher, "e1")
 	if v.KeyVisible || v.Attempt == nil || v.Exam.Questions[0].CorrectIndex != nil {
 		t.Fatalf("%+v", v)
+	}
+}
+
+func TestGetRunsLazyFinalizeOnOwnExpiredAttempt(t *testing.T) {
+	e := newEnv(t)
+	e.seedFull(t, "e1", "t1", "mcq")
+	e.seedAttempt(t, "e1", "s1", store.AttemptInProgress, nil)
+	f := &fakeFin{}
+	e.svc.SetFinalizer(f)
+	// before acceptingUntil: not called
+	e.clk.Set(closes.Add(time.Minute - time.Nanosecond))
+	if v := e.get(t, e.student, "e1"); atomic.LoadInt32(&f.calls) != 0 || v.Attempt.Status != store.AttemptInProgress {
+		t.Fatalf("early: calls %d %+v", f.calls, v.Attempt)
+	}
+	e.clk.Set(closes.Add(time.Minute))
+	v := e.get(t, e.student, "e1")
+	if atomic.LoadInt32(&f.calls) != 1 || v.Attempt.Status != store.AttemptSubmitted {
+		t.Fatalf("calls %d attempt %+v", f.calls, v.Attempt)
+	}
+	// not_started and submitted rows are not finalized
+	e.seedAttempt(t, "e1", "p1", store.AttemptNotStarted, nil)
+	e.get(t, e.parent, "e1")
+	if atomic.LoadInt32(&f.calls) != 1 {
+		t.Fatalf("not_started finalized: %d", f.calls)
+	}
+	// creator without a row: not called, attempt nil
+	if v := e.get(t, e.teacher, "e1"); v.Attempt != nil || atomic.LoadInt32(&f.calls) != 1 {
+		t.Fatalf("creator: %+v calls %d", v.Attempt, f.calls)
+	}
+}
+
+func TestGetFinalizeErrorIs500AndNilFinalizerIsAsStored(t *testing.T) {
+	e := newEnv(t)
+	e.seedFull(t, "e1", "t1", "mcq")
+	e.seedAttempt(t, "e1", "s1", store.AttemptInProgress, nil)
+	e.clk.Set(closes.Add(time.Hour))
+	if v := e.get(t, e.student, "e1"); v.Attempt.Status != store.AttemptInProgress {
+		t.Fatalf("nil finalizer: %+v", v.Attempt)
+	}
+	e.svc.SetFinalizer(&fakeFin{err: errors.New("boom")})
+	_, err := e.svc.Get(context.Background(), e.student, "e1")
+	wantStatus(t, err, http.StatusInternalServerError)
+}
+
+func TestGetByCreatorWithDeclinedOwnRowIs200KeyVisible(t *testing.T) {
+	e := newEnv(t)
+	e.seedFull(t, "e1", "t1", "mcq")
+	e.seedAttempt(t, "e1", "t1", store.AttemptDeclined, nil)
+	v := e.get(t, e.teacher, "e1")
+	if !v.KeyVisible || v.Attempt == nil || v.Attempt.Status != store.AttemptDeclined || v.Exam.Questions[0].CorrectIndex == nil {
+		t.Fatalf("%+v", v)
+	}
+}
+
+// Visible keys are pinned by JSON key set: an MCQ question never carries modelAnswer, a free-text
+// question never carries correctIndex or options.
+func TestVisibleQuestionKeySets(t *testing.T) {
+	e := newEnv(t)
+	e.seedFull(t, "m1", "t1", "mcq")
+	e.seedFull(t, "f1", "t1", "free")
+	keys := func(id string) []map[string]any {
+		var out struct {
+			Exam struct{ Questions []map[string]any }
+		}
+		if err := json.Unmarshal([]byte(marshal(t, e.get(t, e.teacher, id))), &out); err != nil {
+			t.Fatal(err)
+		}
+		return out.Exam.Questions
+	}
+	for _, q := range keys("m1") {
+		if len(q) != 5 || q["correctIndex"] == nil || q["options"] == nil || q["id"] == nil || q["marks"] == nil || q["text"] == nil {
+			t.Fatalf("mcq keys %v", q)
+		}
+	}
+	for _, q := range keys("f1") {
+		if len(q) != 4 || q["modelAnswer"] == nil || q["id"] == nil || q["marks"] == nil || q["text"] == nil {
+			t.Fatalf("free keys %v", q)
+		}
 	}
 }

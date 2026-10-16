@@ -87,8 +87,8 @@ func revealedKey(q store.Question) RevealedKey {
 // Get returns the exam to take or view (backend-spec 8.5, 9.4, 9.5). It is read-only: it never
 // creates or updates an attempt row and never charges a peek, so printing an exam is free.
 // Visible to the creator and to a caller with a non-declined attempt row; a missing exam, a
-// stranger and a declined user all get the same 404. An unfinished attempt is returned as
-// stored: no lazy finalize runs here, since a GET writes nothing.
+// stranger and a declined user all get the same 404. The caller's own expired in_progress
+// attempt is lazily finalized first, and the finalized row is what the view shows.
 func (s *Service) Get(ctx context.Context, user store.User, examID string) (GetView, error) {
 	exam, err := s.exams.GetExam(ctx, examID)
 	if errors.Is(err, store.ErrNotFound) {
@@ -120,6 +120,16 @@ func (s *Service) Get(ctx context.Context, user store.User, examID string) (GetV
 		by.Name = u.Name // a deleted creator keeps an empty name
 	}
 	now := s.clk.Now()
+	// Lazy finalize (backend-spec 9.2) is the one write a GET may make; it runs through the
+	// Finalizer for the caller's own expired in_progress row only. Get itself never creates a
+	// row and never charges a peek (9.5).
+	if s.fin != nil && att != nil && att.Status == store.AttemptInProgress && IsOver(exam, now) {
+		fin, err := s.fin.FinalizeIfExpired(ctx, *att, exam, now)
+		if err != nil {
+			return GetView{}, apperr.Internal(err)
+		}
+		att = &fin
+	}
 	keyVisible := KeyVisible(exam, att, user.ID, now)
 	revealed := map[string]bool{}
 	if att != nil {
