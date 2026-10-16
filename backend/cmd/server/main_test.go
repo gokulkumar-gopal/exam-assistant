@@ -253,3 +253,16 @@ func TestPickFactory(t *testing.T) {
 		t.Errorf("gemini key and enabled: %v, %v", g, err)
 	}
 }
+
+func TestLocalServerServesCreateExam(t *testing.T) {
+	srv, c := startLocal(t, true)
+	if code, body := do(t, c, "POST", srv.URL+"/auth/signup", "application/json",
+		[]byte(`{"name":"Asha","email":"asha@example.com","password":"correct horse battery","role":"student"}`)); code != 201 {
+		t.Fatalf("signup %d %s", code, body)
+	}
+	exam := []byte(`{"title":"Cells","type":"free","closesInSeconds":3600,"questions":[{"marks":2,"text":"Why?","modelAnswer":"Because"}]}`)
+	code, body := do(t, c, "POST", srv.URL+"/exams", "application/json", exam)
+	if code != 201 || !strings.Contains(string(body), `"unknownEmails":[]`) {
+		t.Fatalf("create exam %d %s", code, body)
+	}
+}

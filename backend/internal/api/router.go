@@ -12,6 +12,7 @@ import (
 	"github.com/gokulkumar/exam-assistant/backend/internal/auth"
 	"github.com/gokulkumar/exam-assistant/backend/internal/clock"
 	"github.com/gokulkumar/exam-assistant/backend/internal/docs"
+	"github.com/gokulkumar/exam-assistant/backend/internal/exams"
 	"github.com/gokulkumar/exam-assistant/backend/internal/gen"
 	"github.com/gokulkumar/exam-assistant/backend/internal/store"
 )
@@ -27,6 +28,7 @@ type Deps struct {
 	Docs           *docs.Service
 	Jobs           store.JobStore
 	Gen            *gen.Service
+	Exams          *exams.Service
 	Runner         gen.JobRunner
 	Models         []gen.Model // enabled models, cheapest first
 	DefaultModelID string      // one of Models
@@ -122,6 +124,9 @@ func (d Deps) Validate() error {
 	if d.Runner == nil {
 		missing = append(missing, "Runner")
 	}
+	if d.Exams == nil {
+		missing = append(missing, "Exams")
+	}
 	if len(d.Models) == 0 {
 		missing = append(missing, "Models")
 	} else if !slices.ContainsFunc(d.Models, func(m gen.Model) bool { return m.ID == d.DefaultModelID }) {
@@ -161,6 +166,9 @@ func NewRouter(deps Deps) http.Handler {
 		}
 		if deps.Gen != nil {
 			registerGenRoutes(rt, deps)
+		}
+		if deps.Exams != nil {
+			registerExamRoutes(rt, deps)
 		}
 	}
 	rt.mux.HandleFunc("/", rt.fallback)

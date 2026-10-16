@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/gokulkumar/exam-assistant/backend/internal/clock"
+	"github.com/gokulkumar/exam-assistant/backend/internal/exams"
 	"github.com/gokulkumar/exam-assistant/backend/internal/gen"
 	"github.com/gokulkumar/exam-assistant/backend/internal/store"
 	"github.com/gokulkumar/exam-assistant/backend/internal/store/memory"
@@ -21,6 +22,7 @@ func withGen(deps Deps, clk clock.Clock, ds store.DocStore, runner gen.JobRunner
 	lim := gen.Limits{MaxSources: 10, MaxTotalBytes: 20971520, MaxPDFPages: 40, MaxRunning: 2,
 		Quota: gen.QuotaLimits{MaxUser: 50, MaxRegen: 10, MaxGlobal: 50, BudgetUSD: 15}}
 	deps.Jobs, deps.Runner = jobs, runner
+	deps.Exams = exams.NewService(deps.Users, memory.NewExamStore(), memory.NewAttemptStore(), clk)
 	deps.Gen = gen.NewService(jobs, ds, runner, clk, deps.Models, deps.DefaultModelID, lim)
 	return deps
 }
@@ -248,6 +250,7 @@ func TestNewHandlerRefusesNilGenDeps(t *testing.T) {
 		"Jobs":   func(d *Deps) { d.Jobs = nil },
 		"Gen":    func(d *Deps) { d.Gen = nil },
 		"Runner": func(d *Deps) { d.Runner = nil },
+		"Exams":  func(d *Deps) { d.Exams = nil },
 	} {
 		d := good()
 		mut(&d)
