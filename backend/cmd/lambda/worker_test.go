@@ -1,8 +1,10 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"strings"
 	"testing"
 	"time"
@@ -107,5 +109,50 @@ func TestBuildWorkerFailsFastOnMissingConfig(t *testing.T) {
 				t.Errorf("err = %v", err)
 			}
 		})
+	}
+}
+
+func TestWorkerStartupFailsMissingProviderKey(t *testing.T) {
+	base := map[string]string{"ENV": "production", "STAGE": "prod", "S3_BUCKET": "b", "MODE": "worker"}
+	for name, tc := range map[string]struct {
+		extra     map[string]string
+		wantInLog []string
+		notInLog  []string
+	}{
+		"anthropic": {map[string]string{"GEMINI_API_KEY": "gem-secret-value"}, []string{"LLM_API_KEY", "anthropic"}, []string{"gem-secret-value"}},
+		"gemini": {map[string]string{"LLM_PROVIDERS": "gemini", "LLM_API_KEY": "ant-secret-value"},
+			[]string{"GEMINI_API_KEY", "gemini"}, []string{"ant-secret-value"}},
+		"blank key": {map[string]string{"LLM_API_KEY": "   "}, []string{"LLM_API_KEY", "anthropic"}, nil},
+	} {
+		t.Run(name, func(t *testing.T) {
+			m := map[string]string{}
+			for k, v := range base {
+				m[k] = v
+			}
+			for k, v := range tc.extra {
+				m[k] = v
+			}
+			var buf bytes.Buffer
+			_, err := loadConfig(func(k string) string { return m[k] }, slog.New(slog.NewJSONHandler(&buf, nil)))
+			if err == nil {
+				t.Fatal("worker started without a provider key")
+			}
+			for _, s := range tc.wantInLog {
+				if !strings.Contains(buf.String(), s) {
+					t.Errorf("log %q lacks %q", buf.String(), s)
+				}
+			}
+			for _, s := range tc.notInLog {
+				if strings.Contains(buf.String(), s) {
+					t.Errorf("log leaks %q: %s", s, buf.String())
+				}
+			}
+		})
+	}
+	// With the key present the load succeeds and logs nothing.
+	var buf bytes.Buffer
+	m := map[string]string{"ENV": "production", "STAGE": "prod", "S3_BUCKET": "b", "MODE": "worker", "LLM_API_KEY": "ant-secret-value"}
+	if _, err := loadConfig(func(k string) string { return m[k] }, slog.New(slog.NewJSONHandler(&buf, nil))); err != nil || buf.Len() != 0 {
+		t.Errorf("err=%v log=%s", err, buf.String())
 	}
 }

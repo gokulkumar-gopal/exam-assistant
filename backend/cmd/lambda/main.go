@@ -20,13 +20,23 @@ type workerEvent struct {
 	JobID string `json:"jobId"`
 }
 
+// loadConfig is the init-time configuration check. On failure it logs one line (the error
+// names the variables and providers involved, never a value) and the caller exits, so a
+// worker without a key for an enabled provider never starts.
+func loadConfig(getenv func(string) string, logger *slog.Logger) (config.Config, error) {
+	cfg, err := config.Load(getenv)
+	if err != nil {
+		logger.Error("startup config invalid", "err", err)
+	}
+	return cfg, err
+}
+
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	slog.SetDefault(logger)
 
-	cfg, err := config.Load(os.Getenv)
+	cfg, err := loadConfig(os.Getenv, logger)
 	if err != nil {
-		logger.Error("config", "err", err)
 		os.Exit(1)
 	}
 
