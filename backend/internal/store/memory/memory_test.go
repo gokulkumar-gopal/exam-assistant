@@ -1,0 +1,65 @@
+package memory_test
+
+import (
+	"context"
+	"testing"
+	"time"
+
+	"github.com/gokulkumar/exam-assistant/backend/internal/clock"
+	"github.com/gokulkumar/exam-assistant/backend/internal/store"
+	"github.com/gokulkumar/exam-assistant/backend/internal/store/memory"
+	"github.com/gokulkumar/exam-assistant/backend/internal/store/storetest"
+)
+
+var (
+	users = func(t *testing.T) store.UserStore { return memory.NewUserStore() }
+	docs  = func(t *testing.T) store.DocStore {
+		return memory.NewDocStore(clock.NewFake(time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)))
+	}
+)
+
+func TestCreateUserEmailUnique(t *testing.T) { storetest.CreateUserEmailUnique(t, users) }
+func TestGoogleUserLocks(t *testing.T)       { storetest.GoogleUserLocks(t, users) }
+func TestLinkGoogleAtomic(t *testing.T)      { storetest.LinkGoogleAtomic(t, users) }
+func TestListReadyNewestFirstExcludesPending(t *testing.T) {
+	storetest.ListReadyNewestFirstExcludesPending(t, docs)
+}
+func TestDocsAreOwnerScoped(t *testing.T) { storetest.DocsAreOwnerScoped(t, docs) }
+
+func TestUserStoreContract(t *testing.T) { storetest.RunUserStoreSuite(t, users) }
+func TestDocStoreContract(t *testing.T)  { storetest.RunDocStoreSuite(t, docs) }
+
+// TTL is memory-specific: DynamoDB expires items asynchronously, so the contract suite
+// cannot assert it against a real table.
+func TestPendingDocExpiresAtTTL(t *testing.T) {
+	start := time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)
+	clk := clock.NewFake(start)
+	s := memory.NewDocStore(clk)
+	ctx := context.Background()
+	ttl := start.Add(24 * time.Hour).Unix()
+	if err := s.PutDoc(ctx, store.Document{ID: "d", OwnerID: "o", Status: store.DocPending, TTL: ttl}); err != nil {
+		t.Fatal(err)
+	}
+	clk.Advance(24*time.Hour - time.Second)
+	if _, err := s.GetDoc(ctx, "o", "d"); err != nil {
+		t.Fatalf("before TTL: %v", err)
+	}
+	clk.Advance(time.Second)
+	if _, err := s.GetDoc(ctx, "o", "d"); err != store.ErrNotFound {
+		t.Fatalf("at TTL: err = %v, want ErrNotFound", err)
+	}
+	if err := s.MarkReady(ctx, "o", "d", 1); err != store.ErrNotFound {
+		t.Fatalf("MarkReady after expiry: %v", err)
+	}
+	// A document marked ready before expiry has no TTL and never expires.
+	if err := s.PutDoc(ctx, store.Document{ID: "e", OwnerID: "o", Status: store.DocPending, TTL: clk.Now().Add(time.Hour).Unix()}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.MarkReady(ctx, "o", "e", 2); err != nil {
+		t.Fatal(err)
+	}
+	clk.Advance(1000 * time.Hour)
+	if _, err := s.GetDoc(ctx, "o", "e"); err != nil {
+		t.Fatalf("ready doc expired: %v", err)
+	}
+}
