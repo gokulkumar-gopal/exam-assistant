@@ -1,6 +1,8 @@
 package api
 
 import (
+	"bytes"
+	"io"
 	"net/http"
 	"time"
 
@@ -127,4 +129,37 @@ func registerExamRoutes(rt *routeTable, deps Deps) {
 			"serverTime": deps.Clock.Now().UTC().Format(time.RFC3339),
 		})
 	})))
+	rt.handle("POST", "/exams/{id}/submit", RequireUser(deps, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var in exams.SubmitInput
+		if err := decodeOptional(w, r, &in, autosaveBodyCap); err != nil {
+			WriteError(w, r, err)
+			return
+		}
+		u, _ := UserFrom(r.Context())
+		res, err := deps.Exams.Submit(r.Context(), u, r.PathValue("id"), &in)
+		if err != nil {
+			WriteError(w, r, err)
+			return
+		}
+		w.Header().Set("Cache-Control", "no-store")
+		WriteJSON(w, http.StatusOK, struct {
+			exams.SubmitResult
+			ServerTime string `json:"serverTime"`
+		}{res, deps.Clock.Now().UTC().Format(time.RFC3339)})
+	})))
+}
+
+// decodeOptional is Decode for a body that may be absent: an empty body leaves v untouched
+// (submit with no answers uses the saved ones); anything else is decoded strictly.
+func decodeOptional(w http.ResponseWriter, r *http.Request, v any, maxBytes int64) error {
+	r.Body = http.MaxBytesReader(w, r.Body, maxBytes)
+	data, err := io.ReadAll(r.Body)
+	if err != nil {
+		return decodeError(err)
+	}
+	if len(bytes.TrimSpace(data)) == 0 {
+		return nil
+	}
+	r.Body = io.NopCloser(bytes.NewReader(data))
+	return Decode(w, r, v, maxBytes)
 }

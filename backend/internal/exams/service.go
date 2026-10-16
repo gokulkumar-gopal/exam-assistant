@@ -19,7 +19,7 @@ type Service struct {
 	clk      clock.Clock
 	log      *slog.Logger
 	maxPend  int
-	fin      Finalizer // lazy finalize hook; nil means none (wired in B-4.4)
+	fin      Finalizer // lazy finalize hook (exams.NewFinalizer in cmd); nil means none
 }
 
 // NewService builds a Service.

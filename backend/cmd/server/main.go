@@ -129,6 +129,9 @@ func buildHandler(cfg config.Config, logger *slog.Logger, baseURL string, fakeLL
 	if err != nil {
 		return nil, err
 	}
+	attemptStore := memory.NewAttemptStore()
+	examSvc := exams.NewService(users, memory.NewExamStore(), attemptStore, clk)
+	examSvc.SetFinalizer(exams.NewFinalizer(attemptStore)) // lazy finalize (backend-spec 9.2)
 	apiHandler := api.NewRouter(api.Deps{
 		Logger:         logger,
 		Clock:          clk,
@@ -137,7 +140,7 @@ func buildHandler(cfg config.Config, logger *slog.Logger, baseURL string, fakeLL
 		Sessions:       auth.NewSessions([]byte(cfg.JWTSecret), cfg.Env),
 		Docs:           docs.NewService(docStore, blob, clk),
 		Jobs:           jobs,
-		Exams:          exams.NewService(users, memory.NewExamStore(), memory.NewAttemptStore(), clk),
+		Exams:          examSvc,
 		Runner:         runner,
 		Gen:            gen.NewService(jobs, docStore, runner, clk, models, defModel.ID, cfg.GenLimits()),
 		Models:         models,

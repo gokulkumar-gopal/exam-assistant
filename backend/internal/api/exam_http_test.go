@@ -283,11 +283,13 @@ func newDeclEnv(t *testing.T, _ bool) *declEnv {
 	users := memory.NewUserStore()
 	clk := clock.NewFake(authT0)
 	at := memory.NewAttemptStore()
+	esvc := exams.NewService(users, memory.NewExamStore(), at, clk)
+	esvc.SetFinalizer(exams.NewFinalizer(at))
 	h := NewRouter(Deps{
 		Logger: silentLogger(), Clock: clk, Users: users,
 		Auth:           auth.NewService(users, auth.NewBcryptHasher(bcrypt.MinCost), clk),
 		Sessions:       auth.NewSessions([]byte(authSecret), "local"),
-		Exams:          exams.NewService(users, memory.NewExamStore(), at, clk),
+		Exams:          esvc,
 		AllowedOrigins: []string{"http://localhost:3000"},
 	})
 	signup := func(name, email, role string) *http.Cookie {

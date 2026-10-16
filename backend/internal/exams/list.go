@@ -46,7 +46,7 @@ const AttemptMissed = "missed"
 // that is in_progress at or after acceptingUntil; it returns the attempt as it is after
 // finalizing (submitted, graded, AutoSubmitted) and must be idempotent and safe under
 // concurrent calls. A nil Finalizer on the Service means no finalizing: such an attempt is
-// listed as closed and derived "missed". B-4.4 supplies the real implementation.
+// listed as closed and derived "missed". NewFinalizer is the real implementation.
 type Finalizer interface {
 	FinalizeIfExpired(ctx context.Context, a store.Attempt, e store.Exam, now time.Time) (store.Attempt, error)
 }
