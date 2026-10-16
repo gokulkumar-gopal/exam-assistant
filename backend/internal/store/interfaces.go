@@ -77,7 +77,10 @@ type DocStore interface {
 	PutDoc(ctx context.Context, d Document) error
 	// GetDoc returns ErrNotFound for a missing, expired or foreign document.
 	GetDoc(ctx context.Context, ownerID, id string) (Document, error)
-	// ListReady returns the owner's ready documents, newest first, at most limit
+	// ListReady returns the owner's ready documents, newest first, at most limit.
+	// Order is id descending (ids are time-ordered ULIDs, so this is creation order and
+	// matches a sort-key Query with ScanIndexForward=false); documents with equal
+	// CreatedAt are ordered by id descending too.
 	// (limit <= 0 or > MaxListReady means MaxListReady).
 	ListReady(ctx context.Context, ownerID string, limit int) ([]Document, error)
 	// GetDocs returns the owner's documents among ids (any status), in request order;

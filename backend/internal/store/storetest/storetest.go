@@ -53,6 +53,7 @@ func RunUserStoreSuite(t *testing.T, f UserFactory) {
 // RunDocStoreSuite runs every DocStore contract test.
 func RunDocStoreSuite(t *testing.T, f DocFactory) {
 	t.Run("ListReadyNewestFirstExcludesPending", func(t *testing.T) { ListReadyNewestFirstExcludesPending(t, f) })
+	t.Run("ListReadyTiesByIDDescending", func(t *testing.T) { ListReadyTiesByIDDescending(t, f) })
 	t.Run("ListReadyLimitAndCap", func(t *testing.T) { ListReadyLimitAndCap(t, f) })
 	t.Run("DocsAreOwnerScoped", func(t *testing.T) { DocsAreOwnerScoped(t, f) })
 	t.Run("MarkReady", func(t *testing.T) { MarkReady(t, f) })
@@ -64,6 +65,15 @@ func CreateUserEmailUnique(t *testing.T, f UserFactory) {
 	noErr(t, s.CreateUser(ctx, user("u1", "a@x.com")))
 	is(t, s.CreateUser(ctx, user("u2", "a@x.com")), store.ErrConflict)
 	is(t, s.CreateUser(ctx, user("u1", "b@x.com")), store.ErrConflict)
+	if err := s.CreateUser(ctx, user("", "c@x.com")); err == nil || errors.Is(err, store.ErrConflict) {
+		t.Fatalf("empty id: err = %v, want a validation error", err)
+	}
+	if err := s.CreateUser(ctx, user("u3", "")); err == nil || errors.Is(err, store.ErrConflict) {
+		t.Fatalf("empty email: err = %v, want a validation error", err)
+	}
+	if _, err := s.GetByEmail(ctx, "c@x.com"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("rejected user left an email lock: %v", err)
+	}
 	if _, err := s.GetByID(ctx, "u2"); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("losing user must not exist, got %v", err)
 	}
@@ -83,13 +93,16 @@ func ConcurrentCreateSameEmail(t *testing.T, f UserFactory) {
 	const n = 40
 	var wg sync.WaitGroup
 	errs := make([]error, n)
+	start := make(chan struct{})
 	for i := 0; i < n; i++ {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
+			<-start
 			errs[i] = s.CreateUser(ctx, user(fmt.Sprintf("u%d", i), "race@x.com"))
 		}(i)
 	}
+	close(start)
 	wg.Wait()
 	wins := 0
 	for _, err := range errs {
@@ -161,6 +174,13 @@ func LinkGoogleAtomic(t *testing.T, f UserFactory) {
 func LinkGoogleErrors(t *testing.T, f UserFactory) {
 	s := f(t)
 	is(t, s.LinkGoogle(ctx, "missing", "sub-1", 1), store.ErrNotFound)
+	noErr(t, s.CreateUser(ctx, user("u0", "z@x.com")))
+	if err := s.LinkGoogle(ctx, "u0", "", 1); err == nil || errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("empty sub: err = %v, want a validation error", err)
+	}
+	if u0, _ := s.GetByID(ctx, "u0"); u0.PasswordHash != "hash" || u0.SessionsValidAfter != 0 {
+		t.Fatalf("empty-sub link modified user: %+v", u0)
+	}
 	noErr(t, s.CreateUser(ctx, user("u1", "a@x.com")))
 	noErr(t, s.CreateUser(ctx, user("u2", "b@x.com")))
 	noErr(t, s.LinkGoogle(ctx, "u1", "sub-1", 1))
@@ -193,6 +213,10 @@ func GetMany(t *testing.T, f UserFactory) {
 	}
 }
 
+// farFutureTTL (year 2100) keeps pending documents alive on a real table, where TTL
+// deletion is driven by the wall clock rather than a fake one.
+const farFutureTTL int64 = 4102444800
+
 var base = time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)
 
 func doc(owner, id, status string, age time.Duration) store.Document {
@@ -201,13 +225,16 @@ func doc(owner, id, status string, age time.Duration) store.Document {
 		CreatedAt: base.Add(-age)}
 }
 
+// ListReady order is newest first, i.e. id descending: ids are time-ordered ULIDs, so
+// this matches a sort-key Query with ScanIndexForward=false. The ids below therefore
+// increase with CreatedAt.
 func ListReadyNewestFirstExcludesPending(t *testing.T, f DocFactory) {
 	s := f(t)
-	noErr(t, s.PutDoc(ctx, doc("o1", "old", store.DocReady, 3*time.Hour)))
-	noErr(t, s.PutDoc(ctx, doc("o1", "new", store.DocReady, time.Hour)))
-	noErr(t, s.PutDoc(ctx, doc("o1", "mid", store.DocReady, 2*time.Hour)))
-	p := doc("o1", "pend", store.DocPending, 0)
-	p.TTL = base.Add(24 * time.Hour).Unix()
+	noErr(t, s.PutDoc(ctx, doc("o1", "d1-old", store.DocReady, 3*time.Hour)))
+	noErr(t, s.PutDoc(ctx, doc("o1", "d3-new", store.DocReady, time.Hour)))
+	noErr(t, s.PutDoc(ctx, doc("o1", "d2-mid", store.DocReady, 2*time.Hour)))
+	p := doc("o1", "d4-pend", store.DocPending, 0)
+	p.TTL = farFutureTTL
 	noErr(t, s.PutDoc(ctx, p))
 	noErr(t, s.PutDoc(ctx, doc("o2", "theirs", store.DocReady, 0)))
 
@@ -217,8 +244,8 @@ func ListReadyNewestFirstExcludesPending(t *testing.T, f DocFactory) {
 	for _, d := range got {
 		ids = append(ids, d.ID)
 	}
-	if fmt.Sprint(ids) != "[new mid old]" {
-		t.Fatalf("ids = %v, want [new mid old]", ids)
+	if fmt.Sprint(ids) != "[d3-new d2-mid d1-old]" {
+		t.Fatalf("ids = %v, want [d3-new d2-mid d1-old]", ids)
 	}
 	none, err := s.ListReady(ctx, "nobody", 10)
 	noErr(t, err)
@@ -227,14 +254,34 @@ func ListReadyNewestFirstExcludesPending(t *testing.T, f DocFactory) {
 	}
 }
 
+// ListReadyTiesByIDDescending covers documents created at the same instant.
+func ListReadyTiesByIDDescending(t *testing.T, f DocFactory) {
+	s := f(t)
+	for _, id := range []string{"t2", "t1", "t3"} {
+		noErr(t, s.PutDoc(ctx, doc("o1", id, store.DocReady, time.Hour)))
+	}
+	got, err := s.ListReady(ctx, "o1", 0)
+	noErr(t, err)
+	var ids []string
+	for _, d := range got {
+		ids = append(ids, d.ID)
+	}
+	if fmt.Sprint(ids) != "[t3 t2 t1]" {
+		t.Fatalf("ids = %v, want [t3 t2 t1]", ids)
+	}
+}
+
 func ListReadyLimitAndCap(t *testing.T, f DocFactory) {
 	s := f(t)
-	for i := 0; i < store.MaxListReady+5; i++ {
-		noErr(t, s.PutDoc(ctx, doc("o1", fmt.Sprintf("d%04d", i), store.DocReady, time.Duration(i)*time.Second)))
+	total := store.MaxListReady + 5
+	for i := 0; i < total; i++ {
+		// Higher i is newer (smaller age) and has the larger id.
+		age := time.Duration(total-i) * time.Second
+		noErr(t, s.PutDoc(ctx, doc("o1", fmt.Sprintf("d%04d", i), store.DocReady, age)))
 	}
 	two, err := s.ListReady(ctx, "o1", 2)
 	noErr(t, err)
-	if len(two) != 2 || two[0].ID != "d0000" || two[1].ID != "d0001" {
+	if len(two) != 2 || two[0].ID != fmt.Sprintf("d%04d", total-1) || two[1].ID != fmt.Sprintf("d%04d", total-2) {
 		t.Fatalf("limit 2 = %+v", two)
 	}
 	all, err := s.ListReady(ctx, "o1", 100000)
@@ -269,7 +316,7 @@ func DocsAreOwnerScoped(t *testing.T, f DocFactory) {
 func MarkReady(t *testing.T, f DocFactory) {
 	s := f(t)
 	p := doc("o1", "d1", store.DocPending, 0)
-	p.TTL = base.Add(24 * time.Hour).Unix()
+	p.TTL = farFutureTTL
 	noErr(t, s.PutDoc(ctx, p))
 	noErr(t, s.MarkReady(ctx, "o1", "d1", 7))
 	got, err := s.GetDoc(ctx, "o1", "d1")

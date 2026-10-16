@@ -71,6 +71,8 @@ func (s *DocStore) ListReady(_ context.Context, ownerID string, limit int) ([]st
 			out = append(out, d)
 		}
 	}
+	// Newest first; for time-ordered ULIDs this equals id descending, and equal
+	// CreatedAt ties break by id descending, as the store contract states.
 	sort.Slice(out, func(i, j int) bool {
 		if !out[i].CreatedAt.Equal(out[j].CreatedAt) {
 			return out[i].CreatedAt.After(out[j].CreatedAt)
