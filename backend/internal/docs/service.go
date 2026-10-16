@@ -76,11 +76,10 @@ func (s *Service) UploadURL(ctx context.Context, user store.User, in UploadInput
 		return UploadOut{}, apperr.Internal(err)
 	}
 	docID := id.String()
-	name := SanitizeName(in.Name)
-	key := "users/" + user.ID + "/" + docID + "/" + name
+	key := "users/" + user.ID + "/" + docID + "/" + SanitizeName(in.Name)
 
 	if err := s.docs.PutDoc(ctx, store.Document{
-		ID: docID, OwnerID: user.ID, Name: name, Type: typ, ContentType: in.Type,
+		ID: docID, OwnerID: user.ID, Name: DisplayName(in.Name), Type: typ, ContentType: in.Type,
 		SizeBytes: in.SizeBytes, S3Key: key, Status: store.DocPending,
 		CreatedAt: now, TTL: now.Add(PendingTTL).Unix(),
 	}); err != nil {

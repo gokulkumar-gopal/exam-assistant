@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/oklog/ulid/v2"
 
@@ -17,9 +18,26 @@ import (
 
 var t0 = time.Date(2026, 10, 16, 12, 0, 0, 0, time.UTC)
 
+// trackingDocs wraps the store and tracks which rows exist, so tests can see leaked pending rows.
+type trackingDocs struct {
+	store.DocStore
+	live map[string]bool
+}
+
+func (t *trackingDocs) PutDoc(ctx context.Context, d store.Document) error {
+	t.live[d.OwnerID+"/"+d.ID] = true
+	return t.DocStore.PutDoc(ctx, d)
+}
+
+func (t *trackingDocs) DeleteDoc(ctx context.Context, owner, id string) error {
+	delete(t.live, owner+"/"+id)
+	return t.DocStore.DeleteDoc(ctx, owner, id)
+}
+
 type env struct {
 	svc   *Service
 	docs  *memory.DocStore
+	track *trackingDocs
 	blob  *MemBlob
 	clk   *clock.Fake
 	owner store.User
@@ -29,7 +47,8 @@ func newEnv() *env {
 	clk := clock.NewFake(t0)
 	docs := memory.NewDocStore(clk)
 	blob := NewMemBlob()
-	return &env{svc: NewService(docs, blob, clk), docs: docs, blob: blob, clk: clk, owner: store.User{ID: "user-1"}}
+	tr := &trackingDocs{DocStore: docs, live: map[string]bool{}}
+	return &env{svc: NewService(tr, blob, clk), track: tr, docs: docs, blob: blob, clk: clk, owner: store.User{ID: "user-1"}}
 }
 
 func (e *env) upload(t *testing.T, in UploadInput) UploadOut {
@@ -119,8 +138,8 @@ func TestUploadURLRejectsMime(t *testing.T) {
 		e := newEnv()
 		_, err := e.svc.UploadURL(context.Background(), e.owner, UploadInput{Name: "f", Type: mime, SizeBytes: 10})
 		assertValidation(t, err, "type")
-		if len(e.blob.Puts) != 0 {
-			t.Errorf("%q: presigned despite rejection", mime)
+		if len(e.blob.Puts) != 0 || len(e.track.live) != 0 {
+			t.Errorf("%q: presigned or row left despite rejection", mime)
 		}
 	}
 }
@@ -130,13 +149,16 @@ func TestUploadURLSize(t *testing.T) {
 		e := newEnv()
 		_, err := e.svc.UploadURL(context.Background(), e.owner, UploadInput{Name: "f", Type: "text/plain", SizeBytes: n})
 		assertValidation(t, err, "sizeBytes")
-		if _, err := e.docs.ListReady(context.Background(), "user-1", 0); err != nil || len(e.blob.Puts) != 0 {
-			t.Errorf("size %d: side effects after rejection", n)
+		if len(e.track.live) != 0 || len(e.blob.Puts) != 0 {
+			t.Errorf("size %d: rows=%d puts=%d after rejection", n, len(e.track.live), len(e.blob.Puts))
 		}
 	}
 	for _, n := range []int64{1, 20971520} {
 		e := newEnv()
 		e.upload(t, UploadInput{Name: "f", Type: "text/plain", SizeBytes: n})
+		if len(e.track.live) != 1 {
+			t.Errorf("size %d: rows = %d, want 1", n, len(e.track.live))
+		}
 	}
 }
 
@@ -203,5 +225,25 @@ func TestMemBlobHead(t *testing.T) {
 	}
 	if _, err := b.Get(context.Background(), "k", 3); err == nil {
 		t.Error("Get over max should fail")
+	}
+}
+
+func TestUploadURLKeepsDisplayName(t *testing.T) {
+	long := strings.Repeat("é", 200)
+	for _, c := range []struct{ in, want, keyEnd string }{
+		{"rés umé.pdf", "rés umé.pdf", "/r_s um_.pdf"},
+		{"  a\x00b\nc.pdf\t", "abc.pdf", "/a_b_c.pdf_"},
+		{" \t\n ", "file", "/__"},
+		{long, strings.Repeat("é", 120), "/" + strings.Repeat("_", 120)},
+	} {
+		e := newEnv()
+		out := e.upload(t, UploadInput{Name: c.in, Type: "text/plain", SizeBytes: 1})
+		d, _ := e.docs.GetDoc(context.Background(), "user-1", out.DocID)
+		if d.Name != c.want || !utf8.ValidString(d.Name) {
+			t.Errorf("Name(%q) = %q, want %q", c.in, d.Name, c.want)
+		}
+		if !strings.HasSuffix(d.S3Key, c.keyEnd) {
+			t.Errorf("S3Key(%q) = %q, want suffix %q", c.in, d.S3Key, c.keyEnd)
+		}
 	}
 }

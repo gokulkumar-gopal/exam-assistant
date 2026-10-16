@@ -1,6 +1,9 @@
 package docs
 
-import "strings"
+import (
+	"strings"
+	"unicode"
+)
 
 const maxNameLen = 120
 
@@ -39,4 +42,23 @@ func SanitizeName(name string) string {
 func allowedNameRune(r rune) bool {
 	return r == '.' || r == '-' || r == '_' || r == ' ' ||
 		r >= '0' && r <= '9' || r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z'
+}
+
+// DisplayName is the name shown to users: trimmed, control characters removed, capped at
+// 120 runes, "file" if nothing is left. Unlike SanitizeName it keeps Unicode; it is never
+// used in an S3 key.
+func DisplayName(name string) string {
+	s := strings.TrimSpace(strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return -1
+		}
+		return r
+	}, name))
+	if r := []rune(s); len(r) > maxNameLen {
+		s = strings.TrimSpace(string(r[:maxNameLen]))
+	}
+	if s == "" {
+		return "file"
+	}
+	return s
 }
