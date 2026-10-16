@@ -46,6 +46,69 @@ Resources:
     Type: AWS::Logs::LogGroup
     Properties: { LogGroupName: !Sub "/aws/lambda/exam-assistant-${Stage}-api", RetentionInDays: 14 }
 
+  UsersTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "${Stage}-users"
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions: [{ AttributeName: id, AttributeType: S }]
+      KeySchema: [{ AttributeName: id, KeyType: HASH }]
+
+  DocumentsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "${Stage}-documents"
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions: [{ AttributeName: ownerId, AttributeType: S }, { AttributeName: id, AttributeType: S }]
+      KeySchema: [{ AttributeName: ownerId, KeyType: HASH }, { AttributeName: id, KeyType: RANGE }]
+      TimeToLiveSpecification: { AttributeName: ttl, Enabled: true }
+
+  ExamsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "${Stage}-exams"
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions: [{ AttributeName: id, AttributeType: S }, { AttributeName: creatorId, AttributeType: S }]
+      KeySchema: [{ AttributeName: id, KeyType: HASH }]
+      GlobalSecondaryIndexes:
+        - IndexName: creator-index
+          KeySchema: [{ AttributeName: creatorId, KeyType: HASH }, { AttributeName: id, KeyType: RANGE }]
+          Projection: { ProjectionType: INCLUDE, NonKeyAttributes: [title, type, totalMarks, closesAt, createdAt] }   # never the questions
+
+  AttemptsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "${Stage}-attempts"
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - { AttributeName: examId, AttributeType: S }
+        - { AttributeName: userId, AttributeType: S }
+      KeySchema: [{ AttributeName: examId, KeyType: HASH }, { AttributeName: userId, KeyType: RANGE }]
+      GlobalSecondaryIndexes:
+        - IndexName: user-index
+          KeySchema: [{ AttributeName: userId, KeyType: HASH }, { AttributeName: examId, KeyType: RANGE }]
+          Projection: { ProjectionType: INCLUDE, NonKeyAttributes: [status, scoreHalves, scoreBeforePeeksHalves] }   # never the answers
+
+  JobsTable:                           # also holds quota items (quota#...), usage counters (usage#...) and question items (<jobId>#questions)
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "${Stage}-jobs"
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - { AttributeName: id, AttributeType: S }
+        - { AttributeName: ownerId, AttributeType: S }
+        - { AttributeName: day, AttributeType: S }         # yyyymmdd (UTC), set on job items only
+        - { AttributeName: createdAt, AttributeType: S }   # ISO 8601 UTC string, sorts by time
+      KeySchema: [{ AttributeName: id, KeyType: HASH }]
+      TimeToLiveSpecification: { AttributeName: ttl, Enabled: true }
+      GlobalSecondaryIndexes:
+        - IndexName: owner-index
+          KeySchema: [{ AttributeName: ownerId, KeyType: HASH }, { AttributeName: id, KeyType: RANGE }]
+          Projection: { ProjectionType: INCLUDE, NonKeyAttributes: [status, createdAt, updatedAt, kind] }
+        - IndexName: day-index                              # the AI usage page lists today's jobs without a Scan
+          KeySchema: [{ AttributeName: day, KeyType: HASH }, { AttributeName: createdAt, KeyType: RANGE }]
+          Projection: { ProjectionType: INCLUDE, NonKeyAttributes: [status, model, kind, costMicros, calls, inTok, outTok, cacheReadTok, cacheWriteTok] }
+
 Outputs:
   FunctionUrl:
     Description: Function URL. The value keeps a trailing slash; consumers ($DEV_URL, Vercel API_URL) must strip it.
