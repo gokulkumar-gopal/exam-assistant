@@ -16,6 +16,8 @@ interface MockExam {
   roster?: RosterRow[];
   /** Mock only: closesAt is re-set to 20 s ago on each list call so the "Closing…" row stays visible. */
   closingDemo?: boolean;
+  /** Mock only: reachable by URL (take-screen fixtures) but never listed on Home. */
+  unlisted?: boolean;
 }
 interface RosterRow { userId: string; name: string; email: string; status: "not_started" | "in_progress" | "submitted" | "declined"; score?: number; submittedAt?: string }
 interface MockJob { polls: number; marks?: Marks; type: ExamType; counts: Record<string, number>; model: string; trigger: string | null }
@@ -73,7 +75,41 @@ function seedExams() {
       attempt: null, assigned: [] },
   ];
 }
+
+/**
+ * Take-screen fixtures (unlisted; open by URL).
+ *   /exams/e11/take  12 questions, mixed MCQ and free text (the real backend keeps one type per exam; the UI
+ *                    decides per question by `options`), resume state (answers + last index 4), a question
+ *                    whose text and options are `<b>x</b>` markup, and a deadline tomorrow 6:00 PM local.
+ *   /exams/e12/take  30 MCQ questions, never started (dots wrap at 375 px).
+ * Other cases reuse seeded exams: e6 is closed and never started (redirect to result), e5 is inside the
+ * 60 s grace window, any unknown id is a 404.
+ */
+function seedTakeFixtures() {
+  const tomorrow = new Date();
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  tomorrow.setHours(18, 0, 0, 0);
+  const mixed: Question[] = Array.from({ length: 12 }, (_, i) => {
+    const free = i % 2 === 1;
+    const q: Question = { id: `t${i + 1}`, marks: ([1, 2, 3, 1, 2, 3] as Marks[])[i % 6], text: `Fixture question ${i + 1}: ${free ? "explain in your own words." : "pick the best answer."}` };
+    if (free) q.modelAnswer = `Model answer ${i + 1}`;
+    else { q.options = [`Answer ${i + 1}A`, `Answer ${i + 1}B`, `Answer ${i + 1}C`, `Answer ${i + 1}D`]; q.correctIndex = 1; }
+    return q;
+  });
+  // Markup must render literally (text nodes only).
+  mixed[2] = { id: "t3", marks: 3, text: "<b>x</b>", options: ["<b>x</b>", "<i>y</i>", "&amp; <script>alert(1)</script>", "plain"], correctIndex: 0 };
+  state.exams.push(
+    { id: "e11", title: "Take demo: mixed questions", type: "mcq", closesAt: iso(tomorrow.getTime()), maxPeeks: 0,
+      createdBy: rao, questions: mixed, mine: false, unlisted: true,
+      attempt: { status: "in_progress", answers: { t1: "Answer 1B", t2: "The light reaction makes ATP.", t4: "Because it is.", t5: "Answer 5D" }, lastQuestionIndex: 4, savedAt: iso(Date.now() - 600_000) },
+      assigned: [] },
+    { id: "e12", title: "Take demo: 30 questions", type: "mcq", closesAt: iso(Date.now() + 2 * 24 * HOUR), maxPeeks: 0,
+      createdBy: rao, questions: Array.from({ length: 30 }, (_, i) => ({ ...makeQuestion(1200 + i, ((i % 5) + 1) as Marks, "mcq"), id: `m${i + 1}` })), mine: false, unlisted: true,
+      attempt: { status: "not_started", answers: {}, lastQuestionIndex: 0 }, assigned: [] },
+  );
+}
 seedExams();
+seedTakeFixtures();
 
 const json = (status: number, body: unknown, headers: Record<string, string> = {}) =>
   new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json", ...headers } });
@@ -375,6 +411,7 @@ export function mockFetch(method: string, rawPath: string, body: unknown, idempo
       // ?mockHome=declLast (Biology sorts last in Open) | declOnly (it is the only Open row): focus checks.
       if (trigger === "declLast") for (const e of state.exams) if (e.id === "e1") e.closesAt = iso(Date.now() + 30 * 24 * HOUR);
       const list = state.exams.filter((e) => {
+        if (e.unlisted) return false;
         if (trigger === "declOnly" && scope === "open") return e.id === "e1" && e.attempt?.status === "not_started";
         if (scope === "created") return e.mine;
         if (!e.attempt || e.attempt.status === "declined") return false;
@@ -394,13 +431,14 @@ export function mockFetch(method: string, rawPath: string, body: unknown, idempo
     if (!exam) return err(404, "not_found", "That item isn't available.");
     const sub = seg[2];
     if (method === "GET" && !sub) {
+      if (exam.closingDemo) exam.closesAt = iso(Date.now() - 20_000); // stay inside the grace window
       const vis = keyVisible(exam);
       return json(200, {
         serverTime: st(),
         exam: { id: exam.id, title: exam.title, type: exam.type, totalMarks: totalMarks(exam), closesAt: exam.closesAt,
           acceptingUntil: acceptingUntil(exam), maxPeeks: exam.maxPeeks, createdBy: exam.createdBy,
           questions: keyedQuestions(exam, vis).map((q) => { const c = { ...q }; delete c.sourceDocId; delete c.sourceDocName; return c; }) },
-        attempt: exam.attempt, keyVisible: vis,
+        attempt: exam.attempt, keyVisible: vis, acceptingUntil: acceptingUntil(exam),
       });
     }
     if (method === "PUT" && sub === "attempt") {

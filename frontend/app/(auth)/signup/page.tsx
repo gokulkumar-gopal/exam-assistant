@@ -1,5 +1,5 @@
 "use client";
-import { useRef, useState } from "react";
+import { Suspense, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { api, ApiError } from "@/lib/api";
@@ -15,7 +15,16 @@ import { Input } from "@/components/ui/input";
 
 const ORDER = ["name", "email", "password"] as const;
 
+// useSearchParams needs its own Suspense boundary (the layout no longer provides one).
 export default function SignupPage() {
+  return (
+    <Suspense fallback={null}>
+      <SignupForm />
+    </Suspense>
+  );
+}
+
+function SignupForm() {
   const router = useRouter();
   const next = useSearchParams().get("next");
   const { refresh } = useMe();

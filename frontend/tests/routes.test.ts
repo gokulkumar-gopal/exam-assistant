@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isActiveLink, isExamTakePath, isPublicPath, loginUrl } from "../lib/routes";
+import { isActiveLink, isExamTakePath, isPublicPath, loginUrl, returnPath } from "../lib/routes";
 
 describe("routes", () => {
   it("public paths", () => {
@@ -22,5 +22,11 @@ describe("routes", () => {
     expect(isActiveLink("/", "/documents")).toBe(false);
     expect(isActiveLink("/documents", "/documents/d1")).toBe(true);
     expect(isActiveLink("/create", "/documents")).toBe(false);
+  });
+  it("returnPath joins pathname and query", () => {
+    expect(returnPath("/create", "")).toBe("/create");
+    expect(returnPath("/create", "?a=1&b=2")).toBe("/create?a=1&b=2");
+    expect(returnPath("/create", "a=1")).toBe("/create?a=1");
+    expect(returnPath("/create", "?")).toBe("/create");
   });
 });
