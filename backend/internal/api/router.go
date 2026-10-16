@@ -28,6 +28,7 @@ type Deps struct {
 	Docs           *docs.Service
 	Jobs           store.JobStore
 	Gen            *gen.Service
+	Usage          *gen.UsageService
 	Exams          *exams.Service
 	Runner         gen.JobRunner
 	Models         []gen.Model // enabled models, cheapest first
@@ -120,6 +121,9 @@ func (d Deps) Validate() error {
 	}
 	if d.Gen == nil {
 		missing = append(missing, "Gen")
+	}
+	if d.Usage == nil {
+		missing = append(missing, "Usage")
 	}
 	if d.Runner == nil {
 		missing = append(missing, "Runner")

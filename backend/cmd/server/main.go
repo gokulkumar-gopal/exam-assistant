@@ -148,6 +148,7 @@ func buildHandler(cfg config.Config, logger *slog.Logger, baseURL string, fakeLL
 		Jobs:           jobs,
 		Exams:          examSvc,
 		Runner:         runner,
+		Usage:          &gen.UsageService{Usage: jobs, Jobs: jobs, BudgetUSD: cfg.LLMMonthlyBudgetUSD},
 		Gen:            gen.NewService(jobs, docStore, runner, clk, models, defModel.ID, cfg.GenLimits()),
 		Models:         models,
 		DefaultModelID: defModel.ID,

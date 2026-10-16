@@ -23,6 +23,7 @@ func withGen(deps Deps, clk clock.Clock, ds store.DocStore, runner gen.JobRunner
 		Quota: gen.QuotaLimits{MaxUser: 50, MaxRegen: 10, MaxGlobal: 50, BudgetUSD: 15}}
 	deps.Jobs, deps.Runner = jobs, runner
 	deps.Exams = exams.NewService(deps.Users, memory.NewExamStore(), memory.NewAttemptStore(), clk)
+	deps.Usage = &gen.UsageService{Usage: jobs, Jobs: jobs, BudgetUSD: 15}
 	deps.Gen = gen.NewService(jobs, ds, runner, clk, deps.Models, deps.DefaultModelID, lim)
 	return deps
 }
