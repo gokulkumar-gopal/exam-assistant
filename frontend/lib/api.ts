@@ -15,7 +15,7 @@ export class ApiError extends Error {
 }
 
 export type Method = "GET" | "POST" | "PUT" | "DELETE";
-export interface ApiOpts { idempotencyKey?: string }
+export interface ApiOpts { idempotencyKey?: string; noRetry?: boolean }
 
 export interface ApiDeps {
   fetch?: typeof fetch;
@@ -55,7 +55,11 @@ export function createApi(deps: ApiDeps = {}) {
     let res: Response;
     if (useMock) {
       const { mockFetch } = await import("./mock");
-      res = mockFetch(method, path, body);
+      try {
+        res = mockFetch(method, path, body);
+      } catch {
+        throw new ApiError(0, "network", "Couldn't reach the server. Try again.");
+      }
     } else {
       const headers: Record<string, string> = {};
       if (body !== undefined) headers["Content-Type"] = "application/json";
@@ -104,7 +108,7 @@ export function createApi(deps: ApiDeps = {}) {
       } catch (err) {
         const retryable = err instanceof ApiError && (err.status === 0 || RETRYABLE.has(err.status));
         // Reads retry 1/2/4 s; writes never retry here (callers keep form state).
-        if (!isRead || !retryable || i >= RETRY_DELAYS.length) throw err;
+        if (!isRead || opts?.noRetry || !retryable || i >= RETRY_DELAYS.length) throw err;
         await sleep(RETRY_DELAYS[i]);
       }
     }

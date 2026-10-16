@@ -1,7 +1,9 @@
 "use client";
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useSearchParams } from "next/navigation";
+import { usePathname, useSearchParams } from "next/navigation";
 import { api } from "@/lib/api";
+import { generateErrorNotice, GAVE_UP_MESSAGE, pollJob, startGeneration } from "@/lib/generate";
+import { setGenerated, type GeneratedResult } from "@/lib/generated";
 import { useMe } from "@/lib/session";
 import type { AiModel, Doc, DocsResponse, ExamType, Marks, ModelsResponse, Role } from "@/lib/types";
 import {
@@ -9,6 +11,9 @@ import {
 } from "@/lib/totals";
 import { defaultModelId } from "@/lib/models";
 import { ModelSelect } from "@/components/ModelSelect";
+import { GenerationCard } from "@/components/GenerationCard";
+import { GeneratedList } from "@/components/GeneratedList";
+import { Notice } from "@/components/Notice";
 import { SourcesCard } from "@/components/SourcesCard";
 import { CreateFooter } from "@/components/CreateFooter";
 import { Stepper } from "@/components/Stepper";
@@ -71,17 +76,24 @@ function CreateInner() {
   const [models, setModels] = useState<AiModel[]>([]);
   const [modelId, setModelId] = useState<string | undefined>(undefined);
 
-  useEffect(() => {
-    let live = true;
-    api<ModelsResponse>("GET", "/ai/models")
-      .then((r) => {
-        if (!live || !Array.isArray(r.models) || r.models.length === 0) return;
-        setModels(r.models);
-        setModelId(defaultModelId(r.models) ?? r.models[0].id);
-      })
-      .catch(() => {});
-    return () => { live = false; };
+  const applyModels = useCallback((r: ModelsResponse | null) => {
+    if (!r || !Array.isArray(r.models) || r.models.length === 0) {
+      setModels([]);
+      setModelId(undefined);
+      return;
+    }
+    setModels(r.models);
+    setModelId(defaultModelId(r.models) ?? r.models[0].id);
   }, []);
+
+  const alive = useRef(true);
+  useEffect(() => {
+    alive.current = true;
+    api<ModelsResponse>("GET", "/ai/models")
+      .then((r) => { if (alive.current) applyModels(r); })
+      .catch(() => {});
+    return () => { alive.current = false; };
+  }, [applyModels]);
 
   const load = useCallback(async () => {
     setLoadError(false);
@@ -116,15 +128,112 @@ function CreateInner() {
   const limitError = sourceLimitError(chosen);
   const total = totalMarks(counts);
   const fs = footerState(total, target, questionCount(counts), chosen.length > 0);
-  const generateEnabled = fs.generateEnabled && !limitError;
 
-  // F-2.3 wires generation (POST /generate and polling). Intentionally a no-op here.
-  const onGenerate = useCallback(() => {}, []);
+  // Generation job state. Only one job at a time; the ref guards a double click before state updates.
+  const [running, setRunning] = useState(false);
+  const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
+  const [notices, setNotices] = useState<{ text: string; bad: boolean }[]>([]);
+  const [retry, setRetry] = useState(false);
+  const [result, setResult] = useState<GeneratedResult | null>(null);
+  const busy = useRef(false);
+  const runId = useRef(0);
+  const ctrl = useRef<AbortController | null>(null);
+  const resultsRef = useRef<HTMLDivElement>(null);
+  const pathname = usePathname();
+
+  // Leaving the page (route change, tab close) stops a running job so it stops spending.
+  useEffect(() => {
+    const stop = () => ctrl.current?.abort();
+    window.addEventListener("beforeunload", stop);
+    window.addEventListener("pagehide", stop);
+    return () => {
+      window.removeEventListener("beforeunload", stop);
+      window.removeEventListener("pagehide", stop);
+      stop();
+    };
+  }, [pathname]);
+
+  const onGenerate = useCallback(async () => {
+    if (busy.current) return;
+    busy.current = true;
+    const me = ++runId.current;
+    const c = new AbortController();
+    ctrl.current = c;
+    setRunning(true);
+    setProgress(null);
+    setNotices([]);
+    setRetry(false);
+    setResult(null);
+    resultsRef.current?.scrollIntoView({ block: "nearest" });
+    const countsBody: Record<string, number> = {};
+    for (const m of MARKS) if (counts[m] > 0) countsBody[String(m)] = counts[m];
+    const req = { sourceIds: chosen.map((d) => d.id), type, counts: countsBody, shuffle, model: modelId };
+    const current = () => runId.current === me;
+    const finish = (n: { text: string; bad: boolean }[], canRetry: boolean) => {
+      setNotices(n);
+      setRetry(canRetry);
+      setProgress(null);
+      setRunning(false);
+    };
+    try {
+      let jobId: string;
+      try {
+        ({ jobId } = await startGeneration(req));
+      } catch (e) {
+        if (!current()) return;
+        const n = generateErrorNotice(e);
+        if (n.resetModel) {
+          api<ModelsResponse>("GET", "/ai/models")
+            .then((r) => { if (alive.current) applyModels(r); })
+            .catch(() => { if (alive.current) applyModels(null); });
+        }
+        finish([{ text: n.text, bad: true }], n.retry);
+        return;
+      }
+      const r = await pollJob(jobId, { signal: c.signal, onProgress: (p) => { if (current()) setProgress(p); } });
+      if (!current()) return;
+      if (r.status === "done") {
+        const out: GeneratedResult = {
+          questions: r.questions,
+          model: r.model,
+          params: { sourceIds: req.sourceIds, type, counts: countsBody, shuffle, target },
+        };
+        setGenerated(out);
+        setResult(out);
+        finish((r.failedSources ?? []).map((name) => ({ text: `We couldn't read ${name}. Try a clearer photo or a different file.`, bad: false })), false);
+      } else if (r.status === "failed") {
+        finish([{ text: r.error, bad: true }], true);
+      } else if (r.status === "gaveUp") {
+        finish([{ text: GAVE_UP_MESSAGE, bad: true }], true);
+      } else {
+        finish([{ text: "Generation was cancelled.", bad: false }], true);
+      }
+    } finally {
+      if (current()) {
+        busy.current = false;
+        ctrl.current = null;
+      }
+    }
+  }, [applyModels, chosen, counts, modelId, shuffle, target, type]);
+
+  const generateEnabled = fs.generateEnabled && !limitError && !running;
+
+  const onCancel = useCallback(() => {
+    runId.current++; // ignore anything the in-flight run still reports
+    ctrl.current?.abort();
+    ctrl.current = null;
+    busy.current = false;
+    setRunning(false);
+    setProgress(null);
+    setNotices([]);
+    setRetry(false);
+  }, []);
 
   return (
     <main className="page pt-5">
       <h1>Create exam</h1>
       <p className="mb-4 text-[13px] text-muted">Pick sources, set the marks, generate.</p>
+      <fieldset disabled={running} className="m-0 min-w-0 border-0 p-0">
       <div className="grid grid-cols-1 items-start gap-4 min-[720px]:grid-cols-[260px_minmax(0,1fr)]">
         <SourcesCard
           docs={docs}
@@ -133,6 +242,7 @@ function CreateInner() {
           error={limitError}
           loadError={loadError}
           onRetry={() => void load()}
+          disabled={running}
         />
         <div className="flex flex-col gap-4">
           <Card id="type-h" title="Question type">
@@ -180,7 +290,7 @@ function CreateInner() {
               />
             ))}
             <label className="mt-2 flex min-h-10 cursor-pointer items-center gap-2.5">
-              <Checkbox checked={shuffle} onCheckedChange={(v) => setShuffle(v === true)} />
+              <Checkbox checked={shuffle} onCheckedChange={(v) => setShuffle(v === true)} disabled={running} />
               <span>Shuffle order (default: low to high marks)</span>
             </label>
           </Card>
@@ -228,13 +338,24 @@ function CreateInner() {
           )}
         </div>
       </div>
+      </fieldset>
+      <div ref={resultsRef} className="mt-4 flex flex-col" aria-label="Results">
+        {running && <GenerationCard progress={progress} onCancel={onCancel} />}
+        {!running && notices.map((n, i) => <Notice key={i} tone={n.bad ? "bad" : "warn"}>{n.text}</Notice>)}
+        {!running && retry && (
+          <div className="mb-3.5">
+            <button type="button" className="btn-secondary" onClick={() => void onGenerate()}>Try again</button>
+          </div>
+        )}
+        {result && <GeneratedList result={result} />}
+      </div>
       <CreateFooter
         total={total}
         target={target}
         tone={fs.tone}
         text={fs.text}
         generateEnabled={generateEnabled}
-        onGenerate={onGenerate}
+        onGenerate={() => void onGenerate()}
       />
     </main>
   );
