@@ -2,7 +2,9 @@ package exams_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
@@ -23,7 +25,7 @@ func asEnv(t *testing.T) *env {
 }
 
 func (e *env) autosave(u store.User, answers map[string]string, idx int) (time.Time, error) {
-	return e.svc.Autosave(context.Background(), u, "e1", exams.AutosaveInput{Answers: answers, LastQuestionIndex: idx})
+	return e.svc.Autosave(context.Background(), u, "e1", exams.AutosaveInput{Answers: answers, LastQuestionIndex: &idx})
 }
 
 func (e *env) row(t *testing.T) store.Attempt {
@@ -133,9 +135,9 @@ func TestAutosaveValueOver5000Chars422(t *testing.T) {
 		t.Fatalf("5000 runes must pass: %v", err)
 	}
 	_, err := e.autosave(e.student, map[string]string{"q1": strings.Repeat("a", 5001)}, 0)
-	wantField(t, err, "answers")
+	wantField(t, err, "answers[q1]") // names the offending question
 	_, err = e.autosave(e.student, map[string]string{"q1": strings.Repeat("é", 5001)}, 0)
-	wantField(t, err, "answers")
+	wantField(t, err, "answers[q1]")
 	if got := e.row(t).Answers["q1"]; len([]rune(got)) != 5000 {
 		t.Fatalf("rejected value was stored")
 	}
@@ -201,8 +203,11 @@ func TestAutosaveClosedFinalizeFailureIs500(t *testing.T) {
 		t.Fatal(err)
 	}
 	e.clk.Set(closes.Add(time.Hour))
-	_, err := e.autosave(e.student, map[string]string{}, 0)
-	wantStatus(t, err, http.StatusInternalServerError)
+	_, err := e.autosave(e.student, map[string]string{"q1": "late"}, 0)
+	wantStatus(t, err, http.StatusInternalServerError) // logged, not retried into a write
+	if len(e.row(t).Answers) != 0 {
+		t.Fatal("a failed finalize still wrote answers")
+	}
 }
 
 func TestAutosaveAfterSubmit409Conflict(t *testing.T) {
@@ -224,7 +229,7 @@ func TestAutosaveOnDeclinedOrNoAttempt404(t *testing.T) {
 	_, declined := e.autosave(e.student, map[string]string{}, 0)
 	stranger := e.addUser(t, "x1", "x1@x.com", "student")
 	_, noRow := e.autosave(stranger, map[string]string{}, 0)
-	_, missing := e.svc.Autosave(context.Background(), e.student, "nope", exams.AutosaveInput{Answers: map[string]string{}})
+	_, missing := e.svc.Autosave(context.Background(), e.student, "nope", exams.AutosaveInput{Answers: map[string]string{}, LastQuestionIndex: ip(0)})
 	for _, err := range []error{declined, noRow, missing} {
 		wantStatus(t, err, http.StatusNotFound)
 	}
@@ -237,7 +242,7 @@ func TestAutosaveCreatorWithoutAttempt404(t *testing.T) {
 	e := asEnv(t)
 	_, err := e.autosave(e.teacher, map[string]string{}, 0)
 	wantStatus(t, err, http.StatusNotFound)
-	_, miss := e.svc.Autosave(context.Background(), e.teacher, "nope", exams.AutosaveInput{Answers: map[string]string{}})
+	_, miss := e.svc.Autosave(context.Background(), e.teacher, "nope", exams.AutosaveInput{Answers: map[string]string{}, LastQuestionIndex: ip(0)})
 	if err.Error() != miss.Error() {
 		t.Fatalf("differs from missing: %v | %v", err, miss)
 	}
@@ -256,5 +261,149 @@ func TestKnownGapDocumented(t *testing.T) {
 	}
 	if a := e.row(t); a.Answers["q1"] != "older" || a.LastQuestionIndex != 0 {
 		t.Fatalf("gap behaviour changed: %+v", a)
+	}
+}
+
+func TestAutosaveRequiresLastQuestionIndex(t *testing.T) {
+	e := asEnv(t)
+	_, err := e.svc.Autosave(context.Background(), e.student, "e1", exams.AutosaveInput{Answers: map[string]string{}})
+	wantField(t, err, "lastQuestionIndex")
+}
+
+func TestAutosaveInputJSONIsStrict(t *testing.T) {
+	var in exams.AutosaveInput
+	if err := json.Unmarshal([]byte(`{"answers":{"q1":"a"},"lastQuestionIndex":1}`), &in); err != nil ||
+		in.Answers["q1"] != "a" || in.LastQuestionIndex == nil || *in.LastQuestionIndex != 1 {
+		t.Fatalf("%v %+v", err, in)
+	}
+	if err := json.Unmarshal([]byte(`{"answers":{},"lastQuestionIndex":0,"x":1}`), &in); err == nil {
+		t.Fatal("unknown field accepted")
+	}
+	e := asEnv(t)
+	for _, body := range []string{`{"answers":{"q1":null},"lastQuestionIndex":0}`, `{"answers":{"q1":3},"lastQuestionIndex":0}`, `{"answers":{"q1":["a"]},"lastQuestionIndex":0}`} {
+		var bad exams.AutosaveInput
+		if err := json.Unmarshal([]byte(body), &bad); err != nil {
+			t.Fatal(err)
+		}
+		_, err := e.svc.Autosave(context.Background(), e.student, "e1", bad)
+		wantField(t, err, "answers")
+		if e.row(t).Status != store.AttemptNotStarted {
+			t.Fatal("rejected save changed the attempt")
+		}
+	}
+}
+
+// bigExam stores a 60-question exam "e60" (ids k0..k59) with s1 assigned.
+func (e *env) bigExam(t *testing.T) {
+	t.Helper()
+	var qs []store.Question
+	for i := 0; i < 60; i++ {
+		qs = append(qs, store.Question{ID: fmt.Sprintf("k%d", i), Marks: 1, Text: "t", SourceDocID: "d", SourceDocName: "B.pdf", ModelAnswer: "m"})
+	}
+	x := store.Exam{ID: "e60", CreatorID: "t1", Title: "T", Type: "free_text", TotalMarks: 60, ClosesAt: closes, Questions: qs, CreatedAt: t0}
+	if err := e.exams.PutExam(context.Background(), x); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.attempts.PutAttemptIfAbsent(context.Background(), store.Attempt{ExamID: "e60", UserID: "s1",
+		Status: store.AttemptNotStarted, Answers: map[string]string{}, Revealed: []string{}, CreatedAt: t0}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// answersOfBytes builds answers summing exactly n bytes: 10000-byte answers (5000 x "é", the
+// per-value maximum) then one remainder answer.
+func answersOfBytes(n int) map[string]string {
+	m := map[string]string{}
+	i := 0
+	for ; n >= 10000; i, n = i+1, n-10000 {
+		m[fmt.Sprintf("k%d", i)] = strings.Repeat("é", 5000)
+	}
+	if n/2 > 0 {
+		m[fmt.Sprintf("k%d", i)] = strings.Repeat("é", n/2)
+		i++
+	}
+	if n%2 == 1 {
+		m[fmt.Sprintf("k%d", i)] = "a"
+	}
+	return m
+}
+
+func TestAutosaveTotalAnswerBytesBoundary(t *testing.T) {
+	e := asEnv(t)
+	e.bigExam(t)
+	save := func(a map[string]string) error {
+		_, err := e.svc.Autosave(context.Background(), e.student, "e60", exams.AutosaveInput{Answers: a, LastQuestionIndex: ip(0)})
+		return err
+	}
+	at := answersOfBytes(exams.MaxAutosaveBytes)
+	sum := 0
+	for _, v := range at {
+		sum += len(v)
+	}
+	if sum != 350<<10 || exams.MaxAutosaveBytes != 358400 {
+		t.Fatalf("setup sums to %d", sum)
+	}
+	if err := save(at); err != nil {
+		t.Fatalf("exactly 350 KB must pass: %v", err)
+	}
+	over := answersOfBytes(exams.MaxAutosaveBytes + 1)
+	wantField(t, save(over), "answers")
+	a, _ := e.attempts.GetAttempt(context.Background(), "e60", "s1")
+	if len(a.Answers) != len(at) {
+		t.Fatal("the rejected save replaced the stored answers")
+	}
+}
+
+// recFin records what the service hands the finalizer.
+type recFin struct {
+	statuses []string
+	nows     []time.Time
+	err      error
+}
+
+func (f *recFin) FinalizeIfExpired(_ context.Context, a store.Attempt, _ store.Exam, now time.Time) (store.Attempt, error) {
+	f.statuses = append(f.statuses, a.Status)
+	f.nows = append(f.nows, now)
+	return a, f.err
+}
+
+func TestAutosaveFinalizerOnlyForInProgressWithServiceNow(t *testing.T) {
+	e := asEnv(t) // s1 not_started
+	f := &recFin{}
+	e.svc.SetFinalizer(f)
+	s3 := e.addUser(t, "s3", "s3@x.com", "student")
+	e.seedAttempt(t, "e1", "s3", store.AttemptSubmitted, nil)
+	s4 := e.addUser(t, "s4", "s4@x.com", "student")
+	e.seedAttempt(t, "e1", "s4", store.AttemptInProgress, nil)
+	now := closes.Add(exams.GraceWindow + 7*time.Second)
+	e.clk.Set(now)
+	for _, u := range []store.User{e.student, s3, s4} {
+		_, err := e.autosave(u, map[string]string{}, 0)
+		var ae *apperr.Error
+		if !errors.As(err, &ae) || ae.Code != "exam_closed" {
+			t.Fatalf("%s: %v", u.ID, err)
+		}
+	}
+	if len(f.statuses) != 1 || f.statuses[0] != store.AttemptInProgress {
+		t.Fatalf("finalizer saw %v", f.statuses)
+	}
+	if !f.nows[0].Equal(now) {
+		t.Fatalf("finalizer now %v, want the service clock %v", f.nows[0], now)
+	}
+}
+
+func TestAutosaveDeclinedAfterDeadlineIs404NotClosed(t *testing.T) {
+	e := asEnv(t)
+	f := &recFin{}
+	e.svc.SetFinalizer(f)
+	if err := e.attempts.Decline(context.Background(), "e1", "s1"); err != nil {
+		t.Fatal(err)
+	}
+	e.clk.Set(closes.Add(time.Hour))
+	_, declined := e.autosave(e.student, map[string]string{}, 0)
+	_, missing := e.svc.Autosave(context.Background(), e.student, "nope", exams.AutosaveInput{Answers: map[string]string{}, LastQuestionIndex: ip(0)})
+	wantStatus(t, declined, http.StatusNotFound) // 409 would tell a declined user that the exam exists
+	if declined.Error() != missing.Error() || len(f.statuses) != 0 {
+		t.Fatalf("%v | %v | finalizer %v", declined, missing, f.statuses)
 	}
 }

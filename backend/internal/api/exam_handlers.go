@@ -12,9 +12,10 @@ import (
 // stops a body from being read without limit.
 const examBodyCap = 1 << 21
 
-// autosaveBodyCap is the 200 KB body limit of PUT /exams/{id}/attempt (backend-spec 8.5). Decode
-// turns an oversize body into the 422 validation error of the 8.0 body rule.
-const autosaveBodyCap = 200 << 10
+// autosaveBodyCap is the 400 KiB body limit of PUT /exams/{id}/attempt (backend-spec 8.5; the
+// service also bounds the summed answer bytes). Decode turns an oversize body into the 422
+// validation error of the 8.0 body rule.
+const autosaveBodyCap = 400 << 10
 
 // registerExamRoutes serves the exam endpoints (backend-spec 8.5).
 func registerExamRoutes(rt *routeTable, deps Deps) {

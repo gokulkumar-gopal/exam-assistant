@@ -120,20 +120,46 @@ func TestAutosaveValidationOverHTTP(t *testing.T) {
 	}
 }
 
-// TestAutosaveBodyOver200KB: backend-spec 8.0 maps an oversize body to 422 validation (Decode),
-// never 413.
-func TestAutosaveBodyOver200KB(t *testing.T) {
+// TestAutosaveBodyCapBoundary: the cap is 400 KiB (409600 bytes). A body of exactly that size is
+// accepted, one byte more is 422 validation (backend-spec 8.0 maps oversize to 422, never 413).
+// The bodies are valid JSON padded with trailing whitespace to the exact size.
+func TestAutosaveBodyCapBoundary(t *testing.T) {
 	e, qid := asSetup(t)
-	var sb strings.Builder
-	sb.WriteString(`{"answers":{"` + qid + `":"x"},"lastQuestionIndex":0,"pad":"`)
-	big := sb.String() + strings.Repeat("a", 200<<10) + `"}`
-	rec := e.put(big, e.student)
-	if rec.Code != http.StatusUnprocessableEntity || errCode(t, rec) != "validation" || !strings.Contains(rec.Body.String(), "too large") {
-		t.Fatalf("%d %s", rec.Code, rec.Body)
+	core := `{"answers":{"` + qid + `":"x"},"lastQuestionIndex":0}`
+	padTo := func(n int) string { return core + strings.Repeat(" ", n-len(core)) }
+	if rec := e.put(padTo(400<<10), e.student); rec.Code != http.StatusOK {
+		t.Fatalf("at cap: %d %s", rec.Code, rec.Body)
 	}
-	// A valid body just under the cap still works: one answer padded to 5000 chars is far below it.
+	rec := e.put(padTo(400<<10+1), e.student)
+	if rec.Code != http.StatusUnprocessableEntity || errCode(t, rec) != "validation" || !strings.Contains(rec.Body.String(), "too large") {
+		t.Fatalf("cap+1: %d %s", rec.Code, rec.Body)
+	}
 	if rec := e.put(`{"answers":{"`+qid+`":"`+strings.Repeat("a", 5000)+`"},"lastQuestionIndex":0}`, e.student); rec.Code != http.StatusOK {
 		t.Fatalf("%d %s", rec.Code, rec.Body)
+	}
+}
+
+func TestAutosaveStrictFieldsOverHTTP(t *testing.T) {
+	e, qid := asSetup(t)
+	for name, b := range map[string]string{
+		"missing index": `{"answers":{}}`,
+		"null index":    `{"answers":{},"lastQuestionIndex":null}`,
+		"null value":    `{"answers":{"` + qid + `":null},"lastQuestionIndex":0}`,
+		"number value":  `{"answers":{"` + qid + `":1},"lastQuestionIndex":0}`,
+		"empty body":    ``,
+	} {
+		rec := e.put(b, e.student)
+		if rec.Code != http.StatusUnprocessableEntity || errCode(t, rec) != "validation" || rec.Header().Get("Cache-Control") != "no-store" {
+			t.Errorf("%s: %d %v %s", name, rec.Code, rec.Header(), rec.Body)
+		}
+	}
+	rec := e.put(`{"answers":{}}`, e.student)
+	if !strings.Contains(rec.Body.String(), `"lastQuestionIndex"`) {
+		t.Errorf("missing index must name the field: %s", rec.Body)
+	}
+	long := e.put(`{"answers":{"`+qid+`":"`+strings.Repeat("a", 5001)+`"},"lastQuestionIndex":0}`, e.student)
+	if !strings.Contains(long.Body.String(), `"answers[`+qid+`]"`) {
+		t.Errorf("too-long answer must name its question: %s", long.Body)
 	}
 }
 
@@ -149,10 +175,17 @@ func TestAutosaveTransportRulesOverHTTP(t *testing.T) {
 	if rec := e.do("PUT", "/exams/as-key-1/attempt", body, "application/json", e.student, "http://localhost:3000"); rec.Code != http.StatusOK {
 		t.Errorf("allowed origin: %d", rec.Code)
 	}
-	for _, m := range []string{"POST", "PATCH", "DELETE"} {
-		rec := e.do(m, "/exams/as-key-1/attempt", body, "application/json", e.student, "")
-		if rec.Code != http.StatusMethodNotAllowed {
-			t.Errorf("%s: %d", m, rec.Code)
+	if rec := e.do("PUT", "/exams/as-key-1/attempt", body, "", e.student, ""); rec.Code != http.StatusUnsupportedMediaType {
+		t.Errorf("missing content type: %d", rec.Code)
+	}
+	for _, m := range []string{"POST", "PATCH", "DELETE", "GET", "HEAD"} {
+		rec := e.do(m, "/exams/as-key-1/attempt", "", "", e.student, "")
+		if rec.Code != http.StatusMethodNotAllowed || !strings.Contains(rec.Header().Get("Allow"), "PUT") ||
+			rec.Header().Get("Cache-Control") != "no-store" {
+			t.Errorf("%s: %d %v", m, rec.Code, rec.Header())
+		}
+		if m != "HEAD" && errCode(t, rec) != "method_not_allowed" {
+			t.Errorf("%s: %s", m, rec.Body)
 		}
 	}
 	if rec := e.put(body, e.student); rec.Header().Get("Cache-Control") != "no-store" {

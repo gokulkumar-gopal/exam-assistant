@@ -25,7 +25,7 @@
 - Missing or foreign documents/exams are `404`, not `403`.
 - Auth: bcrypt cost 10; password 8-72 bytes; name 1-80 chars; email trimmed, lowercased; login failure always "Email or password is incorrect." and bcrypt runs against a dummy hash for unknown/Google-only accounts. Cookie `session`: JWT HS256 with `sub`, `role`, `iat`, `exp` 7 days; `HttpOnly`, `Secure` (off only when `ENV=local`), `SameSite=Lax`, `Path=/`, `Max-Age=604800`, no `Domain`. Reject `iat < SessionsValidAfter`.
 - CSRF: for POST/PUT/PATCH/DELETE, `403` if `Origin` present and not in `ALLOWED_ORIGINS`; absent Origin allowed.
-- Body caps: 1 MB (200 KB for autosave) via `http.MaxBytesReader`; unknown fields rejected on create endpoints; non-JSON body `415`.
+- Body caps: 1 MB (400 KB for autosave) via `http.MaxBytesReader`; unknown fields rejected on create endpoints; non-JSON body `415`.
 - Upload: MIME `application/pdf|image/jpeg|image/png|text/plain`, `sizeBytes` 1..20971520; presigned PUT 10 min with `Content-Type` and `Content-Length` signed; pending row TTL 24 h; key `users/{ownerId}/{docId}/{sanitizedName}`, name sanitized to letters, digits, `.-_ ` and space, max 120 chars; presigned GET 10 min, `inline`.
 - Generation caps: sources 1..10, total bytes <= 20971520, total PDF pages <= 40, input tokens <= 80000, counts keys 1..5 each 0..30, at least one non-zero, <= 60 questions, total marks <= 200, 15 questions per call, <= 10 first-attempt calls, <= 20 with retries.
 - Job: claim `queued->running` conditional; 8-minute deadline; heartbeat ~20 s; stale after 6 minutes; every post-claim status write conditional; first call alone then <= 3 concurrent; SDK max retries 1; per-call timeout `LLM_TIMEOUT_SECONDS` (120); questions in item `<jobId>#questions`; job TTL 24 h.
@@ -417,7 +417,7 @@ type AttemptStore interface {
 **Spec:** backend 8.5 (Autosave), 9.2; Review Focus 1
 **Needs:** B-4.2
 **Files:** Create `internal/exams/autosave.go`; Test `internal/exams/autosave_test.go`
-**Interfaces:** Produces `exams.Service.Autosave(ctx, user, examID string, in AutosaveInput) (savedAt time.Time, err error)`; route `PUT /exams/{id}/attempt` with 200 KB body cap.
+**Interfaces:** Produces `exams.Service.Autosave(ctx, user, examID string, in AutosaveInput) (savedAt time.Time, err error)`; route `PUT /exams/{id}/attempt` with 400 KB body cap.
 - [ ] Failing tests: `TestAutosaveFirstSaveStartsAttempt`; `TestAutosaveReplacesWholeMap` (idempotent: same body twice, same state); `TestAutosaveRejectsUnknownQuestionIDs` (422); `TestAutosaveValueOver5000Chars422` (5000 accepted); `TestAutosaveBodyOver200KB` (413 -> 422 per body cap rule); `TestAutosaveInsideGraceWindowAccepted`; `TestAutosaveAtAcceptingUntilIs409ExamClosed` and runs lazy finalize (wired B-4.4); `TestAutosaveJustBeforeAcceptingUntilAccepted`; `TestAutosaveAfterSubmit409Conflict`; `TestAutosaveOnDeclinedOrNoAttempt404`; `TestAutosaveCreatorWithoutAttempt404`; `TestKnownGapDocumented` (an older PUT after a newer one overwrites; asserts current behaviour so a change is deliberate).
 - [ ] Run; expect FAIL. Implement. Run; expect PASS. Commit: "Autosave".
 
@@ -555,7 +555,7 @@ Targets in AI-spec 13.3 met or accepted by the owner in writing; `go test ./...`
 2. **Gemini and Anthropic SDK capabilities** (AI-spec 3.4, 3.5) are not confirmed. B-2.8 and B-2.9 stop and report if a field is missing, which would change the plan.
 3. **`GEN_MAX_PDF_PAGES`**: backend 8.4 and AI-spec 12 say 40; `/tmp` decision D7 said 100. The plan follows the specs (40).
 4. **Status of a non-creator on `GET /exams/{id}/status`**: spec says `403`, while the global rule says foreign exams are `404`. The plan follows the explicit `403` (B-3.5); decide whether to unify.
-5. **Autosave body over 200 KB**: `MaxBytesReader` yields 413 by default but the error table has no 413. The plan returns `422 validation`; confirm.
+5. **Autosave body over 400 KB**: `MaxBytesReader` yields 413 by default but the error table has no 413. The plan returns `422 validation`; confirm.
 6. **Offline smoke**: backend 13 describes smoke against a real LLM; B-4.6 adds a `-fake-llm` server flag so smoke can run with no spend. This flag is not in the spec.
 7. **Cross-task stubs**: B-3.3 uses a no-op `Finalizer` until B-4.4, and B-4.2/B-4.4 handle `Revealed` as empty until B-5b.1; if M5b is cut, the revealed branches stay but are never reached.
 8. **Image libraries** for downscale and EXIF (AI-spec 5.1) need a specific package choice and a one-line justification in the commit (goals rule 10).
