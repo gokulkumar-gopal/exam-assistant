@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { countsLine, examMeta, rowView } from "../lib/exam-row";
+import { canDecline, countsLine, examMeta, rowView } from "../lib/exam-row";
 import type { ExamListItem } from "../lib/types";
 
 const CLOSES = Date.parse("2026-10-16T12:00:00Z");
@@ -80,5 +80,33 @@ describe("countsLine", () => {
   });
   it("missing counts give an empty line", () => {
     expect(countsLine(undefined)).toBe("");
+  });
+});
+
+describe("canDecline", () => {
+  it("open, not started, assigned by someone else: yes", () => {
+    expect(canDecline(base, "u_me", before)).toBe(true);
+  });
+  it("self-created: never", () => {
+    expect(canDecline({ ...base, createdBy: { id: "u_me", name: "Me" } }, "u_me", before)).toBe(false);
+  });
+  it("unknown viewer: no", () => {
+    expect(canDecline(base, undefined, before)).toBe(false);
+  });
+  it("in progress, submitted, missed: no", () => {
+    for (const attemptStatus of ["in_progress", "submitted", "missed"] as const) {
+      expect(canDecline({ ...base, attemptStatus }, "u_me", before)).toBe(false);
+    }
+  });
+  it("already declined: no", () => {
+    expect(canDecline({ ...base, attemptStatus: "declined" }, "u_me", before)).toBe(false);
+  });
+  it("closing (past closesAt, before acceptingUntil) or past acceptingUntil: no", () => {
+    expect(canDecline(base, "u_me", CLOSES + 1000)).toBe(false);
+    expect(canDecline(base, "u_me", UNTIL + 1000)).toBe(false);
+    expect(canDecline(base, "u_me", CLOSES)).toBe(false);
+  });
+  it("created-list rows (no attemptStatus): no", () => {
+    expect(canDecline({ ...base, attemptStatus: undefined }, "u_me", before)).toBe(false);
   });
 });

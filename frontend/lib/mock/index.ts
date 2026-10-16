@@ -403,8 +403,18 @@ export function mockFetch(method: string, rawPath: string, body: unknown, idempo
         peeksLeft: exam.attempt.peeksLeft, serverTime: st() });
     }
     if (method === "POST" && sub === "decline") {
-      if (exam.attempt && exam.attempt.status !== "not_started") return err(409, "conflict", "You've already started this exam.");
-      state.exams = state.exams.filter((e) => e.id !== exam.id);
+      // Test triggers (mock only), from the page URL: ?mockDecline=409 (the exam was started elsewhere)
+      // | 404 (the exam is gone) | 403 | fail (500).
+      const t = typeof window === "undefined" ? null : new URLSearchParams(window.location.search).get("mockDecline");
+      if (t === "409") {
+        if (exam.attempt) exam.attempt.status = "in_progress";
+        return err(409, "conflict", "You've already started this exam.");
+      }
+      if (t === "404") { state.exams = state.exams.filter((e) => e.id !== exam.id); return err(404, "not_found", "That item isn't available."); }
+      if (t === "403") return err(403, "forbidden", "You don't have access to that.");
+      if (t === "fail") return err(500, "internal", "Something went wrong.");
+      if (exam.attempt && exam.attempt.status !== "not_started" && exam.attempt.status !== "declined") return err(409, "conflict", "You've already started this exam.");
+      if (exam.attempt) exam.attempt.status = "declined";
       return nothing();
     }
     if (method === "GET" && sub === "status") {

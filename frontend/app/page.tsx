@@ -1,18 +1,14 @@
 "use client";
 import { useState } from "react";
 import Link from "next/link";
-import { api } from "@/lib/api";
+import { toast } from "sonner";
 import { useMe } from "@/lib/session";
 import { useExamList, type Scope } from "@/lib/useExamList";
 import type { ExamListItem } from "@/lib/types";
 import { ExamRow, ExamRowSkeleton } from "@/components/ExamRow";
+import { DeclineDialog } from "@/components/DeclineDialog";
 import { EmptyState } from "@/components/EmptyState";
 import { Notice } from "@/components/Notice";
-import { Button } from "@/components/ui/button";
-import {
-  AlertDialog, AlertDialogCancel, AlertDialogContent, AlertDialogDescription,
-  AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
-} from "@/components/ui/alert-dialog";
 
 const SECTIONS: { scope: Scope; title: string; empty: string | null }[] = [
   { scope: "open", title: "Open", empty: "No open exams. Exams you create or are assigned appear here." },
@@ -20,19 +16,15 @@ const SECTIONS: { scope: Scope; title: string; empty: string | null }[] = [
   { scope: "created", title: "Created by you", empty: null },
 ];
 
+type ListState = ReturnType<typeof useExamList>;
+
 function Section({
-  scope, title, empty, userId, onDecline, refreshKey,
+  scope, title, empty, userId, list, onDecline,
 }: {
   scope: Scope; title: string; empty: string | null; userId: string | undefined;
-  onDecline?: (e: ExamListItem) => void; refreshKey?: { id: string; n: number };
+  list: ListState; onDecline?: (e: ExamListItem) => void;
 }) {
-  const { exams, error, nowMs, reload, remove } = useExamList(scope);
-  // A decline confirmed elsewhere on the page removes the row here.
-  const [seen, setSeen] = useState(0);
-  if (refreshKey && refreshKey.n !== seen) {
-    setSeen(refreshKey.n);
-    remove(refreshKey.id);
-  }
+  const { exams, error, nowMs, reload } = list;
   const mode = scope === "created" ? "created" : "attempt";
   const rows = exams?.filter((e) => e.attemptStatus !== "declined");
 
@@ -71,24 +63,17 @@ function Section({
 
 export default function Page() {
   const { user } = useMe();
+  const openList = useExamList("open");
+  const closed = useExamList("closed");
+  const created = useExamList("created");
+  const lists: Record<Scope, ListState> = { open: openList, closed, created };
+  // The row stays set while the dialog animates closed; only `declineOpen` flips.
   const [declining, setDeclining] = useState<ExamListItem | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [declineError, setDeclineError] = useState<string | null>(null);
-  const [declined, setDeclined] = useState({ id: "", n: 0 });
+  const [declineOpen, setDeclineOpen] = useState(false);
 
-  async function confirmDecline() {
-    if (!declining) return;
-    setBusy(true);
-    setDeclineError(null);
-    try {
-      await api<void>("POST", `/exams/${encodeURIComponent(declining.id)}/decline`);
-      setDeclined((d) => ({ id: declining.id, n: d.n + 1 }));
-      setDeclining(null);
-    } catch {
-      setDeclineError("Couldn't decline this exam. Try again.");
-    } finally {
-      setBusy(false);
-    }
+  function startDecline(e: ExamListItem) {
+    setDeclining(e);
+    setDeclineOpen(true);
   }
 
   return (
@@ -105,27 +90,25 @@ export default function Page() {
           key={s.scope}
           {...s}
           userId={user?.id}
-          onDecline={s.scope === "open" ? setDeclining : undefined}
-          refreshKey={s.scope === "open" ? declined : undefined}
+          list={lists[s.scope]}
+          onDecline={s.scope === "open" ? startDecline : undefined}
         />
       ))}
-      <AlertDialog open={declining !== null} onOpenChange={(o) => { if (!busy && !o) setDeclining(null); }}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Decline this exam?</AlertDialogTitle>
-            <AlertDialogDescription>
-              It will be removed from your list. {declining?.createdBy.name} will see that you declined.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          {declineError && <p role="alert" className="text-sm text-bad">{declineError}</p>}
-          <AlertDialogFooter>
-            <AlertDialogCancel disabled={busy}>Cancel</AlertDialogCancel>
-            <Button variant="destructive" disabled={busy} onClick={() => void confirmDecline()}>
-              {busy ? "Declining…" : "Decline"}
-            </Button>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+      <DeclineDialog
+        exam={declining}
+        open={declineOpen}
+        onOpenChange={setDeclineOpen}
+        onDeclined={(id) => {
+          openList.remove(id);
+          void openList.refetch();
+        }}
+        onStale={(message) => {
+          toast(message);
+          void openList.refetch();
+          void closed.refetch();
+          void created.refetch();
+        }}
+      />
     </main>
   );
 }

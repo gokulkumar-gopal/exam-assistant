@@ -48,5 +48,5 @@ export function useExamList(scope: Scope) {
   }, [load]);
 
   const remove = useCallback((id: string) => setExams((l) => (l ? l.filter((e) => e.id !== id) : l)), []);
-  return { exams, error, nowMs, reload: () => load(), remove };
+  return { exams, error, nowMs, reload: () => load(), refetch: () => load(true), remove };
 }
