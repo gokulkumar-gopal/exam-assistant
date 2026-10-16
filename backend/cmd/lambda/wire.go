@@ -51,6 +51,9 @@ func buildAPIDeps(_ context.Context, cfg config.Config, awsCfg aws.Config) (api.
 	stores := dynamo.New(dynamodb.NewFromConfig(awsCfg), cfg.Stage)
 	svc := auth.NewService(stores, auth.NewBcryptHasher(auth.BcryptCost), clk).
 		WithGoogle(deadlineVerifier{inner: newVerifier(cfg.GoogleClientID), timeout: googleVerifyTimeout})
+	// B-2.4 replaces the stub runner with the real worker invoker: until then
+	// POST /generate answers 503 "We couldn't start that. Try again.".
+	var runner gen.JobRunner = gen.StubRunner{}
 	deps := api.Deps{
 		Logger:         slog.Default(),
 		Clock:          clk,
@@ -58,6 +61,9 @@ func buildAPIDeps(_ context.Context, cfg config.Config, awsCfg aws.Config) (api.
 		Auth:           svc,
 		Sessions:       auth.NewSessions([]byte(cfg.JWTSecret), cfg.Env),
 		Docs:           docs.NewService(stores, docs.NewS3Blob(awsCfg, cfg.S3Bucket), clk),
+		Jobs:           stores,
+		Runner:         runner,
+		Gen:            gen.NewService(stores, stores, runner, clk, models, def.ID, cfg.GenLimits()),
 		Models:         models,
 		DefaultModelID: def.ID,
 		AllowedOrigins: cfg.AllowedOrigins,

@@ -241,3 +241,17 @@ func TestLLMModelMustBeEnabled(t *testing.T) {
 		}
 	}
 }
+
+func TestGenLimitsFromDefaults(t *testing.T) {
+	m := apiEnv()
+	m["MODE"] = "api"
+	c, err := config.Load(env(m))
+	if err != nil {
+		t.Fatal(err)
+	}
+	l := c.GenLimits()
+	if l.MaxSources != 10 || l.MaxTotalBytes != 20971520 || l.MaxPDFPages != 40 || l.MaxRunning != 2 ||
+		l.Quota.MaxUser != 3 || l.Quota.MaxRegen != 10 || l.Quota.MaxGlobal != 10 || l.Quota.BudgetUSD != 15 {
+		t.Errorf("limits = %+v", l)
+	}
+}
