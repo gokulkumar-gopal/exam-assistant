@@ -105,11 +105,15 @@ export function mockFetch(method: string, rawPath: string, body: unknown): Respo
   // Auth
   if (route === "POST /auth/signup") {
     const b = as<SignupBody>();
+    // Test trigger: this address is already registered.
+    if (String(b.email).toLowerCase() === "taken@example.com") return err(409, "conflict", "An account with that email already exists.");
     state.user = { id: "u_new", name: b.name, email: String(b.email).toLowerCase(), role: b.role };
     state.loggedIn = true;
     return json(201, { user: state.user });
   }
   if (route === "POST /auth/login") {
+    // Test trigger: the password "wrong-password" always fails.
+    if ((body as { password?: string } | undefined)?.password === "wrong-password") return err(401, "unauthenticated", "Email or password is incorrect.");
     state.loggedIn = true;
     return json(200, { user: state.user });
   }
