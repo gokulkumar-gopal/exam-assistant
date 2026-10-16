@@ -6,7 +6,7 @@ import { useEffect, useState } from "react";
 import { timerBucket, timerView } from "@/lib/timer";
 import { cn } from "@/lib/utils";
 
-export function Timer({ closesAtIso, offsetMs }: { closesAtIso: string; offsetMs: number }) {
+export function Timer({ closesAtIso, offsetMs, className }: { closesAtIso: string; offsetMs: number; className?: string }) {
   const [now, setNow] = useState(() => Date.now() + offsetMs);
   useEffect(() => {
     const tick = () => setNow(Date.now() + offsetMs);
@@ -17,7 +17,7 @@ export function Timer({ closesAtIso, offsetMs }: { closesAtIso: string; offsetMs
   const { text, low } = timerView(closesAtIso, now);
   return (
     <>
-      <span role="timer" aria-label="Time left" className={cn("tabular whitespace-nowrap text-sm font-bold", low && "text-bad")}>
+      <span role="timer" aria-label="Time left" className={cn("tabular whitespace-nowrap text-sm font-bold", low && "text-bad", className)}>
         {text}
       </span>
       <span role="status" className="sr-only">{timerBucket(closesAtIso, now)}</span>
