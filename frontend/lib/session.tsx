@@ -2,47 +2,62 @@
 // Session: the signed-in user from GET /api/me (fs 4, 8). The auth cookie is
 // httpOnly and backend-set; nothing credential-like is read or stored here.
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
-import { api } from "@/lib/api";
+import { api, ApiError } from "@/lib/api";
 import type { MeResponse, User } from "@/lib/types";
+import {
+  applyMe, finishLogout, initialSession, startLogout, startRefresh, type MeOutcome, type SessionState,
+} from "@/lib/sessionState";
 
-interface SessionValue {
-  user: User | null;
-  loading: boolean;
+interface SessionValue extends SessionState {
   logout: () => Promise<void>;
-  /** True once logout started, so guards do not add a `next` to the login URL. */
-  loggedOut: boolean;
+  /** Re-fetch /me. Clears loggedOut and error; sets user or null. */
+  refresh: () => Promise<void>;
 }
 
 const SessionContext = createContext<SessionValue>({
-  user: null, loading: true, logout: async () => {}, loggedOut: false,
+  ...initialSession, logout: async () => {}, refresh: async () => {},
 });
 
+async function fetchMe(): Promise<MeOutcome> {
+  try {
+    const r = await api<MeResponse>("GET", "/me");
+    return { ok: true, user: r.user };
+  } catch (e) {
+    return { ok: false, status: e instanceof ApiError ? e.status : 0 };
+  }
+}
+
 export function SessionProvider({ children }: { children: React.ReactNode }) {
-  const [user, setUser] = useState<User | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [loggedOut, setLoggedOut] = useState(false);
+  const [state, setState] = useState<SessionState>(initialSession);
   const alive = useRef(true);
+
+  const load = useCallback(async () => {
+    const o = await fetchMe();
+    if (alive.current) setState((s) => applyMe(s, o));
+  }, []);
+
+  const refresh = useCallback(async () => {
+    setState(startRefresh);
+    await load();
+  }, [load]);
 
   useEffect(() => {
     alive.current = true;
-    api<MeResponse>("GET", "/me")
-      .then((r) => { if (alive.current) setUser(r.user); })
-      .catch(() => { if (alive.current) setUser(null); })
-      .finally(() => { if (alive.current) setLoading(false); });
+    void load(); // initial state is already loading
     return () => { alive.current = false; };
-  }, []);
+  }, [load]);
 
   const logout = useCallback(async () => {
-    setLoggedOut(true);
+    setState(startLogout);
     try {
       await api<void>("POST", "/auth/logout");
     } catch {
       /* the session is cleared locally either way */
     }
-    setUser(null);
+    setState(finishLogout);
   }, []);
 
-  const value = useMemo(() => ({ user, loading, logout, loggedOut }), [user, loading, logout, loggedOut]);
+  const value = useMemo(() => ({ ...state, logout, refresh }), [state, logout, refresh]);
   return <SessionContext.Provider value={value}>{children}</SessionContext.Provider>;
 }
 
@@ -50,7 +65,7 @@ export function useSession(): SessionValue {
   return useContext(SessionContext);
 }
 
-export function useMe(): { user: User | null; loading: boolean } {
-  const { user, loading } = useContext(SessionContext);
-  return { user, loading };
+export function useMe(): { user: User | null; loading: boolean; error: boolean; refresh: () => Promise<void> } {
+  const { user, loading, error, refresh } = useContext(SessionContext);
+  return { user, loading, error, refresh };
 }
