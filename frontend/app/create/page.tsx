@@ -26,10 +26,11 @@ const CLOSES = [
 ];
 const SEG =
   "inline-flex min-h-10 flex-1 items-center justify-center rounded-lg border px-4 font-semibold focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent";
-const FIELD = "h-10 w-full rounded-lg border border-input bg-card px-2.5 text-base md:text-sm";
+const FIELD = "h-10 w-full rounded-lg border border-input bg-card px-2.5 text-base outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 md:text-sm";
 
 function assignHelper(role: Role | undefined): string {
-  return role === "student" ? "Student emails only · up to 10 people" : "Up to 50 people";
+  // Until the role is known, show the stricter student text.
+  return role === "student" || role === undefined ? "Student emails only · up to 10 people" : "Up to 50 people";
 }
 
 function Card({ id, title, children }: { id: string; title: string; children: React.ReactNode }) {

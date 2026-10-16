@@ -24,7 +24,8 @@ export function footerState(
   count: number,
   hasSource: boolean,
 ): { tone: FooterTone; text: string; generateEnabled: boolean } {
-  const q = `${count} ${count === 1 ? "question" : "questions"}`;
+  // The spec (6.4) dictates "{count} questions" for every count, including 1.
+  const q = `${count} questions`;
   if (total < target) return { tone: "accent", text: `${target - total} to go · ${q}`, generateEnabled: false };
   if (total > target) return { tone: "bad", text: `${total - target} over · ${q}`, generateEnabled: false };
   return { tone: "ok", text: `Ready to generate · ${q}`, generateEnabled: hasSource };

@@ -26,8 +26,8 @@ describe("footerState", () => {
     expect(s.generateEnabled).toBe(false);
     expect(s.tone).toBe("ok");
   });
-  it("singular question", () => {
-    expect(footerState(5, 30, 1, true).text).toBe("25 to go · 1 question");
+  it("spec text keeps the plural for 1", () => {
+    expect(footerState(5, 30, 1, true).text).toBe("25 to go · 1 questions");
   });
 });
 
