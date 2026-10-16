@@ -38,11 +38,16 @@ func main() {
 	users := memory.NewUserStore()
 	clk := clock.Real{}
 	// The InProcessRunner is wired into Deps here when the generation task adds it.
+	svc := auth.NewService(users, auth.NewBcryptHasher(auth.BcryptCost), clk)
+	if cfg.GoogleClientID != "" {
+		// Without GOOGLE_CLIENT_ID the route is not registered and /auth/google is the JSON 404.
+		svc.WithGoogle(auth.NewIDTokenVerifier(cfg.GoogleClientID))
+	}
 	handler := api.NewRouter(api.Deps{
 		Logger:         logger,
 		Clock:          clk,
 		Users:          users,
-		Auth:           auth.NewService(users, auth.NewBcryptHasher(auth.BcryptCost), clk),
+		Auth:           svc,
 		Sessions:       auth.NewSessions([]byte(cfg.JWTSecret), cfg.Env),
 		AllowedOrigins: cfg.AllowedOrigins,
 	})

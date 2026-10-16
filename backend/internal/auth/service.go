@@ -28,6 +28,7 @@ type Service struct {
 	hasher    Hasher
 	clock     clock.Clock
 	dummyHash string
+	google    IDTokenVerifier // nil when Google sign-in is not configured
 }
 
 // NewService builds the service. It hashes a throwaway password once so that login
