@@ -22,7 +22,7 @@ export interface ExamBarProps {
 
 export function ExamBar({ title, save, peeksLeft, closesAtIso, offsetMs, exiting, exitDisabled, onSaveExit }: ExamBarProps) {
   const text = autosaveText(save);
-  const failing = save.status === "retrying";
+  const failing = save.status === "retrying" || save.status === "rejected";
   return (
     <header className="sticky top-0 z-30 min-h-14 border-b border-line bg-white">
       {/* Up to 480 px the bar wraps: row 1 title + timer, row 2 save state + Save & exit (title never squeezed). */}

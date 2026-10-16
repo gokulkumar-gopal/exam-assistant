@@ -579,6 +579,8 @@ export function mockFetch(method: string, rawPath: string, body: unknown, idempo
     if (!exam) return err(404, "not_found", "That item isn't available.");
     const sub = seg[2];
     if (method === "GET" && !sub) {
+      // Test trigger (mock only): ?mockExam=403 refuses the exam GET (take page: toast and Home).
+      if (stickyFlag("mockExam") === "403") return err(403, "forbidden", "You don't have access to that.");
       // Test trigger (mock only): ?mockClose=8 closes this exam 8 s after the first load that carries the flag
       // (auto-submit at zero; the 60 s grace window follows). Sticky for the session, applied once per exam.
       const closeIn = Number(stickyFlag("mockClose"));
@@ -602,13 +604,19 @@ export function mockFetch(method: string, rawPath: string, body: unknown, idempo
     if (method === "PUT" && sub === "attempt") {
     const b = as<AttemptBody>();
       // Test triggers (mock only), from the page URL: ?mockAutosave=fail (500 every time) | failOnce (first
-      // PUT only) | 409 (closed). Request log: globalThis.__mockAutosaveLog = [{ answers, lastQuestionIndex }].
+      // PUT only) | 409 (closed) | 422 (answers over 20 characters) | 422other (always). Request log: globalThis.__mockAutosaveLog = [{ answers, lastQuestionIndex }].
       const t = typeof window === "undefined" ? null : new URLSearchParams(window.location.search).get("mockAutosave");
       const g = globalThis as unknown as { __mockAutosaveLog?: unknown[]; __mockAutosaveFailed?: boolean };
       (g.__mockAutosaveLog ??= []).push({ answers: b.answers, lastQuestionIndex: b.lastQuestionIndex });
       if (t === "fail") return err(500, "internal", "Something went wrong.");
       if (t === "failOnce" && !g.__mockAutosaveFailed) { g.__mockAutosaveFailed = true; return err(500, "internal", "Something went wrong."); }
       if (t === "409") return err(409, "exam_closed", "This exam is closed.");
+      // 422: an answer longer than 20 characters is refused (answers[id] "Too long"); 422other: always refused (unknown question).
+      if (t === "422") {
+        const long = Object.entries(b.answers ?? {}).find(([, v]) => typeof v === "string" && v.length > 20);
+        if (long) return err(422, "validation", "An answer is too long.", { [`answers[${long[0]}]`]: "Too long" });
+      }
+      if (t === "422other") return err(422, "validation", "Unknown question.", { "answers[zz]": "Unknown question" });
       if (over(exam)) return err(409, "exam_closed", "This exam is closed.");
       if (!exam.attempt || exam.attempt.status === "submitted") return err(409, "conflict", "Already submitted.");
       exam.attempt = { ...exam.attempt, status: "in_progress", answers: b.answers, lastQuestionIndex: b.lastQuestionIndex, savedAt: st() };
