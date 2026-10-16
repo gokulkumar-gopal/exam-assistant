@@ -52,7 +52,7 @@ func (r *jobRun) countInput(ctx context.Context, first CallSpec) error {
 	}
 	cctx, cancel := context.WithTimeout(ctx, r.callTimeout)
 	defer cancel()
-	n, err := tc.CountTokens(cctx, r.input(first, first.Count, nil))
+	n, err := tc.CountTokens(cctx, r.input(first, first.Count, r.job.Request.Avoid))
 	if err != nil {
 		if ctx.Err() == nil && errors.Is(cctx.Err(), context.DeadlineExceeded) {
 			err = fmt.Errorf("counting tokens exceeded its timeout: %w", ErrTimeout)
@@ -191,7 +191,8 @@ func (r *jobRun) runTask(ctx context.Context, idx int, spec CallSpec) error {
 func (r *jobRun) commit(idx int, spec CallSpec, raw []RawQuestion, need int, kept *[]store.Question, droppedTexts *[]string, dropped *int) (added []store.Question, bad int) {
 	r.st.mu.Lock()
 	defer r.st.mu.Unlock()
-	all := r.othersLocked(idx)
+	all := slices.Clone(r.job.Request.Avoid)
+	all = append(all, r.othersLocked(idx)...)
 	all = append(all, textsOf(*kept)...)
 	all = append(all, *droppedTexts...)
 	add, n, dt := validate(raw, CallSpec{Type: spec.Type, Marks: spec.Marks}, r.byLabel, all, r.newID)
@@ -237,7 +238,8 @@ func (r *jobRun) others(idx int) []string {
 // call's own kept questions and the texts it had dropped (AI-spec 7.4). Calls running at the
 // same time cannot see each other's questions yet; validation catches those duplicates.
 func (r *jobRun) avoidFor(idx int, kept []store.Question, droppedTexts []string) []string {
-	out := r.others(idx)
+	out := slices.Clone(r.job.Request.Avoid) // regenerate: the questions already in the exam
+	out = append(out, r.others(idx)...)
 	out = append(out, textsOf(kept)...)
 	return append(out, droppedTexts...)
 }

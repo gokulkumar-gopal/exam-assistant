@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strconv"
 	"time"
+	"unicode/utf8"
 
 	"github.com/oklog/ulid/v2"
 
@@ -121,6 +122,20 @@ func (s *Service) Create(ctx context.Context, user store.User, req GenerateReque
 		return "", err
 	}
 
+	job := store.Job{
+		Kind: store.KindGenerate, Model: modelID,
+		Request: store.GenerateRequest{
+			SourceIDs: slices.Clone(req.SourceIDs), Type: req.Type, Counts: cloneCounts(req.Counts), Shuffle: req.Shuffle,
+		},
+		Total: total,
+	}
+	return s.enqueue(ctx, user, job, false)
+}
+
+// enqueue completes the queued job (ID, owner, day, timestamps, TTL), refuses it when the
+// running limit is reached, creates it with its quota counters in one transaction (regen
+// selects the regenerate counter) and starts it. It returns the job ID.
+func (s *Service) enqueue(ctx context.Context, user store.User, job store.Job, regen bool) (string, error) {
 	now := s.clk.Now().UTC() // read once: job day, quota day/month, TTL and timestamps all derive from it
 	if err := s.checkRunning(ctx, user.ID, now); err != nil {
 		return "", err
@@ -129,15 +144,9 @@ func (s *Service) Create(ctx context.Context, user store.User, req GenerateReque
 	if err != nil {
 		return "", apperr.Internal(err)
 	}
-	job := store.Job{
-		ID: id.String(), OwnerID: user.ID, Kind: store.KindGenerate, Model: modelID,
-		Day: DayKey(now), Status: store.JobQueued,
-		Request: store.GenerateRequest{
-			SourceIDs: slices.Clone(req.SourceIDs), Type: req.Type, Counts: cloneCounts(req.Counts), Shuffle: req.Shuffle,
-		},
-		Total: total, CreatedAt: now, UpdatedAt: now, TTL: now.Add(store.JobItemTTL).Unix(),
-	}
-	if err := s.jobs.CreateJobWithQuota(ctx, job, s.limits.Quota.Check(user.ID, now, false)); err != nil {
+	job.ID, job.OwnerID, job.Day, job.Status = id.String(), user.ID, DayKey(now), store.JobQueued
+	job.CreatedAt, job.UpdatedAt, job.TTL = now, now, now.Add(store.JobItemTTL).Unix()
+	if err := s.jobs.CreateJobWithQuota(ctx, job, s.limits.Quota.Check(user.ID, now, regen)); err != nil {
 		var qe *store.QuotaError
 		if errors.As(err, &qe) {
 			return "", apperr.RateLimited(QuotaMessage(qe.Kind))
@@ -157,6 +166,50 @@ func (s *Service) Create(ctx context.Context, user store.User, req GenerateReque
 	return job.ID, nil
 }
 
+// Avoid limits of a regenerate request (backend-spec 8.4): strings, and characters in each.
+const (
+	maxAvoidItems = 60
+	maxAvoidChars = 600
+)
+
+// Regenerate validates the request like Create (sources, caps, model) plus marks and the
+// avoid list, then creates a regenerate job with Total 1 that counts against the regenerate
+// quota, and starts it (backend-spec 7.6, 8.4). It returns the job ID.
+func (s *Service) Regenerate(ctx context.Context, user store.User, req RegenerateRequest) (string, error) {
+	if req.Marks < 1 || req.Marks > 5 {
+		return "", invalid("Marks must be between 1 and 5.", "marks", "Marks must be between 1 and 5.")
+	}
+	if req.Type != "mcq" && req.Type != "free" {
+		return "", invalid("The request is not valid.", "type", `Use "mcq" or "free".`)
+	}
+	if err := s.checkSourceIDs(req.SourceIDs); err != nil {
+		return "", err
+	}
+	if len(req.Avoid) > maxAvoidItems {
+		return "", invalid("The request is not valid.", "avoid", fmt.Sprintf("At most %d items.", maxAvoidItems))
+	}
+	for _, a := range req.Avoid {
+		if utf8.RuneCountInString(a) > maxAvoidChars {
+			return "", invalid("The request is not valid.", "avoid", fmt.Sprintf("Each item may have at most %d characters.", maxAvoidChars))
+		}
+	}
+	if err := s.checkDocuments(ctx, user, req.SourceIDs); err != nil {
+		return "", err
+	}
+	modelID, err := s.resolveModel(req.Model)
+	if err != nil {
+		return "", err
+	}
+	job := store.Job{
+		Kind: store.KindRegenerate, Model: modelID,
+		Request: store.GenerateRequest{
+			SourceIDs: slices.Clone(req.SourceIDs), Type: req.Type, Marks: req.Marks, Avoid: slices.Clone(req.Avoid),
+		},
+		Total: 1,
+	}
+	return s.enqueue(ctx, user, job, true)
+}
+
 func cloneCounts(c map[string]int) map[string]int {
 	out := make(map[string]int, len(c))
 	for k, v := range c {
@@ -170,25 +223,13 @@ func (s *Service) checkShapeAndCaps(req GenerateRequest) (int, error) {
 	if req.Type != "mcq" && req.Type != "free" {
 		return 0, invalid("The request is not valid.", "type", `Use "mcq" or "free".`)
 	}
-	if len(req.SourceIDs) == 0 {
-		return 0, invalid("Select at least one file.", "sourceIds", "Select at least one file.")
+	if err := s.checkSourceIDs(req.SourceIDs); err != nil {
+		return 0, err
 	}
 	if len(req.Counts) == 0 {
 		return 0, invalid("Choose how many questions you want.", "counts", "Required")
 	}
-	seen := map[string]bool{}
-	for _, id := range req.SourceIDs {
-		if id == "" || seen[id] {
-			return 0, invalid("The selected files are not valid.", "sourceIds", "Each file may be selected once.")
-		}
-		seen[id] = true
-	}
-
 	// Caps.
-	if len(req.SourceIDs) > s.limits.MaxSources {
-		return 0, invalid(fmt.Sprintf("Select at most %d files.", s.limits.MaxSources), "sourceIds",
-			fmt.Sprintf("Select at most %d files.", s.limits.MaxSources))
-	}
 	total, marks := 0, 0
 	for k, n := range req.Counts {
 		m, err := strconv.Atoi(k)
@@ -211,6 +252,25 @@ func (s *Service) checkShapeAndCaps(req GenerateRequest) (int, error) {
 		return 0, invalid("The total marks can be at most 200.", "counts", "The total marks can be at most 200.")
 	}
 	return total, nil
+}
+
+// checkSourceIDs is the shape and count check of a source list.
+func (s *Service) checkSourceIDs(ids []string) error {
+	if len(ids) == 0 {
+		return invalid("Select at least one file.", "sourceIds", "Select at least one file.")
+	}
+	seen := map[string]bool{}
+	for _, id := range ids {
+		if id == "" || seen[id] {
+			return invalid("The selected files are not valid.", "sourceIds", "Each file may be selected once.")
+		}
+		seen[id] = true
+	}
+	if len(ids) > s.limits.MaxSources {
+		msg := fmt.Sprintf("Select at most %d files.", s.limits.MaxSources)
+		return invalid(msg, "sourceIds", msg)
+	}
+	return nil
 }
 
 func (s *Service) checkDocuments(ctx context.Context, user store.User, ids []string) error {
@@ -332,4 +392,13 @@ func (s *Service) Cancel(ctx context.Context, user store.User, jobID string) err
 		return apperr.Internal(err)
 	}
 	return nil
+}
+
+// RegenerateRequest is the body of POST /generate/regenerate.
+type RegenerateRequest struct {
+	Marks     int      `json:"marks"`
+	SourceIDs []string `json:"sourceIds"`
+	Type      string   `json:"type"`
+	Avoid     []string `json:"avoid"`
+	Model     string   `json:"model,omitempty"`
 }

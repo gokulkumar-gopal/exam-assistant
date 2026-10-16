@@ -264,3 +264,105 @@ func TestGenerateWrongMethodIsJSON405(t *testing.T) {
 		t.Errorf("status %d allow %q body %s", rec.Code, rec.Header().Get("Allow"), rec.Body)
 	}
 }
+
+const regenBody = `{"marks":2,"sourceIds":["d1"],"type":"mcq","avoid":["What is a cell?"]}`
+
+func TestRegenerateReturns202AndLocation(t *testing.T) {
+	e := newGenEnv(t, &okRunner{})
+	e.doc(t, e.uid, "d1")
+	rec := e.call("POST", "/generate/regenerate", regenBody, e.cookie)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status %d: %s", rec.Code, rec.Body)
+	}
+	var out map[string]string
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil || len(out) != 1 || len(out["jobId"]) != 26 {
+		t.Fatalf("body = %s", rec.Body)
+	}
+	if loc := rec.Header().Get("Location"); loc != "/generate/"+out["jobId"] {
+		t.Errorf("Location = %q", loc)
+	}
+	j, err := e.jobs.GetJob(context.Background(), out["jobId"])
+	if err != nil || j.Kind != store.KindRegenerate || j.Total != 1 {
+		t.Errorf("job = %+v, %v", j, err)
+	}
+	// The poll endpoint serves it like any other job (and is not shadowed by the static path).
+	poll := e.call("GET", "/generate/"+out["jobId"], "", e.cookie)
+	if poll.Code != 200 || !strings.Contains(poll.Body.String(), `"total":1`) {
+		t.Errorf("poll %d: %s", poll.Code, poll.Body)
+	}
+}
+
+func TestRegenerateRequiresLogin(t *testing.T) {
+	e := newGenEnv(t, &okRunner{})
+	e.doc(t, e.uid, "d1")
+	if rec := e.call("POST", "/generate/regenerate", regenBody, nil); rec.Code != http.StatusUnauthorized {
+		t.Errorf("status %d: %s", rec.Code, rec.Body)
+	}
+	if len(e.runner.started) != 0 {
+		t.Error("a job was started without a session")
+	}
+}
+
+func TestRegenerateValidationShape(t *testing.T) {
+	e := newGenEnv(t, &okRunner{})
+	e.doc(t, e.uid, "d1")
+	avoid := func(n, size int) string {
+		items := make([]string, n)
+		for i := range items {
+			items[i] = `"` + strings.Repeat("x", size) + `"`
+		}
+		return "[" + strings.Join(items, ",") + "]"
+	}
+	for _, tc := range []struct{ name, body, field string }{
+		{"61 avoid", `{"marks":2,"sourceIds":["d1"],"type":"mcq","avoid":` + avoid(61, 1) + `}`, "avoid"},
+		{"601 chars", `{"marks":2,"sourceIds":["d1"],"type":"mcq","avoid":` + avoid(1, 601) + `}`, "avoid"},
+		{"marks 6", `{"marks":6,"sourceIds":["d1"],"type":"mcq","avoid":[]}`, "marks"},
+		{"bad type", `{"marks":2,"sourceIds":["d1"],"type":"x","avoid":[]}`, "type"},
+		{"no sources", `{"marks":2,"sourceIds":[],"type":"mcq","avoid":[]}`, "sourceIds"},
+		{"unknown model", `{"marks":2,"sourceIds":["d1"],"type":"mcq","avoid":[],"model":"gpt-9"}`, "model"},
+		{"foreign doc", `{"marks":2,"sourceIds":["zz"],"type":"mcq","avoid":[]}`, "sourceIds"},
+	} {
+		rec := e.call("POST", "/generate/regenerate", tc.body, e.cookie)
+		var b errBody
+		_ = json.Unmarshal(rec.Body.Bytes(), &b)
+		if rec.Code != 422 || b.Error.Code != "validation" || b.Error.Fields[tc.field] == "" {
+			t.Errorf("%s: status %d body %s", tc.name, rec.Code, rec.Body)
+		}
+	}
+	for _, body := range []string{
+		`{"marks":2,"sourceIds":["d1"],"type":"mcq","avoid":[],"extra":1}`,
+		`{"marks":"two","sourceIds":["d1"],"type":"mcq"}`,
+		`{"marks":2,"sourceIds":["d1"],"type":"mcq","avoid":[1]}`,
+	} {
+		if rec := e.call("POST", "/generate/regenerate", body, e.cookie); rec.Code != 422 {
+			t.Errorf("%s: status %d", body, rec.Code)
+		}
+	}
+	// 60 x 600 is accepted over HTTP too.
+	rec := e.call("POST", "/generate/regenerate", `{"marks":2,"sourceIds":["d1"],"type":"mcq","avoid":`+avoid(60, 600)+`}`, e.cookie)
+	if rec.Code != 202 {
+		t.Errorf("60 x 600: status %d: %s", rec.Code, rec.Body)
+	}
+}
+
+func TestRegenerateQuotaIs429AndWrongMethodIsJSON405(t *testing.T) {
+	e := newGenEnv(t, &okRunner{})
+	e.doc(t, e.uid, "d1")
+	rec := e.call("PUT", "/generate/regenerate", "", e.cookie)
+	if rec.Code != 405 || rec.Header().Get("Allow") != "DELETE, GET, HEAD, POST" ||
+		!strings.Contains(rec.Header().Get("Content-Type"), "application/json") {
+		t.Errorf("status %d allow %q body %s", rec.Code, rec.Header().Get("Allow"), rec.Body)
+	}
+	for i := 0; i < 10; i++ {
+		if rec := e.call("POST", "/generate/regenerate", regenBody, e.cookie); rec.Code != 202 {
+			t.Fatalf("regenerate %d: %d %s", i, rec.Code, rec.Body)
+		}
+		e.clk.Advance(7 * time.Minute) // past the running-jobs window
+	}
+	rec = e.call("POST", "/generate/regenerate", regenBody, e.cookie)
+	var b errBody
+	_ = json.Unmarshal(rec.Body.Bytes(), &b)
+	if rec.Code != 429 || b.Error.Code != "rate_limited" || b.Error.Message != gen.QuotaMessage(store.QuotaRegen) {
+		t.Errorf("status %d body %s", rec.Code, rec.Body)
+	}
+}
