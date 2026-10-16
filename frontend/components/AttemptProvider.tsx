@@ -13,14 +13,13 @@ import { scheduleAt } from "@/lib/timer";
 import { answersByIndex, clampIndex, takeDecision } from "@/lib/take";
 import { applyReveal, applyRevealError, initReveal, peeksOn, revealControl, revealHint, type RevealedAnswer } from "@/lib/reveal";
 import type { Attempt, ExamResponse, RevealResponse } from "@/lib/types";
+import { useForbiddenRedirect } from "@/lib/forbidden";
 import { EmptyState } from "@/components/EmptyState";
 import { ExamBar } from "@/components/ExamBar";
 import { Notice } from "@/components/Notice";
 
 export const CLOSED_TOAST = "This exam has closed. Your last saved answers were submitted.";
 export const TIMES_UP_TOAST = "Time's up. Your answers were submitted.";
-/** fs 8.1 errors table: 403 shows this toast and goes Home. */
-export const FORBIDDEN_TOAST = "You don't have access to that.";
 export const NOT_OPEN_TOAST = "This exam is closed";
 /** A submit request that has not answered by then counts as failed (the loop retries; submit is idempotent). */
 const SUBMIT_TIMEOUT_MS = 20_000;
@@ -87,6 +86,7 @@ export function AttemptProvider({ children }: { children: React.ReactNode }) {
   const params = useParams<{ id: string }>();
   const id = params.id;
   const router = useRouter();
+  const onForbidden = useForbiddenRedirect();
   const [data, setData] = useState<ExamResponse | null>(null);
   const [error, setError] = useState<"gone" | "failed" | null>(null);
   const [tries, setTries] = useState(0);
@@ -97,12 +97,12 @@ export function AttemptProvider({ children }: { children: React.ReactNode }) {
       (r) => { if (alive) { setData(r); setError(null); } },
       (e) => {
         if (!alive) return;
-        if (e instanceof ApiError && e.status === 403) { toast(FORBIDDEN_TOAST); router.replace("/"); return; }
+        if (onForbidden(e)) return;
         setError(e instanceof ApiError && e.status === 404 ? "gone" : "failed");
       },
     );
     return () => { alive = false; };
-  }, [id, tries, router]);
+  }, [id, tries, onForbidden]);
 
   // Decided once per load (not on re-render): what opening this exam does at this moment.
   const decision = useMemo(() => {

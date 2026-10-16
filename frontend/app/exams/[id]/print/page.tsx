@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { api, ApiError } from "@/lib/api";
+import { useForbiddenRedirect } from "@/lib/forbidden";
 import { answerSheetAvailable, defaultOptions, printPlan, type PrintOptions } from "@/lib/print";
 import type { ExamResponse } from "@/lib/types";
 import { EmptyState } from "@/components/EmptyState";
@@ -22,6 +23,7 @@ export default function Page() {
   const encoded = encodeURIComponent(params.id);
   const [view, setView] = useState<View>({ kind: "loading" });
   const [options, setOptions] = useState<PrintOptions | null>(null);
+  const onForbidden = useForbiddenRedirect();
   const seqRef = useRef({ n: 0 });
 
   // Read-only: GET /exams/:id never starts an attempt, and this page sends nothing else.
@@ -36,9 +38,10 @@ export default function Page() {
       setView({ kind: "ok", data });
     } catch (e) {
       if (mine !== seq.n) return;
-      setView(e instanceof ApiError && (e.status === 403 || e.status === 404) ? { kind: "denied" } : { kind: "error" });
+      if (onForbidden(e)) return;
+      setView(e instanceof ApiError && e.status === 404 ? { kind: "denied" } : { kind: "error" });
     }
-  }, [encoded]);
+  }, [encoded, onForbidden]);
 
   useEffect(() => {
     const seq = seqRef.current;
