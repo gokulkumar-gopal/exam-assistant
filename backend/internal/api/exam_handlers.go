@@ -12,6 +12,10 @@ import (
 // stops a body from being read without limit.
 const examBodyCap = 1 << 21
 
+// autosaveBodyCap is the 200 KB body limit of PUT /exams/{id}/attempt (backend-spec 8.5). Decode
+// turns an oversize body into the 422 validation error of the 8.0 body rule.
+const autosaveBodyCap = 200 << 10
+
 // registerExamRoutes serves the exam endpoints (backend-spec 8.5).
 func registerExamRoutes(rt *routeTable, deps Deps) {
 	rt.handle("POST", "/exams", RequireUser(deps, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -102,6 +106,24 @@ func registerExamRoutes(rt *routeTable, deps Deps) {
 			"exam":       v.Exam,
 			"counts":     v.Counts,
 			"attempts":   v.Attempts,
+		})
+	})))
+	rt.handle("PUT", "/exams/{id}/attempt", RequireUser(deps, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var in exams.AutosaveInput
+		if err := Decode(w, r, &in, autosaveBodyCap); err != nil {
+			WriteError(w, r, err)
+			return
+		}
+		u, _ := UserFrom(r.Context())
+		at, err := deps.Exams.Autosave(r.Context(), u, r.PathValue("id"), in)
+		if err != nil {
+			WriteError(w, r, err)
+			return
+		}
+		w.Header().Set("Cache-Control", "no-store")
+		WriteJSON(w, http.StatusOK, map[string]any{
+			"savedAt":    at.UTC().Format(time.RFC3339),
+			"serverTime": deps.Clock.Now().UTC().Format(time.RFC3339),
 		})
 	})))
 }
