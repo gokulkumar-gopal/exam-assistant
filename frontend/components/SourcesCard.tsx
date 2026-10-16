@@ -10,6 +10,7 @@ export function SourcesCard({
   error,
   loadError,
   onRetry,
+  disabled,
 }: {
   docs: Doc[] | null;
   selected: Set<string>;
@@ -18,6 +19,8 @@ export function SourcesCard({
   error: string | null;
   loadError?: boolean;
   onRetry?: () => void;
+  /** True while a generation job runs. */
+  disabled?: boolean;
 }) {
   const n = selected.size;
   return (
@@ -37,7 +40,7 @@ export function SourcesCard({
           {docs.map((d) => (
             <li key={d.id}>
               <label className="flex min-h-10 cursor-pointer items-center gap-2.5 break-words py-1">
-                <Checkbox checked={selected.has(d.id)} onCheckedChange={() => onToggle(d.id)} />
+                <Checkbox checked={selected.has(d.id)} onCheckedChange={() => onToggle(d.id)} disabled={disabled} />
                 <span className="min-w-0 flex-1 break-words">{d.name}</span>
               </label>
             </li>

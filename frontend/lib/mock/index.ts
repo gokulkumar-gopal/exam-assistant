@@ -13,7 +13,7 @@ interface MockExam {
   createdBy: { id: string; name: string }; questions: Question[]; mine: boolean;
   attempt: Attempt | null; assigned: string[];
 }
-interface MockJob { polls: number; marks?: Marks; type: ExamType; counts: Record<string, number> }
+interface MockJob { polls: number; marks?: Marks; type: ExamType; counts: Record<string, number>; model: string; trigger: string | null }
 
 const HOUR = 3600_000;
 const iso = (ms: number) => new Date(ms).toISOString();
@@ -196,33 +196,55 @@ export function mockFetch(method: string, rawPath: string, body: unknown): Respo
   if (route === "GET /ai/usage") return json(200, { serverTime: st(), ...usage });
 
   // Generation
+  // Test triggers (mock only), read from the page URL: ?mockGen=
+  //   failed | failedSources | rate | budget | file422 | model422 | network
+  // model422 only answers 422 when a non-default model is sent, so the reset-to-default retry succeeds.
   if (route === "POST /generate") {
     const b = as<GenerateBody>();
+    const trigger = typeof window === "undefined" ? null : new URLSearchParams(window.location.search).get("mockGen");
+    if (trigger === "rate") return err(429, "rate_limited", "You've reached today's limit for generating exams. Try again tomorrow.");
+    if (trigger === "budget") return err(429, "rate_limited", "The monthly AI budget has been used. Try again next month.");
+    if (trigger === "file422") return err(422, "validation", "Biology.pdf has too many pages to use. Remove it or pick a smaller file.", { sourceIds: "Biology.pdf" });
+    if (trigger === "model422" && b.model !== undefined && b.model !== models[0].id) {
+      return err(422, "validation", "That model isn't available.", { model: "unknown or not enabled" });
+    }
     const jobId = `j${++state.seq}`;
-    state.jobs[jobId] = { polls: 0, type: b.type, counts: b.counts };
+    state.jobs[jobId] = { polls: 0, type: b.type, counts: b.counts, model: b.model ?? models[0].id, trigger };
+    const log = globalThis as unknown as { __mockGenLog?: string[] };
+    (log.__mockGenLog ??= []).push(`POST:${jobId}:${b.model ?? "none"}`);
     return json(202, { jobId }, { Location: `/generate/${jobId}` });
   }
   if (route === "POST /generate/regenerate") {
     const b = as<RegenerateBody>();
     const jobId = `j${++state.seq}`;
-    state.jobs[jobId] = { polls: 0, type: b.type, counts: { [String(b.marks)]: 1 }, marks: b.marks };
+    state.jobs[jobId] = { polls: 0, type: b.type, counts: { [String(b.marks)]: 1 }, marks: b.marks, model: b.model ?? models[0].id, trigger: null };
     return json(202, { jobId }, { Location: `/generate/${jobId}` });
   }
   if (route === "GET /generate/:id") {
     const job = state.jobs[id];
     if (!job) return err(404, "not_found", "That item isn't available.");
     job.polls++;
+    if (job.trigger === "network") throw new TypeError("mock network failure");
     const entries = Object.entries(job.counts).flatMap(([m, n]) => Array(Number(n) || 0).fill(Number(m) as Marks) as Marks[]);
     const total = entries.length || 1;
-    if (job.polls < 3) {
-      return json(200, { status: "running", model: models[0].id, progress: { done: Math.min(total - 1, job.polls), total },
-        questions: null, failedSources: [], error: null, serverTime: st() });
+    if (job.trigger === "failed" && job.polls >= 2) {
+      return json(200, { status: "failed", model: job.model, progress: { done: 1, total }, questions: null,
+        failedSources: [], error: "We couldn't write questions from those files. Try different files.", serverTime: st() });
+    }
+    // Progress advances on every poll, so the progress text visibly changes.
+    const written = Math.max(0, job.polls - 1) * Math.max(1, Math.ceil(total / 4));
+    if (written < total) {
+      return json(200, { status: job.polls === 1 ? "queued" : "running", model: job.model,
+        progress: { done: Math.min(total - 1, written), total }, questions: null, failedSources: [], error: null, serverTime: st() });
     }
     const questions = entries.map((m, i) => ({ ...makeQuestion(i + state.seq, m, job.type), id: `g${state.seq}-${i}` }));
-    return json(200, { status: "done", model: models[0].id, progress: { done: total, total }, questions,
-      failedSources: [], error: null, serverTime: st() });
+    return json(200, { status: "done", model: job.model, progress: { done: total, total }, questions,
+      failedSources: job.trigger === "failedSources" ? ["Photosynthesis.jpg"] : [], error: null, serverTime: st() });
   }
   if (route === "DELETE /generate/:id") {
+    // Request log for verification (job ids only).
+    const log = globalThis as unknown as { __mockGenLog?: string[] };
+    (log.__mockGenLog ??= []).push(`DELETE:${id}`);
     delete state.jobs[id];
     return nothing();
   }
