@@ -63,7 +63,7 @@ export interface UsageResponse {
 // Generation
 export interface GenerateBody {
   sourceIds: string[]; type: ExamType;
-  counts: Record<"1" | "2" | "3" | "4" | "5", number> | Record<string, number>;
+  counts: Record<string, number>; // keyed "1".."5"
   shuffle: boolean; model?: string;
 }
 export interface RegenerateBody { marks: Marks; sourceIds: string[]; type: ExamType; avoid: string[]; model?: string }

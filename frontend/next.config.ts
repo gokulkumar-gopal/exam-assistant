@@ -5,7 +5,11 @@ const nextConfig: NextConfig = {
   env: { NEXT_PUBLIC_MOCK_API: process.env.MOCK_API === "true" ? "true" : "false" },
   async rewrites() {
     // API_URL is server-only (no NEXT_PUBLIC_ prefix), no trailing slash.
-    return [{ source: "/api/:path*", destination: `${process.env.API_URL}/:path*` }];
+    // Unset (mock mode, or a build without a backend): no rewrite, since
+    // "undefined/:path*" is rejected by Next at startup.
+    const apiUrl = process.env.API_URL;
+    if (!apiUrl) return [];
+    return [{ source: "/api/:path*", destination: `${apiUrl}/:path*` }];
   },
 };
 

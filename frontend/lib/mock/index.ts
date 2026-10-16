@@ -1,7 +1,8 @@
 // In-memory mock backend for MOCK_API=true. Covers every call in fs 8.
 // Returns a Response so the client treats it exactly like a network reply.
 import type {
-  Attempt, AttemptStatus, ExamListItem, ExamType, Marks, NewQuestion, Question, ResultQuestion, User,
+  Attempt, AttemptStatus, ExamListItem, ExamType, Marks, Question, ResultQuestion, User,
+  AssignBody, AttemptBody, CreateExamBody, GenerateBody, RegenerateBody, RevealBody, SignupBody, SubmitBody, UploadUrlBody,
 } from "../types";
 import { demoUser, docs as seedDocs, makeQuestion, models, rao, usage } from "./fixtures";
 
@@ -95,13 +96,14 @@ function keyedQuestions(e: MockExam, visible: boolean): Question[] {
 export function mockFetch(method: string, rawPath: string, body: unknown): Response {
   const [path, qs = ""] = rawPath.split("?");
   const query = new URLSearchParams(qs);
-  const b = (body ?? {}) as Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
+  const as = <T>() => (body ?? {}) as T;
   const seg = path.split("/").filter(Boolean);
   const route = `${method} /${seg.map((s, i) => (i === 1 && ["documents", "exams", "generate"].includes(seg[0]) && s !== "upload-url" && s !== "regenerate" ? ":id" : s)).join("/")}`;
   const id = seg[1];
 
   // Auth
   if (route === "POST /auth/signup") {
+    const b = as<SignupBody>();
     state.user = { id: "u_new", name: b.name, email: String(b.email).toLowerCase(), role: b.role };
     state.loggedIn = true;
     return json(201, { user: state.user });
@@ -124,6 +126,7 @@ export function mockFetch(method: string, rawPath: string, body: unknown): Respo
   // Documents
   if (route === "GET /documents") return json(200, { documents: state.docs, serverTime: st() });
   if (route === "POST /documents/upload-url") {
+    const b = as<UploadUrlBody>();
     const docId = `d${++state.seq}`;
     state.pendingUploads[docId] = { name: b.name, type: b.type, sizeBytes: b.sizeBytes };
     return json(201, { docId, uploadUrl: `mock://s3/${docId}`, headers: { "Content-Type": b.type } });
@@ -154,11 +157,13 @@ export function mockFetch(method: string, rawPath: string, body: unknown): Respo
 
   // Generation
   if (route === "POST /generate") {
+    const b = as<GenerateBody>();
     const jobId = `j${++state.seq}`;
-    state.jobs[jobId] = { polls: 0, type: b.type, counts: b.counts ?? {} };
+    state.jobs[jobId] = { polls: 0, type: b.type, counts: b.counts };
     return json(202, { jobId }, { Location: `/generate/${jobId}` });
   }
   if (route === "POST /generate/regenerate") {
+    const b = as<RegenerateBody>();
     const jobId = `j${++state.seq}`;
     state.jobs[jobId] = { polls: 0, type: b.type, counts: { [String(b.marks)]: 1 }, marks: b.marks };
     return json(202, { jobId }, { Location: `/generate/${jobId}` });
@@ -184,13 +189,14 @@ export function mockFetch(method: string, rawPath: string, body: unknown): Respo
 
   // Exams
   if (route === "POST /exams") {
+    const b = as<CreateExamBody>();
     const closes = b.closesAt ? b.closesAt : iso(Date.now() + (b.closesInSeconds ?? 0) * 1000);
-    const emails: string[] = b.assigneeEmails ?? [];
+    const emails = b.assigneeEmails ?? [];
     const exam: MockExam = {
       id: `e${++state.seq}`, title: b.title, type: b.type, closesAt: closes,
       maxPeeks: b.maxPeeks ?? (emails.length === 0 ? 3 : 0),
       createdBy: { id: state.user.id, name: state.user.name },
-      questions: (b.questions as NewQuestion[]).map((q, i) => ({ ...q, id: `q${state.seq}-${i}` })),
+      questions: b.questions.map((q, i) => ({ ...q, id: `q${state.seq}-${i}` })),
       mine: true, attempt: null, assigned: emails,
     };
     if (emails.length === 0) exam.attempt = { status: "not_started", answers: {}, lastQuestionIndex: 0, revealed: [], peeksLeft: exam.maxPeeks };
@@ -224,12 +230,14 @@ export function mockFetch(method: string, rawPath: string, body: unknown): Respo
       });
     }
     if (method === "PUT" && sub === "attempt") {
+    const b = as<AttemptBody>();
       if (over(exam)) return err(409, "exam_closed", "This exam is closed.");
       if (!exam.attempt || exam.attempt.status === "submitted") return err(409, "conflict", "Already submitted.");
       exam.attempt = { ...exam.attempt, status: "in_progress", answers: b.answers, lastQuestionIndex: b.lastQuestionIndex, savedAt: st() };
       return json(200, { savedAt: st(), serverTime: st() });
     }
     if (method === "POST" && sub === "submit") {
+    const b = as<SubmitBody>();
       if (!exam.attempt) return err(404, "not_found", "That item isn't available.");
       if (exam.attempt.status !== "submitted") {
         if (over(exam)) return err(409, "exam_closed", "This exam is closed.");
@@ -242,6 +250,7 @@ export function mockFetch(method: string, rawPath: string, body: unknown): Respo
         submittedAt: st(), autoSubmitted: false, serverTime: st() });
     }
     if (method === "POST" && sub === "reveal") {
+    const b = as<RevealBody>();
       if (exam.maxPeeks === 0) return err(403, "forbidden", "Peeking is off for this exam.");
       if (keyVisible(exam) || !exam.attempt) return err(409, "conflict", "The answer is already available.");
       if (over(exam)) return err(409, "exam_closed", "This exam is closed.");
@@ -278,9 +287,10 @@ export function mockFetch(method: string, rawPath: string, body: unknown): Respo
       });
     }
     if (method === "POST" && sub === "assign") {
+    const b = as<AssignBody>();
       if (!exam.mine) return err(403, "forbidden", "You don't have access to that.");
       if (over(exam)) return err(409, "exam_closed", "This exam is closed.");
-      const emails: string[] = b.emails ?? [];
+      const emails = b.emails ?? [];
       const unknown = emails.filter((e) => e.startsWith("unknown"));
       const known = emails.filter((e) => !unknown.includes(e));
       const already = known.filter((e) => exam.assigned.includes(e));

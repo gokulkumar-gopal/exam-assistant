@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { ApiError, createApi } from "../lib/api";
 
 const json = (status: number, body: unknown) =>
@@ -70,5 +70,49 @@ describe("api client", () => {
     const { api } = createApi({ fetch: f as never, sleep: noSleep });
     await expect(api("DELETE", "/documents/1")).resolves.toBeUndefined();
     expect((f.mock.calls[0] as unknown as [string])[0]).toBe("/api/documents/1");
+  });
+
+  it("does not retry reads on statuses outside 502/503/504", async () => {
+    for (const status of [500, 404]) {
+      const f = vi.fn(async () => json(status, { error: { code: "internal", message: "x" } }));
+      const { api } = createApi({ fetch: f as never, sleep: noSleep });
+      await expect(api("GET", "/documents")).rejects.toMatchObject({ status });
+      expect(f).toHaveBeenCalledTimes(1);
+    }
+  });
+
+  it("does not retry PUT or DELETE on 503", async () => {
+    for (const method of ["PUT", "DELETE"] as const) {
+      const f = vi.fn(async () => json(503, { error: { code: "upstream_unavailable", message: "x" } }));
+      const { api } = createApi({ fetch: f as never, sleep: noSleep });
+      await expect(api(method, "/exams/1/attempt", {})).rejects.toMatchObject({ status: 503 });
+      expect(f).toHaveBeenCalledTimes(1);
+    }
+  });
+
+  describe("default sleep", () => {
+    afterEach(() => vi.useRealTimers());
+
+    it("waits 1 s, 2 s, 4 s between read retries, advancing only with timers", async () => {
+      vi.useFakeTimers();
+      const f = vi.fn(async () => json(503, { error: { code: "upstream_unavailable", message: "x" } }));
+      const { api } = createApi({ fetch: f as never });
+      const p = api("GET", "/documents").catch((e) => e);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(f).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(999);
+      expect(f).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(f).toHaveBeenCalledTimes(2);
+      await vi.advanceTimersByTimeAsync(1999);
+      expect(f).toHaveBeenCalledTimes(2);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(f).toHaveBeenCalledTimes(3);
+      await vi.advanceTimersByTimeAsync(3999);
+      expect(f).toHaveBeenCalledTimes(3);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(f).toHaveBeenCalledTimes(4);
+      expect(await p).toMatchObject({ status: 503 });
+    });
   });
 });
