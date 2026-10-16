@@ -11,6 +11,7 @@ import (
 	"github.com/gokulkumar/exam-assistant/backend/internal/api"
 	"github.com/gokulkumar/exam-assistant/backend/internal/auth"
 	"github.com/gokulkumar/exam-assistant/backend/internal/config"
+	"github.com/gokulkumar/exam-assistant/backend/internal/gen"
 )
 
 type stubVerifier struct{ deadline time.Duration }
@@ -25,7 +26,7 @@ func (s *stubVerifier) Verify(ctx context.Context, _ string) (auth.GoogleClaims,
 func testCfg() config.Config {
 	return config.Config{
 		Env: "production", Stage: "dev", S3Bucket: "bucket", GoogleClientID: "cid",
-		JWTSecret: strings.Repeat("s", 32), Providers: []string{"anthropic"}, AllowedOrigins: []string{"http://localhost:3000"},
+		WorkerFunctionName: "exam-assistant-dev-worker", JWTSecret: strings.Repeat("s", 32), Providers: []string{"anthropic"}, AllowedOrigins: []string{"http://localhost:3000"},
 	}
 }
 
@@ -67,9 +68,18 @@ func TestBuildAPIDepsPopulatesEverything(t *testing.T) {
 	if deps.Jobs == nil || deps.Gen == nil {
 		t.Error("generation dependencies are not wired")
 	}
-	// Until B-2.4 the runner is the stub, so starting a job fails.
-	if err := deps.Runner.Start(context.Background(), "x"); err == nil {
-		t.Error("expected the stub runner")
+	lr, ok := deps.Runner.(gen.LambdaRunner)
+	if !ok || lr.FunctionName != "exam-assistant-dev-worker" || lr.Client == nil {
+		t.Errorf("runner = %#v, want a LambdaRunner for the worker function", deps.Runner)
+	}
+}
+
+func TestBuildAPIDepsRequiresWorkerFunctionName(t *testing.T) {
+	cfg := testCfg()
+	cfg.WorkerFunctionName = ""
+	_, err := buildAPIDeps(context.Background(), cfg, anonymous())
+	if err == nil || !strings.Contains(err.Error(), "WORKER_FUNCTION_NAME") {
+		t.Errorf("err = %v", err)
 	}
 }
 

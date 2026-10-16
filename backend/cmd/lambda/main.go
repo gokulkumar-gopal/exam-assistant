@@ -32,11 +32,17 @@ func main() {
 
 	switch cfg.Mode {
 	case "worker":
-		lambda.Start(func(ctx context.Context, ev workerEvent) error {
-			// The job runner lands in B-2.4; until then the worker only records the event.
-			logger.Info("worker event received", "job_id", ev.JobID)
-			return nil
-		})
+		awsCfg, err := awsconfig.LoadDefaultConfig(context.Background())
+		if err != nil {
+			logger.Error("aws config", "err", err)
+			os.Exit(1)
+		}
+		worker, err := buildWorker(cfg, awsCfg)
+		if err != nil {
+			logger.Error("worker wiring", "err", err)
+			os.Exit(1)
+		}
+		lambda.Start(handleWorkerEvent(worker))
 	default:
 		awsCfg, err := awsconfig.LoadDefaultConfig(context.Background())
 		if err != nil {
