@@ -452,3 +452,20 @@ func TestDeleteIdempotent204(t *testing.T) {
 		t.Errorf("foreign object deleted: %v", err)
 	}
 }
+
+func TestNewHandlerRefusesNilDocs(t *testing.T) {
+	users := memory.NewUserStore()
+	clk := clock.NewFake(authT0)
+	deps := Deps{
+		Logger: silentLogger(), Clock: clk, Users: users,
+		Auth:     auth.NewService(users, auth.NewBcryptHasher(bcrypt.MinCost), clk),
+		Sessions: auth.NewSessions([]byte(authSecret), "local"),
+	}
+	if h, err := NewHandler(deps); err == nil || h != nil || !strings.Contains(err.Error(), "Docs") {
+		t.Fatalf("nil Docs: h=%v err=%v", h, err)
+	}
+	deps.Docs = docs.NewService(memory.NewDocStore(clk), docs.NewMemBlob(), clk)
+	if _, err := NewHandler(deps); err != nil {
+		t.Fatalf("complete deps: %v", err)
+	}
+}

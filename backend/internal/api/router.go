@@ -2,6 +2,7 @@
 package api
 
 import (
+	"fmt"
 	"log/slog"
 	"net/http"
 	"slices"
@@ -81,6 +82,44 @@ func (rt *routeTable) fallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	WriteError(w, r, apperr.NotFound())
+}
+
+// Validate reports every piece of Deps that API mode cannot run without. NewRouter
+// silently skips route groups whose dependency is nil (useful in unit tests); production
+// entry points must go through NewHandler so a missing piece is a startup error.
+func (d Deps) Validate() error {
+	var missing []string
+	if d.Logger == nil {
+		missing = append(missing, "Logger")
+	}
+	if d.Clock == nil {
+		missing = append(missing, "Clock")
+	}
+	if d.Users == nil {
+		missing = append(missing, "Users")
+	}
+	if d.Auth == nil {
+		missing = append(missing, "Auth")
+	}
+	if d.Sessions == nil {
+		missing = append(missing, "Sessions")
+	}
+	if d.Docs == nil {
+		missing = append(missing, "Docs")
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("api: missing dependencies: %s", strings.Join(missing, ", "))
+	}
+	return nil
+}
+
+// NewHandler is NewRouter for API mode: it refuses to build when a required dependency
+// is nil, so no route group is ever silently skipped.
+func NewHandler(deps Deps) (http.Handler, error) {
+	if err := deps.Validate(); err != nil {
+		return nil, err
+	}
+	return NewRouter(deps), nil
 }
 
 // NewRouter builds the handler tree. Routes have no /api prefix.
