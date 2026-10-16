@@ -143,7 +143,13 @@ export function mockFetch(method: string, rawPath: string, body: unknown): Respo
   if (route === "GET /me") return json(200, { user: state.user, serverTime: st() });
 
   // Documents
-  if (route === "GET /documents") return json(200, { documents: state.docs, serverTime: st() });
+  // Test triggers (set from the browser console; this module only loads with MOCK_API):
+  //   globalThis.__mockDocsFail = true         -> GET /documents answers 500 until cleared
+  //   globalThis.__mockDeleteFail = ["d1"]     -> DELETE of those ids answers 500
+  if (route === "GET /documents") {
+    if ((globalThis as { __mockDocsFail?: boolean }).__mockDocsFail) return err(500, "internal", "Something went wrong. Try again.");
+    return json(200, { documents: state.docs, serverTime: st() });
+  }
   if (route === "POST /documents/upload-url") {
     const b = as<UploadUrlBody>();
     const docId = `d${++state.seq}`;
@@ -166,6 +172,7 @@ export function mockFetch(method: string, rawPath: string, body: unknown): Respo
     return json(200, { url: `/mock/file-${id}`, expiresAt: iso(Date.now() + 10 * 60_000) });
   }
   if (route === "DELETE /documents/:id") {
+    if ((globalThis as { __mockDeleteFail?: string[] }).__mockDeleteFail?.includes(id)) return err(500, "internal", "Something went wrong. Try again.");
     state.docs = state.docs.filter((d) => d.id !== id);
     return nothing();
   }

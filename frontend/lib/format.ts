@@ -4,7 +4,7 @@ const MIN = 60_000;
 const HOUR = 60 * MIN;
 const DAY = 24 * HOUR;
 
-function shortDate(ms: number): string {
+export function shortDate(ms: number): string {
   return new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric" }).format(new Date(ms));
 }
 
