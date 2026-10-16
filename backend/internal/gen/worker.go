@@ -51,7 +51,7 @@ const (
 // WorkerConfig is the part of the process configuration the worker needs.
 type WorkerConfig struct {
 	MaxPerCall    int           // questions per Generate call (AI-spec 5.3); 0 means 15
-	Effort        string        // LLM_EFFORT; recorded on the job only for models that take it's usage
+	Effort        string        // LLM_EFFORT; recorded on the job only as EffortSent says (what the model's calls carry)
 	PromptVersion string        // recorded on the job's usage (prompt.PromptVersion; gen cannot import prompt)
 	CallTimeout   time.Duration // per Generate call (LLM_TIMEOUT_SECONDS); 0 means 120 s
 	MaxTotalBytes int64         // raw bytes of the sources (GEN_MAX_TOTAL_BYTES); 0 means 20 MiB
@@ -195,14 +195,9 @@ func (s *runState) snap() runSnapshot {
 	return sn
 }
 
-// effortFor is the configured effort when the model takes one, otherwise "" (the job records
-// what was actually sent).
-func (w *Worker) effortFor(model string) string {
-	if m, ok := LookupModel(model); ok && m.SupportsEffort {
-		return w.Cfg.Effort
-	}
-	return ""
-}
+// effortFor is the effort the model's calls carry, otherwise "" (the job records what was
+// actually sent).
+func (w *Worker) effortFor(model string) string { return EffortSent(model, w.Cfg.Effort) }
 
 func (w *Worker) jobUsage(sn runSnapshot) store.JobUsage {
 	return store.JobUsage{

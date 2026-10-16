@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"slices"
 	"strings"
 	"sync"
@@ -1048,5 +1049,28 @@ func TestFakeGeneratorOutputSurvivesValidation(t *testing.T) {
 				avoid = append(avoid, q.Text)
 			}
 		}
+	}
+}
+
+// A factory failure (a missing provider key, an unknown provider) is a deployment error: the
+// job gets the generic message, and the detail is logged only (AI-spec 8, B-2.9).
+func TestFactoryErrorIsLoggedAndNeverPutInJobError(t *testing.T) {
+	e := newWEnv(t, map[string]int{"1": 2})
+	const detail = "gemini: GEMINI_API_KEY is not set (factory detail)"
+	e.w.Gens = func(string) (Generator, error) { return nil, errors.New(detail) }
+	var logs bytes.Buffer
+	old := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	defer slog.SetDefault(old)
+	e.run(t)
+	j := e.job(t)
+	if j.Status != store.JobFailed || j.Error != GenerateFailedMessage {
+		t.Errorf("job = %s %q, want the generic message", j.Status, j.Error)
+	}
+	if strings.Contains(j.Error, "GEMINI") || strings.Contains(j.Error, "factory") {
+		t.Errorf("factory error leaked into Job.Error: %q", j.Error)
+	}
+	if l := logs.String(); !strings.Contains(l, "level=ERROR") || !strings.Contains(l, "GEMINI_API_KEY is not set") {
+		t.Errorf("factory error not logged: %q", l)
 	}
 }

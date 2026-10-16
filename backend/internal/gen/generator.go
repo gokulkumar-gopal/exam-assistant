@@ -164,8 +164,8 @@ func (e *UserError) Unwrap() error { return e.Err }
 // ErrGeneratorsNotConfigured is returned by UnconfiguredFactory.
 var ErrGeneratorsNotConfigured = errors.New("generators not configured")
 
-// UnconfiguredFactory is the placeholder factory until the provider generators are wired
-// (B-2.8, B-2.9): every lookup fails with ErrGeneratorsNotConfigured.
+// UnconfiguredFactory is the factory of the local server when no fake LLM is wanted: every
+// lookup fails with ErrGeneratorsNotConfigured. The Lambda worker uses providers.New.
 func UnconfiguredFactory(string) (Generator, error) { return nil, ErrGeneratorsNotConfigured }
 
 // FixedFactory returns a factory that gives the same Generator for every model. Tests and

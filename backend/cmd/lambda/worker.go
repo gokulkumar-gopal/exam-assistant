@@ -15,6 +15,7 @@ import (
 	"github.com/gokulkumar/exam-assistant/backend/internal/docs"
 	"github.com/gokulkumar/exam-assistant/backend/internal/gen"
 	"github.com/gokulkumar/exam-assistant/backend/internal/gen/prompt"
+	"github.com/gokulkumar/exam-assistant/backend/internal/gen/providers"
 	"github.com/gokulkumar/exam-assistant/backend/internal/store/dynamo"
 )
 
@@ -41,9 +42,9 @@ func handleWorkerEvent(r jobRunner) func(ctx context.Context, payload json.RawMe
 
 // buildWorker wires the MODE=worker dependencies: the DynamoDB stores, the S3 blob and
 // the generator factory. It makes no network calls and fails fast when something the
-// worker cannot run without is missing. Until the provider generators exist (B-2.5 to
-// B-2.7) the factory is gen.UnconfiguredFactory, so every job fails with the generic
-// message and the log says "generators not configured".
+// worker cannot run without is missing. The factory (providers.New) picks the Anthropic or
+// Gemini adapter from the job's model; a missing key fails that job with the generic message
+// and the log names the variable.
 func buildWorker(cfg config.Config, awsCfg aws.Config) (*gen.Worker, error) {
 	var errs []error
 	if cfg.Stage == "" {
@@ -63,7 +64,7 @@ func buildWorker(cfg config.Config, awsCfg aws.Config) (*gen.Worker, error) {
 		Jobs:  stores,
 		Docs:  stores,
 		Blob:  docs.NewS3Blob(awsCfg, cfg.S3Bucket),
-		Gens:  gen.UnconfiguredFactory,
+		Gens:  providers.New(cfg),
 		Clock: clock.Real{},
 		Cfg: gen.WorkerConfig{
 			MaxPerCall: cfg.GenMaxPerCall, Effort: cfg.LLMEffort, PromptVersion: prompt.PromptVersion,

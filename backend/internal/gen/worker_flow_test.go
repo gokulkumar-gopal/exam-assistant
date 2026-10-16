@@ -1022,15 +1022,20 @@ func (m modelOverride) GetJob(ctx context.Context, id string) (store.Job, error)
 }
 
 func TestJobRecordsTheEffectiveEffortOfItsModel(t *testing.T) {
-	for _, tc := range []struct{ model, want string }{
-		{"claude-sonnet-5-5", "low"}, {"claude-opus-5-5", "low"}, {"claude-haiku-4-5", ""}, {"gemini-3.1-flash-lite", ""},
+	for _, tc := range []struct{ model, effort, want string }{
+		{"claude-sonnet-5-5", "low", "low"}, {"claude-opus-5-5", "high", "high"},
+		{"claude-haiku-4-5", "low", ""},
+		// Gemini: the thinking level actually sent (low, medium, high), nothing otherwise.
+		{"gemini-3.1-flash-lite", "low", "low"}, {"gemini-3.1-flash-lite", "medium", "medium"},
+		{"gemini-3.1-flash-lite", "high", "high"}, {"gemini-3.1-flash-lite", "", ""},
+		{"gemini-3.1-flash-lite", "Medium", ""}, // unknown: the adapter sends no thinking level
 	} {
 		e := newWEnv(t, map[string]int{"1": 1})
-		e.w.Cfg.Effort = "low"
+		e.w.Cfg.Effort = tc.effort
 		e.w.Jobs = modelOverride{e.w.Jobs, tc.model}
 		e.run(t)
 		if got := e.job(t).Usage.Effort; got != tc.want {
-			t.Errorf("%s: recorded effort %q, want %q", tc.model, got, tc.want)
+			t.Errorf("%s with effort %q: recorded %q, want %q", tc.model, tc.effort, got, tc.want)
 		}
 	}
 }
