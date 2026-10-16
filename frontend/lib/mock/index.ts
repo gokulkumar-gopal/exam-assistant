@@ -51,7 +51,7 @@ function seedExams() {
       attempt: { status: "in_progress", answers: { q21: "Light reaction" }, lastQuestionIndex: 0 }, assigned: [] },
     { id: "e3", title: "Last week's quiz", type: "mcq", closesAt: iso(now - 3 * 24 * HOUR), maxPeeks: 0,
       createdBy: rao, questions: mk(3, "mcq"), mine: false,
-      attempt: { status: "submitted", answers: { q31: "1", q32: "0", q33: "2", q34: "3" }, lastQuestionIndex: 3 }, assigned: [] },
+      attempt: { status: "submitted", answers: { q31: "Option B", q32: "Option A", q33: "Option C", q34: "Option D" }, lastQuestionIndex: 3 }, assigned: [] },
     { id: "e4", title: "My class test", type: "mcq", closesAt: iso(now + 2 * 24 * HOUR), maxPeeks: 0,
       createdBy: { id: demoUser.id, name: demoUser.name }, questions: mk(4, "mcq"), mine: true,
       attempt: null, assigned: ["aisha@x.com", "ben@x.com", "chen@x.com", "dev@x.com"] },
@@ -111,8 +111,38 @@ function seedTakeFixtures() {
       attempt: { status: "not_started", answers: {}, lastQuestionIndex: 0 }, assigned: [] },
   );
 }
+/**
+ * Result-page fixtures (unlisted; open by URL). Page-URL flags (?mockResult=...) apply to e14:
+ *   /exams/e14/result                       8 x 5-mark MCQ, closed, key visible, 6 correct (score 30 / 40)
+ *   /exams/e14/result?mockResult=hidden     key hidden (keyAvailableAt set, no correct/correctAnswer fields)
+ *   /exams/e14/result?mockResult=leak       key hidden, but the response (wrongly) still carries the key fields
+ *   /exams/e14/result?mockResult=fractional score 27.5 / 40
+ *   /exams/e14/result?mockResult=unfinished 409 "Submit the exam to see results."
+ *   /exams/e15/result                       free text, closed, key visible, score null (self-check)
+ *   /exams/e15/result?mockResult=hidden     free text with the key hidden
+ */
+function seedResultFixtures() {
+  const mcq = Array.from({ length: 8 }, (_, i) => ({ ...makeQuestion(1400 + i, 5 as Marks, "mcq"), id: `r${i + 1}` }));
+  mcq[1] = { ...mcq[1], text: "<b>x</b> stays literal", options: ["<b>x</b>", "<i>y</i>", "Option C", "Option D"], correctIndex: 0 };
+  const answers: Record<string, string> = {};
+  mcq.forEach((q, i) => { if (i === 7) return; answers[q.id] = q.options![i < 6 ? q.correctIndex! : (q.correctIndex! + 1) % 4]; });
+  const free: Question[] = [2, 3, 2, 3].map((m, i) => ({
+    ...makeQuestion(1500 + i, m as Marks, "free"), id: `x${i + 1}`,
+    ...(i === 1 ? { text: "<b>Explain</b> photosynthesis.", modelAnswer: "<i>Light</i> energy becomes chemical energy." } : {}),
+  }));
+  const freeAnswers: Record<string, string> = { x1: "Plants make food.", x2: "Sunlight makes sugar.", x3: "" , x4: "Because of osmosis." };
+  state.exams.push(
+    { id: "e14", title: "Result demo: multiple choice", type: "mcq", closesAt: iso(Date.now() - 2 * 24 * HOUR), maxPeeks: 0,
+      createdBy: rao, questions: mcq, mine: false, unlisted: true,
+      attempt: { status: "submitted", answers, lastQuestionIndex: 7 }, assigned: [] },
+    { id: "e15", title: "Result demo: free text", type: "free", closesAt: iso(Date.now() - 2 * 24 * HOUR), maxPeeks: 0,
+      createdBy: rao, questions: free, mine: false, unlisted: true,
+      attempt: { status: "submitted", answers: freeAnswers, lastQuestionIndex: 3 }, assigned: [] },
+  );
+}
 seedExams();
 seedTakeFixtures();
+seedResultFixtures();
 
 const json = (status: number, body: unknown, headers: Record<string, string> = {}) =>
   new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json", ...headers } });
@@ -138,12 +168,15 @@ function stickyFlag(name: string): string | null {
 const acceptingUntil = (e: MockExam) => iso(Date.parse(e.closesAt) + GRACE);
 const over = (e: MockExam) => Date.now() >= Date.parse(e.closesAt) + GRACE;
 const keyVisible = (e: MockExam) => e.mine || over(e);
+/** MCQ answers are stored as the option text (bs 9.3: exact match with options[correctIndex]). */
+const isRight = (q: Question, a: string | undefined) =>
+  a !== undefined && q.correctIndex !== undefined && a === q.options?.[q.correctIndex];
 const totalMarks = (e: MockExam) => e.questions.reduce((s, q) => s + q.marks, 0);
 
 function grade(e: MockExam): { score: number | null; before: number | null } {
   if (e.type !== "mcq" || !e.attempt) return { score: null, before: null };
   let before = 0;
-  for (const q of e.questions) if (e.attempt.answers[q.id] === String(q.correctIndex)) before += q.marks;
+  for (const q of e.questions) if (isRight(q, e.attempt.answers[q.id])) before += q.marks;
   const peeks = e.attempt.revealed?.length ?? 0;
   return { before, score: Math.max(0, before - peeks * 0.5) };
 }
@@ -581,22 +614,28 @@ export function mockFetch(method: string, rawPath: string, body: unknown, idempo
     }
     if (method === "GET" && sub === "result") {
       if (!exam.attempt) return err(404, "not_found", "That item isn't available.");
+      // Mock-only page-URL flag (see seedResultFixtures), honoured for e14 and e15 only: hidden | leak | fractional | unfinished.
+      const flag = exam.id === "e14" || exam.id === "e15" ? stickyFlag("mockResult") : null;
       const isOver = over(exam);
-      if (exam.attempt.status !== "submitted" && !isOver) return err(409, "conflict", "Submit the exam to see results.");
-      const vis = keyVisible(exam);
+      if (flag === "unfinished" || (exam.attempt.status !== "submitted" && !isOver)) return err(409, "conflict", "Submit the exam to see results.");
+      const hide = flag === "hidden" || flag === "leak";
+      const vis = hide ? false : keyVisible(exam);
       const never = exam.attempt.status !== "submitted";
       const g = never ? { score: null, before: null } : grade(exam);
+      if (flag === "fractional" && g.score !== null) { g.score = 27.5; g.before = 27.5; }
       const revealed = new Map((exam.attempt.revealed ?? []).map((r) => [r.questionId, r]));
       const questions: ResultQuestion[] = exam.questions.map((q) => {
         const yours = never ? "" : exam.attempt!.answers[q.id] ?? "";
         const r: ResultQuestion = { id: q.id, marks: q.marks, text: q.text, options: q.options, yourAnswer: yours, revealed: revealed.has(q.id) };
+        const answerText = q.options && q.correctIndex !== undefined ? q.options[q.correctIndex] : undefined;
         if (vis) {
-          r.correct = q.options ? yours === String(q.correctIndex) : undefined;
-          r.correctAnswer = q.options ? String(q.correctIndex) : undefined;
+          r.correct = q.options ? isRight(q, yours) : undefined;
+          r.correctAnswer = answerText;
           r.modelAnswer = q.modelAnswer ?? null;
-        } else if (revealed.has(q.id)) {
-          r.correctAnswer = q.options ? String(q.correctIndex) : undefined;
+        } else if (revealed.has(q.id) || flag === "leak") {
+          r.correctAnswer = answerText;
           r.modelAnswer = q.modelAnswer ?? null;
+          if (flag === "leak") r.correct = q.options ? isRight(q, yours) : undefined;
         }
         return r;
       });
