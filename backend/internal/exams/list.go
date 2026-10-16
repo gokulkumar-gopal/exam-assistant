@@ -2,6 +2,7 @@ package exams
 
 import (
 	"context"
+	"log/slog"
 	"sort"
 	"sync"
 	"time"
@@ -16,12 +17,13 @@ const (
 	GraceWindow = 60 * time.Second
 	// MaxListConcurrency bounds per-exam counts reads and lazy finalizes (backend-spec 9.2).
 	MaxListConcurrency = 10
-	// MaxListAttempts bounds the exams one open/closed list loads. ListByUser reads the whole
-	// user-index partition (one Query, paged by the store; about 1 RCU per 8 KB of projected
-	// rows, a few hundred bytes each), so a user with thousands of attempts still pays that
-	// read; this cap bounds the BatchGet and finalize work after it. Exam IDs are ULIDs for
-	// server-minted keys, so the highest IDs are normally the newest exams.
-	MaxListAttempts = 500
+	// MaxPendingRows is a safety bound on a user's unfinished (not_started or in_progress)
+	// attempt rows, whose exams must be loaded to know closesAt. Reaching it is logged at WARN;
+	// rows are never dropped silently. The durable fix (parked for the spec owner) is to copy
+	// closesAt onto the attempt row and into the user-index projection (backend-spec 6.2), so
+	// both lists are decided from the index alone and only the shown exams are loaded.
+	MaxPendingRows = 1000
+	MaxListItems   = 200
 )
 
 // Scopes of GET /exams.
@@ -46,8 +48,11 @@ const AttemptMissed = "missed"
 // concurrent calls. A nil Finalizer on the Service means no finalizing: such an attempt is
 // listed as closed and derived "missed". B-4.4 supplies the real implementation.
 type Finalizer interface {
-	Finalize(ctx context.Context, exam store.Exam, a store.Attempt) (store.Attempt, error)
+	FinalizeIfExpired(ctx context.Context, a store.Attempt, e store.Exam, now time.Time) (store.Attempt, error)
 }
+
+// SetLogger sets the logger for list warnings (default slog.Default()).
+func (s *Service) SetLogger(l *slog.Logger) { s.log = l }
 
 // SetFinalizer wires the lazy-finalize hook. Call it before the Service serves requests.
 func (s *Service) SetFinalizer(f Finalizer) { s.fin = f }
@@ -104,7 +109,9 @@ func Classify(exam store.Exam, a store.Attempt, now time.Time) string {
 }
 
 // DerivedStatus is the attempt status the API shows: an unsubmitted attempt at or after
-// acceptingUntil is "missed" (derived, never stored).
+// acceptingUntil is "missed" (derived, never stored). Call it only AFTER FinalizeIfExpired:
+// backend-spec 6.1 derives "missed" for not_started only, and an expired in_progress attempt
+// becomes submitted when finalized; the in_progress branch here covers only a missing finalizer.
 func DerivedStatus(exam store.Exam, a store.Attempt, now time.Time) string {
 	if (a.Status == store.AttemptNotStarted || a.Status == store.AttemptInProgress) && over(exam, now) {
 		return AttemptMissed
@@ -162,15 +169,42 @@ func (s *Service) listAttempts(ctx context.Context, user store.User, scope strin
 	if err != nil {
 		return nil, apperr.Internal(err)
 	}
-	cand := make([]store.AttemptSummary, 0, len(sums))
+	// Decide from the projected status before loading any exam. Declined rows are in neither
+	// list. Submitted rows are never open; for closed they are taken newest first by
+	// submittedAt (projected) and capped, so only that many exams are loaded.
+	var pending, submitted []store.AttemptSummary
 	for _, a := range sums {
-		if a.Status != store.AttemptDeclined {
-			cand = append(cand, a)
+		switch a.Status {
+		case store.AttemptNotStarted, store.AttemptInProgress:
+			pending = append(pending, a)
+		case store.AttemptSubmitted:
+			submitted = append(submitted, a)
 		}
 	}
-	if len(cand) > MaxListAttempts {
-		sort.Slice(cand, func(i, j int) bool { return cand[i].ExamID > cand[j].ExamID })
-		cand = cand[:MaxListAttempts]
+	if len(pending) > s.maxPend {
+		s.log.Warn("exam list: unfinished attempt rows over the safety bound; some are not listed",
+			"user", user.ID, "rows", len(pending), "bound", s.maxPend)
+		sort.Slice(pending, func(i, j int) bool { return pending[i].ExamID < pending[j].ExamID })
+		pending = pending[:s.maxPend]
+	}
+	cand := pending
+	if scope == ScopeClosed {
+		sort.Slice(submitted, func(i, j int) bool {
+			a, b := submitted[i], submitted[j]
+			switch {
+			case a.SubmittedAt == nil || b.SubmittedAt == nil:
+				if (a.SubmittedAt == nil) != (b.SubmittedAt == nil) {
+					return b.SubmittedAt == nil
+				}
+			case !a.SubmittedAt.Equal(*b.SubmittedAt):
+				return a.SubmittedAt.After(*b.SubmittedAt)
+			}
+			return a.ExamID > b.ExamID
+		})
+		if len(submitted) > MaxListItems {
+			submitted = submitted[:MaxListItems]
+		}
+		cand = append(append([]store.AttemptSummary{}, pending...), submitted...)
 	}
 	if len(cand) == 0 {
 		return []ListItem{}, nil
@@ -207,7 +241,7 @@ func (s *Service) listAttempts(ctx context.Context, user store.User, scope strin
 			if err != nil {
 				return err
 			}
-			fin, err := s.fin.Finalize(ctx, r.exam, full)
+			fin, err := s.fin.FinalizeIfExpired(ctx, full, r.exam, now)
 			if err != nil {
 				return err
 			}
@@ -250,6 +284,9 @@ func (s *Service) listAttempts(ctx context.Context, user store.User, scope strin
 		}
 		return a.ID < b.ID
 	})
+	if len(picked) > MaxListItems {
+		picked = picked[:MaxListItems]
+	}
 	for _, r := range picked {
 		it := baseItem(r.exam, UserRef{ID: r.exam.CreatorID, Name: creators[r.exam.CreatorID].Name})
 		it.AttemptStatus = DerivedStatus(r.exam, r.a, now)
@@ -286,14 +323,18 @@ func (s *Service) listCreated(ctx context.Context, user store.User) ([]ListItem,
 		x := store.Exam{ID: sm.ID, CreatorID: sm.CreatorID, Title: sm.Title, Type: sm.Type,
 			TotalMarks: sm.TotalMarks, ClosesAt: sm.ClosesAt, CreatedAt: sm.CreatedAt}
 		var c Counts
+		var full *store.Exam // the finalizer needs the questions; loaded at most once, only if needed
 		for _, a := range rows {
 			if s.fin != nil && a.Status == store.AttemptInProgress && over(x, now) {
-				// The finalizer needs the questions to grade; load the exam only when needed.
-				full, err := s.exams.GetExam(ctx, sm.ID)
-				if err != nil {
-					return err
+				if full == nil {
+					fx, err := s.exams.GetExam(ctx, sm.ID)
+					if err != nil {
+						return err
+					}
+					full = &fx
 				}
-				if a, err = s.fin.Finalize(ctx, full, a); err != nil {
+				var err error
+				if a, err = s.fin.FinalizeIfExpired(ctx, a, *full, now); err != nil {
 					return err
 				}
 			}

@@ -3,6 +3,7 @@ package exams
 
 import (
 	"crypto/rand"
+	"log/slog"
 
 	"github.com/oklog/ulid/v2"
 
@@ -16,12 +17,14 @@ type Service struct {
 	exams    store.ExamStore
 	attempts store.AttemptStore
 	clk      clock.Clock
+	log      *slog.Logger
+	maxPend  int
 	fin      Finalizer // lazy finalize hook; nil means none (wired in B-4.4)
 }
 
 // NewService builds a Service.
 func NewService(users store.UserStore, exams store.ExamStore, attempts store.AttemptStore, clk clock.Clock) *Service {
-	return &Service{users: users, exams: exams, attempts: attempts, clk: clk}
+	return &Service{users: users, exams: exams, attempts: attempts, clk: clk, log: slog.Default(), maxPend: MaxPendingRows}
 }
 
 func newID(clk clock.Clock) string {

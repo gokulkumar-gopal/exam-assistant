@@ -3,7 +3,10 @@ package exams_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"log/slog"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -217,6 +220,7 @@ type recAttempts struct {
 	mu                       sync.Mutex
 	cur, max, byUser, byExam int
 	getAttempt               int
+	failByExam               error
 }
 
 func (r *recAttempts) ListByExam(ctx context.Context, id string) ([]store.Attempt, error) {
@@ -228,6 +232,10 @@ func (r *recAttempts) ListByExam(ctx context.Context, id string) ([]store.Attemp
 	}
 	r.mu.Unlock()
 	time.Sleep(5 * time.Millisecond)
+	if r.failByExam != nil {
+		defer func() { r.mu.Lock(); r.cur--; r.mu.Unlock() }()
+		return nil, r.failByExam
+	}
 	defer func() { r.mu.Lock(); r.cur--; r.mu.Unlock() }()
 	return r.AttemptStore.ListByExam(ctx, id)
 }
@@ -242,6 +250,9 @@ func (r *recAttempts) ListByUser(ctx context.Context, id string) ([]store.Attemp
 type recExams struct {
 	store.ExamStore
 	getExam, getExams, byCreator int32
+	mu                           sync.Mutex
+	loaded                       []string // every id passed to GetExams
+	failGetExams                 error
 }
 
 func (r *recExams) GetExam(ctx context.Context, id string) (store.Exam, error) {
@@ -250,6 +261,12 @@ func (r *recExams) GetExam(ctx context.Context, id string) (store.Exam, error) {
 }
 func (r *recExams) GetExams(ctx context.Context, ids []string) (map[string]store.Exam, error) {
 	atomic.AddInt32(&r.getExams, 1)
+	r.mu.Lock()
+	r.loaded = append(r.loaded, ids...)
+	r.mu.Unlock()
+	if r.failGetExams != nil {
+		return nil, r.failGetExams
+	}
 	return r.ExamStore.GetExams(ctx, ids)
 }
 func (r *recExams) ListByCreator(ctx context.Context, c string, n int) ([]store.ExamSummary, error) {
@@ -371,10 +388,14 @@ func TestMissingExamRowIsSkipped(t *testing.T) {
 
 type fakeFin struct {
 	calls int32
+	err   error
 }
 
-func (f *fakeFin) Finalize(_ context.Context, x store.Exam, a store.Attempt) (store.Attempt, error) {
+func (f *fakeFin) FinalizeIfExpired(_ context.Context, a store.Attempt, x store.Exam, now time.Time) (store.Attempt, error) {
 	atomic.AddInt32(&f.calls, 1)
+	if f.err != nil {
+		return a, f.err
+	}
 	a.Status, a.AutoSubmitted, a.ScoreHalves = store.AttemptSubmitted, true, ip(3)
 	return a, nil
 }
@@ -398,4 +419,224 @@ func TestFinalizerCalledOnlyForExpiredInProgress(t *testing.T) {
 	if f.calls != 1 || got[0].AttemptStatus != "submitted" || got[0].Score == nil || *got[0].Score != 1.5 {
 		t.Fatalf("calls %d %+v", f.calls, got[0])
 	}
+}
+
+func (e *env) seedSubmittedAt(t *testing.T, examID, userID string, at time.Time) {
+	t.Helper()
+	a := store.Attempt{ExamID: examID, UserID: userID, Status: store.AttemptSubmitted, Answers: map[string]string{},
+		Revealed: []string{}, ScoreHalves: ip(2), SubmittedAt: &at, CreatedAt: t0}
+	if _, err := e.attempts.PutAttemptIfAbsent(context.Background(), a); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestOpenNotHiddenByLargeHistoryWithLowestID(t *testing.T) {
+	e := newEnv(t)
+	e.seedExam(t, "0000-open", "t1", "mcq", closes, t0)
+	e.seedAttempt(t, "0000-open", "s1", store.AttemptNotStarted, nil)
+	for i := 0; i < 600; i++ {
+		id := fmt.Sprintf("f%04d", i)
+		e.seedExam(t, id, "t1", "mcq", closes.Add(-time.Hour), t0)
+		e.seedSubmittedAt(t, id, "s1", t0.Add(time.Duration(i)*time.Second))
+	}
+	re := &recExams{ExamStore: e.exams}
+	svc := exams.NewService(e.users, re, e.attempts, e.clk)
+	e.clk.Set(closes.Add(-time.Minute))
+	got, err := svc.List(context.Background(), e.student, "open")
+	if err != nil {
+		t.Fatal(err)
+	}
+	eqIDs(t, got, "0000-open")
+	if len(re.loaded) != 1 {
+		t.Fatalf("open must load only unfinished rows' exams, loaded %d", len(re.loaded))
+	}
+}
+
+func TestClosedHistoryCapsAt200NewestSubmittedWithoutLoadingMore(t *testing.T) {
+	e := newEnv(t)
+	for i := 0; i < 250; i++ {
+		id := fmt.Sprintf("h%03d", (i*7)%250) // ids unrelated to submittedAt order
+		e.seedExam(t, id, "t1", "mcq", closes, t0)
+		e.seedSubmittedAt(t, id, "s1", t0.Add(time.Duration(i)*time.Second))
+	}
+	re := &recExams{ExamStore: e.exams}
+	svc := exams.NewService(e.users, re, e.attempts, e.clk)
+	got, err := svc.List(context.Background(), e.student, "closed")
+	if err != nil || len(got) != 200 {
+		t.Fatalf("len %d err %v", len(got), err)
+	}
+	if len(re.loaded) != 200 {
+		t.Fatalf("loaded %d exams, want 200", len(re.loaded))
+	}
+	have := map[string]bool{}
+	for _, it := range got {
+		have[it.ID] = true
+	}
+	for i := 0; i < 250; i++ {
+		id := fmt.Sprintf("h%03d", (i*7)%250)
+		if (i >= 50) != have[id] {
+			t.Fatalf("submission %d (%s): in result = %v", i, id, have[id])
+		}
+	}
+}
+
+type logSink struct {
+	mu   sync.Mutex
+	msgs []string
+}
+
+func (l *logSink) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	l.msgs = append(l.msgs, string(p))
+	l.mu.Unlock()
+	return len(p), nil
+}
+
+func TestPendingSafetyBoundLogsWarnNotSilent(t *testing.T) {
+	e := newEnv(t)
+	for i := 0; i < 8; i++ {
+		id := fmt.Sprintf("p%d", i)
+		e.seedExam(t, id, "t1", "mcq", closes, t0)
+		e.seedAttempt(t, id, "s1", store.AttemptNotStarted, nil)
+	}
+	sink := &logSink{}
+	e.svc.SetLogger(slog.New(slog.NewTextHandler(sink, nil)))
+	e.svc.SetMaxPending(5)
+	e.clk.Set(closes.Add(-time.Minute))
+	if got := e.list(t, e.student, "open"); len(got) != 5 {
+		t.Fatalf("len %d", len(got))
+	}
+	if len(sink.msgs) == 0 || !strings.Contains(sink.msgs[0], "level=WARN") {
+		t.Fatalf("expected a WARN log, got %v", sink.msgs)
+	}
+	sink.msgs = nil
+	e.svc.SetMaxPending(8)
+	e.list(t, e.student, "open")
+	if len(sink.msgs) != 0 {
+		t.Fatalf("no warning expected at the bound: %v", sink.msgs)
+	}
+}
+
+func TestDeclinedGuardsEachAlone(t *testing.T) {
+	x := store.Exam{ClosesAt: closes}
+	for _, now := range []time.Time{closes.Add(-time.Hour), closes.Add(time.Hour)} {
+		if c := exams.Classify(x, store.Attempt{Status: store.AttemptDeclined}, now); c != "" {
+			t.Fatalf("Classify must not list declined, got %q", c)
+		}
+	}
+	e := newEnv(t)
+	e.seedExam(t, "e1", "t1", "mcq", closes, t0)
+	e.seedAttempt(t, "e1", "s1", store.AttemptDeclined, nil)
+	re := &recExams{ExamStore: e.exams}
+	svc := exams.NewService(e.users, re, e.attempts, e.clk)
+	if _, err := svc.List(context.Background(), e.student, "open"); err != nil {
+		t.Fatal(err)
+	}
+	if len(re.loaded) != 0 {
+		t.Fatalf("declined rows must be dropped at the index, loaded %v", re.loaded)
+	}
+}
+
+func TestScoreGuardsDistinguishMCQAndSubmitted(t *testing.T) {
+	e := newEnv(t)
+	e.seedExam(t, "free", "t1", "free", closes, t0)
+	e.seedExam(t, "prog", "t1", "mcq", closes, t0)
+	e.seedAttempt(t, "free", "s1", store.AttemptSubmitted, ip(10))
+	e.seedAttempt(t, "prog", "s1", store.AttemptInProgress, ip(10))
+	e.clk.Set(closes.Add(-time.Hour))
+	for _, it := range append(e.list(t, e.student, "open"), e.list(t, e.student, "closed")...) {
+		if it.Score != nil {
+			t.Fatalf("%s must have no score: %v", it.ID, *it.Score)
+		}
+	}
+}
+
+func TestOpenSortSoonestFirstClosedLatestFirst(t *testing.T) {
+	e := newEnv(t)
+	for i, id := range []string{"b", "a", "c"} {
+		e.seedExam(t, id, "t1", "mcq", closes.Add(time.Duration(i)*time.Hour), t0)
+		e.seedAttempt(t, id, "s1", store.AttemptNotStarted, nil)
+	}
+	e.clk.Set(closes.Add(-time.Minute))
+	eqIDs(t, e.list(t, e.student, "open"), "b", "a", "c")
+	e.clk.Set(closes.Add(24 * time.Hour))
+	eqIDs(t, e.list(t, e.student, "closed"), "c", "a", "b")
+}
+
+func TestMissingExamRowSkippedInClosed(t *testing.T) {
+	e := newEnv(t)
+	e.seedExam(t, "e1", "t1", "mcq", closes, t0)
+	e.seedAttempt(t, "e1", "s1", store.AttemptNotStarted, nil)
+	e.seedAttempt(t, "ghost", "s1", store.AttemptNotStarted, nil)
+	e.seedSubmittedAt(t, "ghost2", "s1", t0)
+	e.clk.Set(closes.Add(time.Hour))
+	eqIDs(t, e.list(t, e.student, "closed"), "e1")
+}
+
+func TestCreatedFinalizePathAndNames(t *testing.T) {
+	e := newEnv(t)
+	f := &fakeFin{}
+	e.svc.SetFinalizer(f)
+	e.seedExam(t, "e1", "t1", "mcq", closes, t0)
+	e.seedAttempt(t, "e1", "s1", store.AttemptInProgress, nil)
+	e.seedAttempt(t, "e1", "p1", store.AttemptInProgress, nil)
+	e.seedAttempt(t, "e1", "t1", store.AttemptNotStarted, nil)
+	e.clk.Set(closes.Add(30 * time.Second))
+	got := e.list(t, e.teacher, "created")
+	if f.calls != 0 || got[0].Counts.InProgress != 2 || got[0].CreatedBy.Name != "t1" {
+		t.Fatalf("grace: calls %d %+v", f.calls, got[0])
+	}
+	e.clk.Set(closes.Add(time.Minute))
+	got = e.list(t, e.teacher, "created")
+	if f.calls != 2 || got[0].Counts.Submitted != 2 || got[0].Counts.InProgress != 0 || got[0].Counts.NotStarted != 1 {
+		t.Fatalf("calls %d %+v", f.calls, got[0].Counts)
+	}
+}
+
+func TestListErrorsSurface(t *testing.T) {
+	boom := errors.New("boom")
+	e := newEnv(t)
+	e.seedExam(t, "e1", "t1", "mcq", closes, t0)
+	e.seedAttempt(t, "e1", "s1", store.AttemptInProgress, nil)
+	e.seedAttempt(t, "e1", "t1", store.AttemptInProgress, nil)
+	e.clk.Set(closes.Add(time.Minute))
+
+	f := &fakeFin{err: boom}
+	e.svc.SetFinalizer(f)
+	if _, err := e.svc.List(context.Background(), e.student, "closed"); err == nil {
+		t.Error("finalize error must surface (closed)")
+	}
+	if _, err := e.svc.List(context.Background(), e.teacher, "created"); err == nil {
+		t.Error("finalize error must surface (created)")
+	}
+	ra := &recAttempts{AttemptStore: e.attempts, failByExam: boom}
+	svc := exams.NewService(e.users, e.exams, ra, e.clk)
+	if _, err := svc.List(context.Background(), e.teacher, "created"); err == nil {
+		t.Error("ListByExam error must surface")
+	}
+	re := &recExams{ExamStore: e.exams, failGetExams: boom}
+	svc = exams.NewService(e.users, re, e.attempts, e.clk)
+	if _, err := svc.List(context.Background(), e.student, "open"); err == nil {
+		t.Error("GetExams error must surface")
+	}
+}
+
+func TestFinalizerGetsListNow(t *testing.T) {
+	e := newEnv(t)
+	var gotNow time.Time
+	e.svc.SetFinalizer(nowFin{&gotNow})
+	e.seedExam(t, "e1", "t1", "mcq", closes, t0)
+	e.seedAttempt(t, "e1", "s1", store.AttemptInProgress, nil)
+	e.clk.Set(closes.Add(time.Minute))
+	e.list(t, e.student, "closed")
+	if !gotNow.Equal(closes.Add(time.Minute)) {
+		t.Fatalf("now %v", gotNow)
+	}
+}
+
+type nowFin struct{ now *time.Time }
+
+func (n nowFin) FinalizeIfExpired(_ context.Context, a store.Attempt, _ store.Exam, now time.Time) (store.Attempt, error) {
+	*n.now = now
+	return a, nil
 }
