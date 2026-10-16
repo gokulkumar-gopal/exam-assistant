@@ -2,6 +2,7 @@ package memory_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -61,5 +62,20 @@ func TestPendingDocExpiresAtTTL(t *testing.T) {
 	clk.Advance(1000 * time.Hour)
 	if _, err := s.GetDoc(ctx, "o", "e"); err != nil {
 		t.Fatalf("ready doc expired: %v", err)
+	}
+}
+
+func TestJobStoreContract(t *testing.T) {
+	storetest.RunJobStoreSuite(t, func(t *testing.T) store.JobStore { return memory.NewJobStore(clock.NewFake(storetest.T0)) })
+}
+
+func TestCreateJobRejectsDayMismatch(t *testing.T) {
+	s := memory.NewJobStore(clock.NewFake(storetest.T0))
+	j := store.Job{ID: "j", OwnerID: "u", Day: "20261015"}
+	q := store.QuotaCheck{UserID: "u", Day: "20261016", Month: "202610", MaxUser: 3, MaxRegen: 1, MaxGlobal: 1, BudgetMicros: 1}
+	err := s.CreateJobWithQuota(context.Background(), j, q)
+	var qe *store.QuotaError
+	if err == nil || errors.As(err, &qe) || errors.Is(err, store.ErrConflict) {
+		t.Fatalf("err = %v", err)
 	}
 }

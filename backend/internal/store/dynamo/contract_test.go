@@ -2,6 +2,7 @@ package dynamo
 
 import (
 	"testing"
+	"time"
 
 	"github.com/gokulkumar/exam-assistant/backend/internal/store"
 	"github.com/gokulkumar/exam-assistant/backend/internal/store/storetest"
@@ -20,4 +21,12 @@ func TestUserStoreContract(t *testing.T) {
 
 func TestDocStoreContract(t *testing.T) {
 	storetest.RunDocStoreSuite(t, func(t *testing.T) store.DocStore { s, _ := newStores(); return s })
+}
+
+func TestJobStoreContract(t *testing.T) {
+	storetest.RunJobStoreSuite(t, func(t *testing.T) store.JobStore {
+		s, _ := newStores()
+		s.Now = func() time.Time { return storetest.T0 }
+		return s
+	})
 }

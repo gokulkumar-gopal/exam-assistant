@@ -3,8 +3,11 @@ package dynamo
 import (
 	"context"
 	"fmt"
+	"os"
 	"reflect"
+	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -15,8 +18,11 @@ import (
 
 // fakeDynamo is an in-process DynamoAPI. It records every request and evaluates the small
 // expression grammar the stores use: conditions made of "attribute_exists(x)",
-// "attribute_not_exists(x)" and "x = :v" terms joined by AND; update expressions of the
-// form "SET a = :a, b = :b REMOVE c, d"; key conditions "pk = :v". Anything else panics,
+// "attribute_not_exists(x)", "x = :v" and "x < :v" terms joined by AND, groups of those
+// joined by OR (OR binds loosest, no parentheses); update expressions made of SET (values
+// ":v" or "if_not_exists(a, :v)"), ADD (numbers) and REMOVE clauses; key conditions
+// "pk = :v" on the table or on a GSI (projected per the INCLUDE lists in template.yaml).
+// Anything else panics,
 // so a new expression shape forces the fake to be extended.
 type fakeDynamo struct {
 	mu     sync.Mutex
@@ -32,10 +38,25 @@ type fakeDynamo struct {
 	pendingRetry    map[string][]map[string]types.AttributeValue
 	failTx          error // returned by TransactWriteItems failTxCount times (once when 0)
 	failTxCount     int
+	upds            []*dynamodb.UpdateItemInput
+	failUpdate      error // returned by UpdateItem failUpdateCount times (once when 0), before any write
+	failUpdateCount int
+	// queryPageSize, when > 0, caps the items one Query evaluates, to exercise pagination.
+	queryPageSize int
+	indexes       map[string]indexDef
+}
+
+// indexDef is a GSI: its keys and the non-key attributes it projects (INCLUDE).
+type indexDef struct {
+	pk, sk string
+	proj   []string
 }
 
 func newFake() *fakeDynamo {
-	return &fakeDynamo{tables: map[string]map[string]map[string]types.AttributeValue{}}
+	return &fakeDynamo{tables: map[string]map[string]map[string]types.AttributeValue{}, indexes: map[string]indexDef{
+		"owner-index": {pk: "ownerId", sk: "id", proj: templateIncludeList("owner-index")},
+		"day-index":   {pk: "day", sk: "createdAt", proj: templateIncludeList("day-index")},
+	}}
 }
 
 func (f *fakeDynamo) saw(op string) int {
@@ -54,6 +75,8 @@ func keyNames(table string) (pk, sk string) {
 		return "id", ""
 	case strings.HasSuffix(table, "-documents"):
 		return "ownerId", "id"
+	case strings.HasSuffix(table, "-jobs"):
+		return "id", ""
 	}
 	panic("unknown table " + table)
 }
@@ -108,60 +131,138 @@ func condOK(expr string, names map[string]string, vals map[string]types.Attribut
 	if expr == "" {
 		return true
 	}
-	for _, term := range strings.Split(expr, " AND ") {
-		term = strings.TrimSpace(term)
-		switch {
-		case strings.HasPrefix(term, "attribute_not_exists("):
-			a := resolve(strings.TrimSuffix(strings.TrimPrefix(term, "attribute_not_exists("), ")"), names)
-			if _, ok := item[a]; ok {
-				return false
+	for _, group := range strings.Split(expr, " OR ") {
+		ok := true
+		for _, term := range strings.Split(group, " AND ") {
+			if !termOK(strings.TrimSpace(term), names, vals, item) {
+				ok = false
+				break
 			}
-		case strings.HasPrefix(term, "attribute_exists("):
-			a := resolve(strings.TrimSuffix(strings.TrimPrefix(term, "attribute_exists("), ")"), names)
-			if _, ok := item[a]; !ok {
-				return false
-			}
-		case strings.Contains(term, " = "):
-			parts := strings.SplitN(term, " = ", 2)
-			got, ok := item[resolve(strings.TrimSpace(parts[0]), names)]
-			want, bound := vals[strings.TrimSpace(parts[1])]
-			if !bound {
-				panic("unbound value " + parts[1])
-			}
-			if !ok || !reflect.DeepEqual(got, want) {
-				return false
-			}
-		default:
-			panic("unsupported condition term: " + term)
+		}
+		if ok {
+			return true
 		}
 	}
-	return true
+	return false
 }
 
-func applyUpdate(expr string, names map[string]string, vals map[string]types.AttributeValue, item map[string]types.AttributeValue) {
-	set, remove := expr, ""
-	if i := strings.Index(expr, " REMOVE "); i >= 0 {
-		set, remove = expr[:i], expr[i+len(" REMOVE "):]
-	} else if strings.HasPrefix(expr, "REMOVE ") {
-		set, remove = "", strings.TrimPrefix(expr, "REMOVE ")
+func num(av types.AttributeValue) int64 {
+	n, ok := av.(*types.AttributeValueMemberN)
+	if !ok {
+		panic(fmt.Sprintf("not a number attribute: %#v", av))
 	}
-	if strings.HasPrefix(set, "SET ") {
-		for _, a := range strings.Split(strings.TrimPrefix(set, "SET "), ",") {
-			parts := strings.SplitN(a, " = ", 2)
-			v, ok := vals[strings.TrimSpace(parts[1])]
-			if !ok {
-				panic("unbound value " + parts[1])
-			}
-			item[resolve(strings.TrimSpace(parts[0]), names)] = v
+	v, err := strconv.ParseInt(n.Value, 10, 64)
+	if err != nil {
+		panic(err)
+	}
+	return v
+}
+
+func termOK(term string, names map[string]string, vals map[string]types.AttributeValue, item map[string]types.AttributeValue) bool {
+	switch {
+	case strings.HasPrefix(term, "attribute_not_exists("):
+		a := resolve(strings.TrimSuffix(strings.TrimPrefix(term, "attribute_not_exists("), ")"), names)
+		_, ok := item[a]
+		return !ok
+	case strings.HasPrefix(term, "attribute_exists("):
+		a := resolve(strings.TrimSuffix(strings.TrimPrefix(term, "attribute_exists("), ")"), names)
+		_, ok := item[a]
+		return ok
+	case strings.Contains(term, " < "):
+		parts := strings.SplitN(term, " < ", 2)
+		got, ok := item[resolve(strings.TrimSpace(parts[0]), names)]
+		want, bound := vals[strings.TrimSpace(parts[1])]
+		if !bound {
+			panic("unbound value " + parts[1])
 		}
-	} else if set != "" {
+		return ok && num(got) < num(want)
+	case strings.Contains(term, " = "):
+		parts := strings.SplitN(term, " = ", 2)
+		got, ok := item[resolve(strings.TrimSpace(parts[0]), names)]
+		want, bound := vals[strings.TrimSpace(parts[1])]
+		if !bound {
+			panic("unbound value " + parts[1])
+		}
+		return ok && reflect.DeepEqual(got, want)
+	}
+	panic("unsupported condition term: " + term)
+}
+
+// splitTop splits on commas outside parentheses.
+func splitTop(s string) []string {
+	var out []string
+	depth, start := 0, 0
+	for i, c := range s {
+		switch c {
+		case '(':
+			depth++
+		case ')':
+			depth--
+		case ',':
+			if depth == 0 {
+				out = append(out, s[start:i])
+				start = i + 1
+			}
+		}
+	}
+	return append(out, s[start:])
+}
+
+// applyUpdate applies SET / ADD / REMOVE clauses and returns the attributes it touched.
+func applyUpdate(expr string, names map[string]string, vals map[string]types.AttributeValue, item map[string]types.AttributeValue) []string {
+	var touched []string
+	re := regexp.MustCompile(`(?:^|\s)(SET|ADD|REMOVE)\s`)
+	locs := re.FindAllStringSubmatchIndex(expr, -1)
+	if len(locs) == 0 || locs[0][0] != 0 {
 		panic("unsupported update: " + expr)
 	}
-	if remove != "" {
-		for _, a := range strings.Split(remove, ",") {
-			delete(item, resolve(strings.TrimSpace(a), names))
+	val := func(tok string) types.AttributeValue {
+		v, ok := vals[strings.TrimSpace(tok)]
+		if !ok {
+			panic("unbound value " + tok)
+		}
+		return v
+	}
+	for i, loc := range locs {
+		end := len(expr)
+		if i+1 < len(locs) {
+			end = locs[i+1][0]
+		}
+		body := strings.TrimSpace(expr[loc[1]:end])
+		for _, part := range splitTop(body) {
+			part = strings.TrimSpace(part)
+			switch expr[loc[2]:loc[3]] {
+			case "SET":
+				kv := strings.SplitN(part, " = ", 2)
+				attr, rhs := resolve(strings.TrimSpace(kv[0]), names), strings.TrimSpace(kv[1])
+				if strings.HasPrefix(rhs, "if_not_exists(") {
+					args := strings.Split(strings.TrimSuffix(strings.TrimPrefix(rhs, "if_not_exists("), ")"), ",")
+					if resolve(strings.TrimSpace(args[0]), names) != attr {
+						panic("unsupported if_not_exists on another attribute: " + rhs)
+					}
+					if _, has := item[attr]; has {
+						continue
+					}
+					rhs = strings.TrimSpace(args[1])
+				}
+				item[attr] = val(rhs)
+				touched = append(touched, attr)
+			case "ADD":
+				kv := strings.Fields(part)
+				attr := resolve(kv[0], names)
+				cur := int64(0)
+				if old, ok := item[attr]; ok {
+					cur = num(old)
+				}
+				item[attr] = &types.AttributeValueMemberN{Value: strconv.FormatInt(cur+num(val(kv[1])), 10)}
+				touched = append(touched, attr)
+			case "REMOVE":
+				attr := resolve(part, names)
+				delete(item, attr)
+			}
 		}
 	}
+	return touched
 }
 
 func failedCondition(rv types.ReturnValuesOnConditionCheckFailure, old map[string]types.AttributeValue) *types.ConditionalCheckFailedException {
@@ -197,6 +298,16 @@ func (f *fakeDynamo) UpdateItem(_ context.Context, in *dynamodb.UpdateItemInput,
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls = append(f.calls, "UpdateItem")
+	f.upds = append(f.upds, in)
+	if f.failUpdate != nil {
+		err := f.failUpdate
+		if f.failUpdateCount > 1 {
+			f.failUpdateCount--
+		} else {
+			f.failUpdate = nil
+		}
+		return nil, err
+	}
 	t, k := f.tbl(*in.TableName), keyOf(*in.TableName, in.Key)
 	if !condOK(aws.ToString(in.ConditionExpression), in.ExpressionAttributeNames, in.ExpressionAttributeValues, t[k]) {
 		return nil, failedCondition(in.ReturnValuesOnConditionCheckFailure, t[k])
@@ -205,9 +316,16 @@ func (f *fakeDynamo) UpdateItem(_ context.Context, in *dynamodb.UpdateItemInput,
 	if item == nil {
 		item = clone(in.Key)
 	}
-	applyUpdate(aws.ToString(in.UpdateExpression), in.ExpressionAttributeNames, in.ExpressionAttributeValues, item)
+	touched := applyUpdate(aws.ToString(in.UpdateExpression), in.ExpressionAttributeNames, in.ExpressionAttributeValues, item)
 	t[k] = item
-	return &dynamodb.UpdateItemOutput{}, nil
+	out := &dynamodb.UpdateItemOutput{}
+	if in.ReturnValues == types.ReturnValueUpdatedNew {
+		out.Attributes = map[string]types.AttributeValue{}
+		for _, a := range touched {
+			out.Attributes[a] = item[a]
+		}
+	}
+	return out, nil
 }
 
 func (f *fakeDynamo) DeleteItem(_ context.Context, in *dynamodb.DeleteItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.DeleteItemOutput, error) {
@@ -229,6 +347,18 @@ func (f *fakeDynamo) Query(_ context.Context, in *dynamodb.QueryInput, _ ...func
 	f.qrys = append(f.qrys, in)
 	table := *in.TableName
 	pk, sk := keyNames(table)
+	var idx *indexDef
+	if in.IndexName != nil {
+		d, ok := f.indexes[*in.IndexName]
+		if !ok {
+			panic("unknown index " + *in.IndexName)
+		}
+		if aws.ToBool(in.ConsistentRead) {
+			return nil, fmt.Errorf("ValidationException: Consistent reads are not supported on global secondary indexes")
+		}
+		idx = &d
+		pk, sk = d.pk, d.sk
+	}
 	kc := strings.SplitN(aws.ToString(in.KeyConditionExpression), " = ", 2)
 	if len(kc) != 2 || resolve(strings.TrimSpace(kc[0]), in.ExpressionAttributeNames) != pk {
 		panic("unsupported key condition: " + aws.ToString(in.KeyConditionExpression))
@@ -237,6 +367,9 @@ func (f *fakeDynamo) Query(_ context.Context, in *dynamodb.QueryInput, _ ...func
 	var items []map[string]types.AttributeValue
 	for _, it := range f.tbl(table) {
 		if reflect.DeepEqual(it[pk], pkVal) {
+			if idx != nil {
+				it = project(table, it, *idx)
+			}
 			items = append(items, it)
 		}
 	}
@@ -263,7 +396,14 @@ func (f *fakeDynamo) Query(_ context.Context, in *dynamodb.QueryInput, _ ...func
 	out := &dynamodb.QueryOutput{}
 	evaluated := 0
 	for i, it := range items {
-		if in.Limit != nil && evaluated >= int(*in.Limit) { // Limit applies before the filter
+		limit := 0
+		if in.Limit != nil {
+			limit = int(*in.Limit)
+		}
+		if f.queryPageSize > 0 && (limit == 0 || f.queryPageSize < limit) {
+			limit = f.queryPageSize
+		}
+		if limit > 0 && evaluated >= limit { // Limit applies before the filter
 			out.LastEvaluatedKey = map[string]types.AttributeValue{pk: it[pk], sk: items[i-1][sk]}
 			break
 		}
@@ -274,6 +414,41 @@ func (f *fakeDynamo) Query(_ context.Context, in *dynamodb.QueryInput, _ ...func
 	}
 	return out, nil
 }
+
+// project returns what a GSI holds for item: the table key, the index keys and the INCLUDE
+// attributes. Items without the index partition key never reach the index (the caller's
+// DeepEqual on a missing attribute already excludes them).
+func project(table string, item map[string]types.AttributeValue, idx indexDef) map[string]types.AttributeValue {
+	pk, sk := keyNames(table)
+	out := map[string]types.AttributeValue{}
+	for _, a := range append([]string{pk, sk, idx.pk, idx.sk}, idx.proj...) {
+		if v, ok := item[a]; ok && a != "" {
+			out[a] = v
+		}
+	}
+	return out
+}
+
+// templateIncludeList reads the NonKeyAttributes of a GSI from backend/template.yaml, so the
+// fake projects exactly what the deployed index would.
+func templateIncludeList(index string) []string {
+	b, err := os.ReadFile(templatePath)
+	if err != nil {
+		panic(err)
+	}
+	re := regexp.MustCompile(`IndexName: ` + regexp.QuoteMeta(index) + `\b[\s\S]*?NonKeyAttributes: \[([^\]]*)\]`)
+	m := re.FindStringSubmatch(string(b))
+	if m == nil {
+		panic("index " + index + " not found in template.yaml")
+	}
+	var out []string
+	for _, a := range strings.Split(m[1], ",") {
+		out = append(out, strings.TrimSpace(a))
+	}
+	return out
+}
+
+const templatePath = "../../../template.yaml" // backend/template.yaml, relative to this package
 
 func (f *fakeDynamo) BatchGetItem(_ context.Context, in *dynamodb.BatchGetItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.BatchGetItemOutput, error) {
 	f.mu.Lock()
@@ -335,6 +510,20 @@ func (f *fakeDynamo) TransactWriteItems(_ context.Context, in *dynamodb.Transact
 			f.failTx = nil
 		}
 		return nil, err
+	}
+	seenTargets := map[string]bool{}
+	for _, ti := range in.TransactItems {
+		var t, k string
+		switch {
+		case ti.Put != nil:
+			t, k = *ti.Put.TableName, keyOf(*ti.Put.TableName, ti.Put.Item)
+		case ti.Update != nil:
+			t, k = *ti.Update.TableName, keyOf(*ti.Update.TableName, ti.Update.Key)
+		}
+		if seenTargets[t+"/"+k] {
+			return nil, fmt.Errorf("ValidationException: Transaction request cannot include multiple operations on one item")
+		}
+		seenTargets[t+"/"+k] = true
 	}
 	reasons := make([]types.CancellationReason, len(in.TransactItems))
 	failed := false
