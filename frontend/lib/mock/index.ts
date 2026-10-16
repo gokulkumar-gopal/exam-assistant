@@ -502,7 +502,7 @@ export function mockFetch(method: string, rawPath: string, body: unknown, idempo
       if (questions[0].options) questions[0].options[0] = "<i>y</i>";
     }
     return json(200, { status: "done", model: job.model, progress: { done: total, total }, questions,
-      failedSources: job.trigger === "failedSources" ? ["Photosynthesis.jpg"] : [], error: null, serverTime: st() });
+      failedSources: job.trigger === "failedSources" ? [{ docId: "doc-photosynthesis", name: "Photosynthesis.jpg", reason: "unreadable" }] : [], error: null, serverTime: st() });
   }
   if (route === "DELETE /generate/:id") {
     // Request log for verification (job ids only).

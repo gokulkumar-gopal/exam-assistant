@@ -69,11 +69,12 @@ export interface GenerateBody {
 export interface RegenerateBody { marks: Marks; sourceIds: string[]; type: ExamType; avoid: string[]; model?: string }
 export interface JobStartResponse { jobId: string }
 export type JobStatus = "queued" | "running" | "done" | "failed" | "cancelled";
+export interface FailedSource { docId: string; name: string; reason: string }
 export interface JobResponse {
   status: JobStatus; model: string;
   progress: { done: number; total: number };
   questions: Question[] | null;
-  failedSources: string[];
+  failedSources: FailedSource[];
   error: string | null;
   serverTime: string;
 }

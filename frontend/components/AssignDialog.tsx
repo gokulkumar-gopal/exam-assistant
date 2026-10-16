@@ -1,6 +1,6 @@
 "use client";
 import { useId, useMemo, useRef, useState } from "react";
-import { api, ApiError, isNetworkError, NETWORK_TOAST } from "@/lib/api";
+import { api, ApiError, errorMessageWithFields, isNetworkError, NETWORK_TOAST } from "@/lib/api";
 import { toast } from "sonner";
 import { assignHelper, parseEmails } from "@/lib/publish";
 import type { AssignResponse, Role } from "@/lib/types";
@@ -62,7 +62,7 @@ export function AssignDialog({
       onAssigned();
     } catch (e) {
       if (isNetworkError(e)) toast.error(NETWORK_TOAST);
-      else setError(e instanceof ApiError ? e.message : "Couldn't assign. Try again.");
+      else setError(e instanceof ApiError ? errorMessageWithFields(e) : "Couldn't assign. Try again.");
     } finally {
       inflight.current = false;
       setBusy(false);
