@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -14,6 +15,7 @@ import (
 	"github.com/gokulkumar/exam-assistant/backend/internal/auth"
 	"github.com/gokulkumar/exam-assistant/backend/internal/clock"
 	"github.com/gokulkumar/exam-assistant/backend/internal/exams"
+	"github.com/gokulkumar/exam-assistant/backend/internal/store"
 	"github.com/gokulkumar/exam-assistant/backend/internal/store/memory"
 )
 
@@ -264,5 +266,202 @@ func TestDeclineAndAssignHandlers(t *testing.T) {
 		if rec := postJSON(h, "/exams/assign-key-1/decline", "", c); rec.Code != http.StatusNoContent || rec.Body.Len() != 0 {
 			t.Errorf("decline %d: %d %s", i, rec.Code, rec.Body)
 		}
+	}
+}
+
+type declEnv struct {
+	h        http.Handler
+	clk      *clock.Fake
+	attempts *memory.AttemptStore
+	student  *http.Cookie // Asha (student)
+	teacher  *http.Cookie // Tia (teacher)
+	other    *http.Cookie // Bo (teacher, unrelated)
+}
+
+func newDeclEnv(t *testing.T, _ bool) *declEnv {
+	t.Helper()
+	users := memory.NewUserStore()
+	clk := clock.NewFake(authT0)
+	at := memory.NewAttemptStore()
+	h := NewRouter(Deps{
+		Logger: silentLogger(), Clock: clk, Users: users,
+		Auth:           auth.NewService(users, auth.NewBcryptHasher(bcrypt.MinCost), clk),
+		Sessions:       auth.NewSessions([]byte(authSecret), "local"),
+		Exams:          exams.NewService(users, memory.NewExamStore(), at, clk),
+		AllowedOrigins: []string{"http://localhost:3000"},
+	})
+	signup := func(name, email, role string) *http.Cookie {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, jsonReq("POST", "/auth/signup", `{"name":"`+name+`","email":"`+email+`","password":"correct horse","role":"`+role+`"}`))
+		c := sessionCookie(rec)
+		if c == nil {
+			t.Fatal(rec.Body)
+		}
+		return c
+	}
+	e := &declEnv{h: h, clk: clk, attempts: at}
+	e.student = signup("Asha", "asha@example.com", "student")
+	e.teacher = signup("Tia", "tia@example.com", "teacher")
+	e.other = signup("Bo", "bo@example.com", "teacher")
+	return e
+}
+
+func (e *declEnv) newExam(t *testing.T, c *http.Cookie, key, assignees string) {
+	t.Helper()
+	body := examBody
+	if assignees != "" {
+		body = strings.Replace(examBody, `"questions"`, `"assigneeEmails":[`+assignees+`],"questions"`, 1)
+	}
+	if rec := postExam(e.h, body, key, c, ""); rec.Code != http.StatusCreated {
+		t.Fatal(rec.Body)
+	}
+}
+
+func (e *declEnv) do(method, path, body, ctype string, c *http.Cookie, origin string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(method, path, strings.NewReader(body))
+	if ctype != "" {
+		req.Header.Set("Content-Type", ctype)
+	}
+	if c != nil {
+		req.AddCookie(c)
+	}
+	if origin != "" {
+		req.Header.Set("Origin", origin)
+	}
+	rec := httptest.NewRecorder()
+	e.h.ServeHTTP(rec, req)
+	return rec
+}
+
+func (e *declEnv) post(path, body string, c *http.Cookie) *httptest.ResponseRecorder {
+	return e.do("POST", path, body, "application/json", c, "")
+}
+
+func errCode(t *testing.T, rec *httptest.ResponseRecorder) string {
+	t.Helper()
+	var b struct {
+		Error struct {
+			Code    string            `json:"code"`
+			Message string            `json:"message"`
+			Fields  map[string]string `json:"fields"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &b); err != nil {
+		t.Fatalf("%v: %s", err, rec.Body)
+	}
+	return b.Error.Code
+}
+
+func TestDeclineConflictsOverHTTP(t *testing.T) {
+	e := newDeclEnv(t, false)
+	e.newExam(t, e.teacher, "decl-key-1", `"asha@example.com"`)
+	e.newExam(t, e.teacher, "decl-key-2", `"asha@example.com"`)
+	e.newExam(t, e.teacher, "decl-key-3", `"asha@example.com"`)
+	ctx := context.Background()
+	// find Asha's id through the attempt rows
+	rows, _ := e.attempts.ListByExam(ctx, "decl-key-1")
+	uid := rows[0].UserID
+	if err := e.attempts.Save(ctx, "decl-key-1", uid, map[string]string{"a": "b"}, 0, authT0); err != nil {
+		t.Fatal(err)
+	}
+	rec := e.post("/exams/decl-key-1/decline", "", e.student)
+	if rec.Code != http.StatusConflict || errCode(t, rec) != "conflict" || !strings.Contains(rec.Body.String(), "You can only decline an exam you have not started.") {
+		t.Errorf("in_progress: %d %s", rec.Code, rec.Body)
+	}
+	if err := e.attempts.Save(ctx, "decl-key-2", uid, map[string]string{}, 0, authT0); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.attempts.Submit(ctx, store.Attempt{ExamID: "decl-key-2", UserID: uid, Status: store.AttemptSubmitted, Answers: map[string]string{}, Revealed: []string{}}); err != nil {
+		t.Fatal(err)
+	}
+	rec = e.post("/exams/decl-key-2/decline", "", e.student)
+	if rec.Code != http.StatusConflict || errCode(t, rec) != "conflict" {
+		t.Errorf("submitted: %d %s", rec.Code, rec.Body)
+	}
+	// after the deadline: exam_closed for a not-started row, 204 for an already declined one
+	if rec := e.post("/exams/decl-key-3/decline", "", e.student); rec.Code != http.StatusNoContent {
+		t.Fatalf("decline: %d", rec.Code)
+	}
+	e.newExam(t, e.teacher, "decl-key-4", `"asha@example.com"`)
+	e.clk.Advance(2 * time.Hour)
+	rec = e.post("/exams/decl-key-4/decline", "", e.student)
+	if rec.Code != http.StatusConflict || errCode(t, rec) != "exam_closed" {
+		t.Errorf("closed: %d %s", rec.Code, rec.Body)
+	}
+	if rec := e.post("/exams/decl-key-3/decline", "", e.student); rec.Code != http.StatusNoContent {
+		t.Errorf("declined after close: %d", rec.Code)
+	}
+}
+
+func TestAssignErrorPathsOverHTTP(t *testing.T) {
+	e := newDeclEnv(t, false)
+	e.newExam(t, e.teacher, "asgn-key-1", "")
+	p := "/exams/asgn-key-1/assign"
+	// 415, CSRF, bad bodies
+	if rec := e.do("POST", p, `{"emails":["a@b.com"]}`, "text/plain", e.teacher, ""); rec.Code != http.StatusUnsupportedMediaType || errCode(t, rec) != "unsupported_media_type" {
+		t.Errorf("415: %d %s", rec.Code, rec.Body)
+	}
+	if rec := e.do("POST", p, `{"emails":["a@b.com"]}`, "application/json", e.teacher, "https://evil.example"); rec.Code != http.StatusForbidden {
+		t.Errorf("csrf: %d", rec.Code)
+	}
+	for name, body := range map[string]string{
+		"malformed": `{"emails":`, "unknown field": `{"emails":["a@b.com"],"x":1}`, "null": `{"emails":null}`,
+		"empty object": `{}`, "wrong type": `{"emails":"a@b.com"}`,
+	} {
+		if rec := e.post(p, body, e.teacher); rec.Code != http.StatusUnprocessableEntity || errCode(t, rec) != "validation" {
+			t.Errorf("%s: %d %s", name, rec.Code, rec.Body)
+		}
+	}
+	// the cap over HTTP: a teacher may assign 50; 51 is a field error
+	var many []string
+	for i := 0; i < 51; i++ {
+		many = append(many, fmt.Sprintf(`"u%d@example.com"`, i))
+	}
+	rec := e.post(p, `{"emails":[`+strings.Join(many, ",")+`]}`, e.teacher)
+	if rec.Code != http.StatusUnprocessableEntity || !strings.Contains(rec.Body.String(), `"emails":"You can assign an exam to at most 50 people."`) {
+		t.Errorf("cap: %d %s", rec.Code, rec.Body)
+	}
+	// 404 bodies for foreign and missing exams are byte for byte the same, whatever the input
+	for _, body := range []string{`{"emails":["a@b.com"]}`, `{"emails":null}`} {
+		foreign := e.post(p, body, e.other)
+		missing := e.post("/exams/no-such-exam/assign", body, e.other)
+		if foreign.Code != http.StatusNotFound || foreign.Body.String() != missing.Body.String() {
+			t.Errorf("assign 404: %d %q vs %d %q", foreign.Code, foreign.Body, missing.Code, missing.Body)
+		}
+	}
+	df := e.post("/exams/asgn-key-1/decline", "", e.other)
+	dm := e.post("/exams/no-such-exam/decline", "", e.other)
+	if df.Code != http.StatusNotFound || df.Body.String() != dm.Body.String() {
+		t.Errorf("decline 404: %q vs %q", df.Body, dm.Body)
+	}
+	// exam_closed comes before the 422 checks
+	e.clk.Advance(time.Hour + 60*time.Second)
+	for _, body := range []string{`{"emails":null}`, `{"emails":["a@b.com"]}`} {
+		if rec := e.post(p, body, e.teacher); rec.Code != http.StatusConflict || errCode(t, rec) != "exam_closed" {
+			t.Errorf("closed %s: %d %s", body, rec.Code, rec.Body)
+		}
+	}
+}
+
+// A student creator gets the same bytes whether a not-allowed account (a teacher) or no account
+// holds the email.
+func TestAssignUnknownByteIdenticalOverHTTP(t *testing.T) {
+	run := func(registerTeacher bool) (int, string, string) {
+		e := newDeclEnv(t, false)
+		if registerTeacher {
+			rec := httptest.NewRecorder()
+			e.h.ServeHTTP(rec, jsonReq("POST", "/auth/signup", `{"name":"Tee","email":"tee@example.com","password":"correct horse","role":"teacher"}`))
+		}
+		e.newExam(t, e.student, "unk-key-1", "")
+		rec := e.post("/exams/unk-key-1/assign", `{"emails":["Tee@Example.com ","ghost@example.com"]}`, e.student)
+		return rec.Code, rec.Header().Get("Cache-Control") + rec.Header().Get("Content-Type"), rec.Body.String()
+	}
+	c1, h1, b1 := run(true)
+	c2, h2, b2 := run(false)
+	if c1 != http.StatusOK || c1 != c2 || h1 != h2 || b1 != b2 {
+		t.Errorf("%d %q %q vs %d %q %q", c1, h1, b1, c2, h2, b2)
+	}
+	if strings.TrimSpace(b1) != `{"assigned":[],"alreadyAssigned":[],"unknown":["Tee@Example.com","ghost@example.com"]}` {
+		t.Errorf("body %s", b1)
 	}
 }

@@ -10,9 +10,33 @@ import (
 
 // Decline moves the caller's not_started attempt to declined (backend-spec 8.5). It is idempotent.
 // Whoever has no attempt row, whether the exam is missing or someone else's, gets the same 404.
-// In-progress and submitted attempts are refused with 409. There is no undo.
+// In-progress and submitted attempts are refused with 409 conflict, and any not-yet-declined
+// attempt after acceptingUntil with 409 exam_closed. There is no undo.
 func (s *Service) Decline(ctx context.Context, user store.User, examID string) error {
-	err := s.attempts.Decline(ctx, examID, user.ID)
+	// The row comes first: the exam is only read once the caller has a row, so a missing exam and
+	// someone else's exam are the same 404.
+	a, err := s.attempts.GetAttempt(ctx, examID, user.ID)
+	if errors.Is(err, store.ErrNotFound) {
+		return apperr.NotFound()
+	}
+	if err != nil {
+		return apperr.Internal(err)
+	}
+	if a.Status == store.AttemptDeclined {
+		return nil // idempotent, also after the deadline
+	}
+	// Declining is a write: after the deadline it would turn a missed attempt into a declined one.
+	exam, err := s.exams.GetExam(ctx, examID)
+	if errors.Is(err, store.ErrNotFound) {
+		return apperr.NotFound()
+	}
+	if err != nil {
+		return apperr.Internal(err)
+	}
+	if over(exam, s.clk.Now()) {
+		return apperr.ExamClosed()
+	}
+	err = s.attempts.Decline(ctx, examID, user.ID)
 	switch {
 	case err == nil:
 		return nil

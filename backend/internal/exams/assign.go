@@ -57,9 +57,12 @@ func (s *Service) Assign(ctx context.Context, user store.User, examID string, em
 	for _, uid := range ids {
 		holders[uid] = true
 	}
-	if !contains(ids, user.ID) {
+	if !contains(ids, user.ID) || have[user.ID] {
 		delete(holders, user.ID) // the creator's practice row is not an assignee
 	}
+	// Known race, accepted for now: this read-count-write is not atomic, so two parallel assigns
+	// (or an assign and a Create replay) can together exceed the cap. Parked fix: a per-exam atomic
+	// counter on the exam item, which needs a new store method.
 	if n, capN := len(holders), assigneeCap(user.Role); n > capN {
 		return AssignResult{}, apperr.Validation("Some fields need attention.", map[string]string{"emails": capMessage(capN)})
 	}

@@ -297,3 +297,107 @@ func TestAssignPartialFailure503ThenRetryCompletes(t *testing.T) {
 		t.Fatalf("rows %v", e.rows(t, id))
 	}
 }
+
+func TestDeclineAfterDeadline(t *testing.T) {
+	e := newEnv(t)
+	id := e.assigned(t)
+	in := input(1)
+	in.AssigneeEmails = []string{"s1@x.com"}
+	id2 := e.create(t, e.teacher, in, "exam-0002").ID
+	ctx := context.Background()
+	au := e.exam(t, id).ClosesAt.Add(60 * time.Second)
+
+	// already declined stays an idempotent 204 after the deadline
+	if err := e.svc.Decline(ctx, e.student, id2); err != nil {
+		t.Fatal(err)
+	}
+	e.clk.Set(au.Add(-time.Nanosecond))
+	if err := e.svc.Decline(ctx, e.student, id); err != nil {
+		t.Fatalf("1ns before acceptingUntil: %v", err)
+	}
+	if got := e.status(t, id, "s1"); got != store.AttemptDeclined {
+		t.Fatalf("status %q", got)
+	}
+
+	id3 := func() string {
+		in := input(1)
+		in.AssigneeEmails = []string{"s1@x.com"}
+		e.clk.Set(t0)
+		x := e.create(t, e.teacher, in, "exam-0003")
+		return x.ID
+	}()
+	e.clk.Set(e.exam(t, id3).ClosesAt.Add(60 * time.Second))
+	err := e.svc.Decline(ctx, e.student, id3)
+	wantStatus(t, err, http.StatusConflict)
+	var ae *apperr.Error
+	errors.As(err, &ae)
+	if ae.Code != "exam_closed" {
+		t.Fatalf("code %q", ae.Code)
+	}
+	if got := e.status(t, id3, "s1"); got != store.AttemptNotStarted {
+		t.Fatalf("missed attempt rewritten: %q", got)
+	}
+	e.clk.Set(au.Add(time.Hour))
+	if err := e.svc.Decline(ctx, e.student, id2); err != nil {
+		t.Fatalf("already declined after deadline: %v", err)
+	}
+	// missing and foreign stay identical after the deadline
+	a := e.svc.Decline(ctx, e.parent, id3)
+	b := e.svc.Decline(ctx, e.parent, "nope-nope-1")
+	wantStatus(t, a, http.StatusNotFound)
+	if a.Error() != b.Error() {
+		t.Fatalf("%v vs %v", a, b)
+	}
+}
+
+func TestAssignNonCreatorInvalidInputIs404(t *testing.T) {
+	e := newEnv(t)
+	id := e.assigned(t)
+	_, err := e.svc.Assign(context.Background(), e.student, id, nil)
+	wantStatus(t, err, http.StatusNotFound)
+}
+
+func TestAssignNilWritesNoRow(t *testing.T) {
+	e := newEnv(t)
+	id := e.assigned(t)
+	_, err := e.svc.Assign(context.Background(), e.teacher, id, nil)
+	wantField(t, err, "emails")
+	if len(e.rows(t, id)) != 1 {
+		t.Fatalf("rows %v", e.rows(t, id))
+	}
+}
+
+func TestAssignedEmailsKeepCaseAndCreatorSelfAssign(t *testing.T) {
+	e := newEnv(t)
+	ctx := context.Background()
+	id := e.assigned(t)
+	e.addUser(t, "s2", "s2@x.com", "student")
+	r, err := e.svc.Assign(ctx, e.teacher, id, []string{" S2@X.com "})
+	if err != nil || !reflect.DeepEqual(r.Assigned, []string{"S2@X.com"}) {
+		t.Fatalf("%+v %v", r, err)
+	}
+	// teacher assigns themself on an assigned exam: a new row, reported as assigned
+	r, err = e.svc.Assign(ctx, e.teacher, id, []string{"T1@x.com"})
+	if err != nil || !reflect.DeepEqual(r.Assigned, []string{"T1@x.com"}) {
+		t.Fatalf("%+v %v", r, err)
+	}
+	// student creator, practice exam at 10 students: re-listing the creator and existing
+	// assignees writes nothing and is not a cap error
+	all := e.students(t, 0, 10)
+	pid := e.create(t, e.student, input(1), "exam-stud9").ID
+	if _, err := e.svc.Assign(ctx, e.student, pid, all); err != nil {
+		t.Fatal(err)
+	}
+	r, err = e.svc.Assign(ctx, e.student, pid, append([]string{"s1@x.com"}, all[:3]...))
+	if err != nil || len(r.Assigned) != 0 || len(r.AlreadyAssigned) != 4 {
+		t.Fatalf("%+v %v", r, err)
+	}
+	// a creator adding themself counts when they have no row yet
+	sid := e.create(t, e.student, func() exams.CreateInput {
+		in := input(1)
+		in.AssigneeEmails = all[:10]
+		return in
+	}(), "exam-stud8").ID
+	_, err = e.svc.Assign(ctx, e.student, sid, []string{"s1@x.com"})
+	wantField(t, err, "emails")
+}
