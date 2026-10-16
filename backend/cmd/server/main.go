@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"slices"
 	"syscall"
 	"time"
 
@@ -19,11 +20,12 @@ import (
 	"github.com/gokulkumar/exam-assistant/backend/internal/docs"
 	"github.com/gokulkumar/exam-assistant/backend/internal/gen"
 	"github.com/gokulkumar/exam-assistant/backend/internal/gen/prompt"
+	"github.com/gokulkumar/exam-assistant/backend/internal/gen/providers"
 	"github.com/gokulkumar/exam-assistant/backend/internal/store/memory"
 )
 
 func main() {
-	fakeLLM := flag.Bool("fake-llm", false, "generate deterministic fake questions instead of calling a provider (the only generator until the provider generators exist)")
+	fakeLLM := flag.Bool("fake-llm", false, "generate deterministic fake questions instead of calling a provider (wins over any configured provider key)")
 	flag.Parse()
 
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
@@ -40,6 +42,10 @@ func main() {
 		logger.Error("config", "err", err)
 		os.Exit(1)
 	}
+
+	// The provider keys are only loaded by config in worker mode; the local server runs jobs
+	// in-process, so it reads them itself.
+	cfg.LLMAPIKey, cfg.GeminiAPIKey = os.Getenv("LLM_API_KEY"), os.Getenv("GEMINI_API_KEY")
 
 	addr := os.Getenv("ADDR")
 	if addr == "" {
@@ -71,10 +77,29 @@ func main() {
 	}
 }
 
+// pickFactory chooses the generators of the local server. -fake-llm always wins and gives
+// gen.FakeGenerator. Otherwise, when an enabled provider has its key (LLM_API_KEY for
+// Anthropic, GEMINI_API_KEY for Gemini) it is providers.New(cfg), as in cmd/lambda; with
+// none every job fails with the generic message.
+func pickFactory(cfg config.Config, logger *slog.Logger, fakeLLM bool) gen.GeneratorFactory {
+	switch {
+	case fakeLLM:
+		return gen.FixedFactory(gen.FakeGenerator{})
+	case hasProviderKey(cfg):
+		return providers.New(cfg)
+	}
+	logger.Warn("no generator configured: jobs will fail; set LLM_API_KEY or GEMINI_API_KEY, or start with -fake-llm for offline generation")
+	return gen.UnconfiguredFactory
+}
+
+func hasProviderKey(cfg config.Config) bool {
+	return (slices.Contains(cfg.Providers, gen.ProviderAnthropic) && cfg.LLMAPIKey != "") ||
+		(slices.Contains(cfg.Providers, gen.ProviderGemini) && cfg.GeminiAPIKey != "")
+}
+
 // buildHandler wires the local server: in-memory stores, the Docs service on an in-memory
 // blob served at /local-blob (baseURL is where browsers reach this server), and the
-// in-process job runner. With fakeLLM the generator is gen.FakeGenerator; without it
-// every job fails with the generic message because no provider generator exists yet.
+// in-process job runner. The generator is chosen by pickFactory.
 func buildHandler(cfg config.Config, logger *slog.Logger, baseURL string, fakeLLM bool) (http.Handler, error) {
 	users := memory.NewUserStore()
 	clk := clock.Real{}
@@ -82,12 +107,7 @@ func buildHandler(cfg config.Config, logger *slog.Logger, baseURL string, fakeLL
 	docStore := memory.NewDocStore(clk)
 	blob := newLocalBlob(docs.NewMemBlob(), baseURL)
 
-	gens := gen.GeneratorFactory(gen.UnconfiguredFactory)
-	if fakeLLM {
-		gens = gen.FixedFactory(gen.FakeGenerator{})
-	} else {
-		logger.Warn("no generator configured: jobs will fail; start with -fake-llm for offline generation")
-	}
+	gens := pickFactory(cfg, logger, fakeLLM)
 	runner := &gen.InProcessRunner{Worker: &gen.Worker{
 		Jobs: jobs, Docs: docStore, Blob: blob, Gens: gens, Clock: clk,
 		Cfg: gen.WorkerConfig{
