@@ -4,10 +4,11 @@ import Link from "next/link";
 import { useParams } from "next/navigation";
 import { ArrowLeft } from "lucide-react";
 import { api, ApiError } from "@/lib/api";
-import { keyAvailableLine, resultCardData, scoreSubtitle, selfCheckScore, setCheck, type Check, type Checks } from "@/lib/key";
+import { keyAvailableLine, peekLines, resultCardData, scoreSubtitle, selfCheckScore, setCheck, type Check, type Checks } from "@/lib/key";
 import type { ResultResponse } from "@/lib/types";
 import { EmptyState } from "@/components/EmptyState";
 import { Notice } from "@/components/Notice";
+import { Pill } from "@/components/Pill";
 import { ResultCard } from "@/components/ResultCard";
 
 type View =
@@ -81,6 +82,21 @@ export default function Page() {
       })
     : null;
   const needsCheck = cards.some((c) => c.card.canSelfCheck);
+  // (P1) Peek lines. The score without the penalty reuses the self-check rule with nothing counted as revealed.
+  const peeks = data
+    ? peekLines({
+        maxPeeks: data.exam.maxPeeks,
+        peeksUsed: data.peeksUsed,
+        maxScore: data.maxScore,
+        scoreBeforePeeks: selfCheckScore({
+          base: data.scoreBeforePeeks,
+          maxScore: data.maxScore,
+          questions: cards.filter((c) => c.card.canSelfCheck).map((c) => ({ id: c.id, marks: c.marks, revealed: false })),
+          checks,
+        }),
+        submitted: data.status === "submitted",
+      })
+    : null;
 
   return (
     <main className="page pt-5">
@@ -101,6 +117,9 @@ export default function Page() {
               ) : needsCheck ? (
                 <p>Check each answer to see your score.</p>
               ) : null}
+              {peeks?.withoutPenalty && <p>{peeks.withoutPenalty}</p>}
+              {peeks?.used && <p>{peeks.used}</p>}
+              {peeks?.noPeeks && <p className="mt-1"><Pill variant="ok">No peeks</Pill></p>}
             </div>
           )}
           {data && !data.keyVisible && (

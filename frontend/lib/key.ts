@@ -1,5 +1,6 @@
 // Pure helpers for the result page (fs 6.7). The answer key is only ever read through resultCardView and
 // resultCardData: when the key is hidden nothing here returns, or lets a caller reach, correct-answer material.
+import { PEEKS_UI } from "./features";
 import { scoreText } from "./format";
 import { submittedCell } from "./status";
 import type { ExamType } from "./types";
@@ -45,10 +46,23 @@ export interface ResultCardData {
   modelAnswer?: string;
   /** Free text with a visible model answer: the I got it / I missed it pair is offered. */
   canSelfCheck: boolean;
+  /** (P1) The user revealed this answer mid-exam: a neutral "Answer revealed" marker, never a ✓ or ✗. */
+  revealed: boolean;
+  /**
+   * (P1) The answer the user revealed, only while the key is hidden (the one answer they have already seen).
+   * With a visible key the normal correct-answer line is used instead. Never set for an unrevealed question.
+   */
+  revealedText?: string;
 }
 
+/** Marker text on a revealed question. */
+export const REVEALED_MARKER = "Answer revealed";
+
+const mcqAnswerText = (q: ResultCardInput): string | undefined =>
+  q.correctAnswer || (typeof q.correctIndex === "number" ? q.options?.[q.correctIndex] : undefined) || undefined;
+
 /** The only shape the card component receives. Key fields are copied in only when resultCardView allows them. */
-export function resultCardData(q: ResultCardInput, keyVisible: boolean, number: number, type: ExamType): ResultCardData {
+export function resultCardData(q: ResultCardInput, keyVisible: boolean, number: number, type: ExamType, peeksUi: boolean = PEEKS_UI): ResultCardData {
   const view = resultCardView(q, keyVisible, type);
   const kind = type;
   const out: ResultCardData = {
@@ -58,19 +72,48 @@ export function resultCardData(q: ResultCardInput, keyVisible: boolean, number: 
     yourAnswer: q.yourAnswer?.trim() ? q.yourAnswer : "No answer",
     pill: null,
     canSelfCheck: false,
+    // Only a real `true` counts, and only while the peeks UI is on.
+    revealed: peeksUi && q.revealed === true,
   };
   if (view.showPill && typeof q.correct === "boolean") {
     out.pill = q.correct ? { variant: "ok", text: "✓ Correct" } : { variant: "bad", text: "✗ Incorrect" };
   }
   if (view.showCorrect) {
     if (kind === "mcq") {
-      out.correctText = q.correctAnswer || (typeof q.correctIndex === "number" ? q.options?.[q.correctIndex] : undefined);
+      out.correctText = mcqAnswerText(q);
     } else {
       out.modelAnswer = q.modelAnswer as string;
       out.canSelfCheck = true;
     }
+  } else if (out.revealed) {
+    // Hidden key: the one answer the user already saw. Copied only for a revealed question, never anything else.
+    const text = type === "mcq" ? mcqAnswerText(q) : hasModel(q) ? (q.modelAnswer as string) : undefined;
+    if (text !== undefined) out.revealedText = text;
   }
   return out;
+}
+
+export interface PeekLines { withoutPenalty: string | null; used: string | null; noPeeks: boolean }
+
+/**
+ * fs 6.7 peek lines. `scoreBeforePeeks` is the score as if nothing was revealed (null when not known).
+ * Used (> 0): "Score without the peek penalty: 36 / 40" and "Peeks used: N of M". Allowed (maxPeeks > 0) and none used:
+ * the "No peeks" badge. Nothing for an attempt that was not submitted, when peeking was off, or with the peeks UI cut.
+ */
+export function peekLines(
+  a: { maxPeeks: number; peeksUsed: number; maxScore: number; scoreBeforePeeks: number | null; submitted: boolean },
+  peeksUi: boolean = PEEKS_UI,
+): PeekLines {
+  const none: PeekLines = { withoutPenalty: null, used: null, noPeeks: false };
+  if (!peeksUi || !a.submitted) return none;
+  if (a.peeksUsed > 0) {
+    return {
+      withoutPenalty: a.scoreBeforePeeks === null ? null : `Score without the peek penalty: ${scoreFraction(a.scoreBeforePeeks, a.maxScore)}`,
+      used: `Peeks used: ${a.peeksUsed} of ${a.maxPeeks}`,
+      noPeeks: false,
+    };
+  }
+  return { ...none, noPeeks: a.maxPeeks > 0 };
 }
 
 /** "27.5 / 40"; integers never carry ".0". */
