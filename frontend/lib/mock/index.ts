@@ -232,6 +232,10 @@ function stickyFlag(name: string): string | null {
 
 const acceptingUntil = (e: MockExam) => iso(Date.parse(e.closesAt) + GRACE);
 const over = (e: MockExam) => Date.now() >= Date.parse(e.closesAt) + GRACE;
+/** bs 9.2: an in_progress attempt past the grace window is finalized on read into a submitted one (its answers kept). */
+function finalizeOnRead(e: MockExam) {
+  if (e.attempt?.status === "in_progress" && over(e)) e.attempt.status = "submitted";
+}
 const keyVisible = (e: MockExam) => e.mine || over(e);
 /** MCQ answers are stored as the option text (bs 9.3: exact match with options[correctIndex]). */
 const isRight = (q: Question, a: string | undefined) =>
@@ -286,6 +290,7 @@ function rosterCounts(e: MockExam) {
 }
 
 function listItem(e: MockExam, scope: string): ExamListItem {
+  finalizeOnRead(e);
   const base: ExamListItem = {
     id: e.id, title: e.title, createdBy: e.createdBy, closesAt: e.closesAt,
     acceptingUntil: acceptingUntil(e), totalMarks: totalMarks(e), type: e.type,
@@ -732,6 +737,7 @@ export function mockFetch(method: string, rawPath: string, body: unknown, idempo
     }
     if (method === "GET" && sub === "result") {
       if (!exam.attempt) return err(404, "not_found", "That item isn't available.");
+      finalizeOnRead(exam);
       // Mock-only page-URL flag (see seedResultFixtures), honoured for e14 and e15 only: hidden | leak | fractional | unfinished.
       const flag = ["e14", "e15", "e21", "e22", "e23"].includes(exam.id) ? stickyFlag("mockResult") : null;
       const isOver = over(exam);
