@@ -101,15 +101,22 @@ func TestCountsValidation(t *testing.T) {
 	e := newEnv(t)
 	e.ready(t, "d1")
 	bad := map[string]map[string]int{
-		"key 6":       {"6": 1},
-		"key 0":       {"0": 1},
-		"key non-num": {"x": 1},
-		"count 31":    {"1": 31},
-		"negative":    {"1": -1},
-		"all zero":    {"1": 0, "2": 0},
-		"61 total":    {"1": 30, "2": 30, "3": 1},
-		"marks 206":   {"5": 30, "4": 14, "1": 0, "2": 0, "3": 0},
-		"marks 202":   {"5": 30, "4": 13, "3": 0},
+		"key 6":        {"6": 1},
+		"key 0":        {"0": 1},
+		"key non-num":  {"x": 1},
+		"key 01":       {"01": 1},
+		"key space 1":  {" 1": 1},
+		"key plus 1":   {"+1": 1},
+		"key 1 space":  {"1 ": 1},
+		"key arabic 3": {"\u0663": 1},
+		"key empty":    {"": 1},
+		"key 1.0":      {"1.0": 1},
+		"count 31":     {"1": 31},
+		"negative":     {"1": -1},
+		"all zero":     {"1": 0, "2": 0},
+		"61 total":     {"1": 30, "2": 30, "3": 1},
+		"marks 206":    {"5": 30, "4": 14, "1": 0, "2": 0, "3": 0},
+		"marks 202":    {"5": 30, "4": 13, "3": 0},
 	}
 	for name, counts := range bad {
 		r := req("d1")

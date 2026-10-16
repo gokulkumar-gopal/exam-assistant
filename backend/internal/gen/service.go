@@ -260,7 +260,7 @@ func (s *Service) resolveModel(requested string) (string, error) {
 	return requested, nil
 }
 
-func isStale(j store.JobSummary, now time.Time) bool { return now.Sub(j.UpdatedAt) > StaleAfter }
+func isStale(updatedAt, now time.Time) bool { return now.Sub(updatedAt) > StaleAfter }
 
 // checkRunning enforces the soft running-jobs limit: queued or running jobs that are not
 // stale (and so, with a 24 h TTL, not expired either).
@@ -271,7 +271,7 @@ func (s *Service) checkRunning(ctx context.Context, userID string, now time.Time
 	}
 	running := 0
 	for _, j := range jobs {
-		if (j.Status == store.JobQueued || j.Status == store.JobRunning) && !isStale(j, now) {
+		if (j.Status == store.JobQueued || j.Status == store.JobRunning) && !isStale(j.UpdatedAt, now) {
 			running++
 		}
 	}
@@ -305,7 +305,7 @@ func (s *Service) Poll(ctx context.Context, user store.User, jobID string) (Poll
 		v.FailedSources = []store.FailedSource{}
 	}
 	switch {
-	case (job.Status == store.JobQueued || job.Status == store.JobRunning) && now.Sub(job.UpdatedAt) > StaleAfter:
+	case (job.Status == store.JobQueued || job.Status == store.JobRunning) && isStale(job.UpdatedAt, now):
 		msg := StaleMessage
 		v.Status, v.Error = store.JobFailed, &msg
 	case job.Status == store.JobDone:
