@@ -104,7 +104,7 @@ Colour discipline: use the gradient only for the primary action, selection, and 
 - Sticky, height 56 px, white, bottom border.
 - Left: logo text "Exam Assistant" (gradient text, 17 px, bold), links to Home.
 - Next to it: nav links **Home**, **Documents**, **Create**. The active link has a 2 px `--accent` underline. **Create** is shown to every role.
-- Right: circular avatar (32 px, gradient, user's initial). Click opens a menu with the user's name, the nav links (mobile only), and **Log out**.
+- Right: circular avatar (32 px, gradient, user's initial). Click opens a menu with the user's name, the nav links (mobile only), **AI usage** (links to `/usage`, every role), and **Log out**.
 - Under 640 px the inline nav links are hidden and appear inside the avatar menu.
 - The "View as" role switch in the prototype is **prototype only**. In the real app, role comes from the logged-in user. Do not build it.
 
@@ -134,6 +134,7 @@ All roles can use Documents, create exams, and take exams assigned to them. An a
 | `/exams/[id]/status` | Teacher status table | creator |
 | `/exams/[id]/result` | Result and answer key | assignee or creator |
 | `/exams/[id]/print` | Print view (question paper, answer sheet, answer key) | assignee or creator |
+| `/usage` | AI usage (live spend, tokens, latest jobs) | all |
 
 Unauthenticated users redirect to `/login`.
 
@@ -201,14 +202,15 @@ Open to every role. One page, no wizard.
 **Left card: Sources (N)**
 - A checkable list of the user's documents (name only). Pre-checked from `?sources=id,id` if present.
 - At least one source is required.
-- Under the list, a helper line: "Up to 10 files, 20 MB and 100 pages in total." If `POST /api/generate` answers `422` naming a file (a file alone over the page cap, or a set over the caps), show a `bad` notice with the message as written and uncheck nothing.
+- Under the list, a helper line: "Up to 10 files, 20 MB and 40 pages in total." If `POST /api/generate` answers `422` naming a file (a file alone over the page cap, or a set over the caps), show a `bad` notice with the message as written and uncheck nothing.
 
 **Right column, in this order:**
 1. **Question type** card: segmented control with **Multiple choice** and **Free text**. Selected segment uses the gradient, white text.
 2. **Total marks** card: chips **30**, **40**, **50**. Selected chip uses the gradient. Default 30. (A custom total is deferred.)
 3. **Questions per mark value** card: five stepper rows, one for each of 1 to 5 marks. Each row: label ("1 mark", "2 marks", coloured per the mark-value colours, bold), a **−** button, the count, a **+** button, and a right-aligned "= N marks" subtotal. Counts cannot go below 0. Below the rows, a checkbox "Shuffle order (default: low to high marks)".
 4. **Exam details** card: **Title** (text), **Closes in** (select: 1 hour, 1 day, 2 days, 1 week, plus "Pick date and time" which reveals a datetime input), **Assign to** (optional, comma-separated emails; helper "Leave empty for a personal practice exam"; a student sees "Student emails only · up to 10 people", a teacher or parent sees "Up to 50 people"), and **Peeks allowed** (P1: a stepper from 0 to 10, label "Peeks allowed", helper "Takers can reveal an answer mid-exam for half marks. 0 turns it off."; the default is 3 when Assign to is empty and 0 when emails are entered; the value follows that default until the user edits it).
-5. A results region (empty until generation starts).
+5. **Model** card (a select; P0). The options come from `GET /api/ai/models` (cheapest first) and the default is the one marked `default: true`, which is the cheapest enabled model unless the deployment sets another. Each option shows the model name, its tier ("cheapest", "cheap", "balanced", "most capable") and "about $X per set" (the small-case `approxJobCost`). Under the select, a quiet link **See AI usage** (opens `/usage`). When the chosen model is not the cheapest, show a `Notice`: "This model costs more per set and uses more of the shared monthly AI budget." If `GET /api/ai/models` fails or returns nothing, hide the card and omit `model` from requests (the backend then uses its default). The choice is remembered for the page session only.
+6. A results region (empty until generation starts).
 
 **Sticky footer (always visible, white, top border):**
 - Left: "{total} / {target} marks" in bold.
@@ -219,12 +221,12 @@ Open to every role. One page, no wizard.
 - **Generate is disabled unless total equals target and at least one source is selected.**
 
 **Generation flow**
-1. Above the Generate button, a quiet line: "Selected files are sent to an AI service to write questions." Clicking Generate calls `POST /api/generate` with the settings. The response is `{ jobId }` immediately (it does not wait for the questions). Show a card in the results region: "Writing question 3 of 12…", a gradient progress bar, and a **Cancel** button.
-2. Poll `GET /api/generate/:jobId` every 1.5 seconds. The response is `{ status: "queued" | "running" | "done" | "failed" | "cancelled", progress: { done, total }, questions?, failedSources?, error? }`. Update the progress text and bar from `progress`. When `status` is `done`, stop polling and render `questions`.
+1. Above the Generate button, a quiet line: "Selected files are sent to an AI service to write questions." Clicking Generate calls `POST /api/generate` with the settings, including `model` (the selected model's id). The response is `{ jobId }` immediately (it does not wait for the questions). Show a card in the results region: "Writing question 3 of 12…", a gradient progress bar, and a **Cancel** button.
+2. Poll `GET /api/generate/:jobId` every 1.5 seconds. The response is `{ status: "queued" | "running" | "done" | "failed" | "cancelled", progress: { done, total }, model, questions?, failedSources?, error? }`; remember `model` as the model used for this exam's questions. Update the progress text and bar from `progress`. When `status` is `done`, stop polling and render `questions`.
 3. **Cancel** calls `DELETE /api/generate/:jobId`, stops polling, and clears the card. Also call `DELETE` when the user leaves the page while a job is running, and when the app gives up (step 4), so the job stops spending.
 4. Give up with the failure notice if a poll fails 3 times in a row or the job runs longer than **6 minutes** (send the `DELETE` first). Generation usually finishes within about 2 minutes; the backend's hard limit is 8 minutes.
 5. If a source file couldn't be read, show a notice naming the file (from `failedSources`): "We couldn't read {name}. Try a clearer photo or a different file." Generation continues with the other sources if any remain.
-6. On `failed`, show a `bad` notice with the job's `error` text exactly as written (the backend writes it for end users) and **Try again**. On `429 rate_limited` from `POST /api/generate`, show the message as written and no retry button.
+6. On `failed`, show a `bad` notice with the job's `error` text exactly as written (the backend writes it for end users) and **Try again**. On `429 rate_limited` from `POST /api/generate` (a daily limit, or "The monthly AI budget has been used. Try again next month."), show the message as written and no retry button. On `422` with `fields.model` (the model is unknown or not enabled), refetch `GET /api/ai/models`, reset the select to the default, and show "That model isn't available. Pick another."
 
 Questions and answers are **plain text** (Unicode maths such as x², √, ½ is fine). Render them as text, never as HTML or Markdown.
 
@@ -232,7 +234,7 @@ Questions and answers are **plain text** (Unicode maths such as x², √, ½ is 
 - Heading "Generated questions · {N} marks".
 - One card per question: coloured mark badge ("3 marks"), "from {file name}" (meta), and right-aligned text buttons **Edit**, **Regenerate**, **Delete**. Then the numbered question text. For multiple choice, show the four options and mark the correct one with a ✓ and the word "correct".
 - Order: ascending by marks by default. If Shuffle is checked, order is random. Changing Shuffle after generating re-orders the existing list without regenerating.
-- **Edit** makes the question text (and options) editable inline with Save and Cancel. **Regenerate** replaces only that question with a new one of the same marks. It calls `POST /api/generate/regenerate` with `{ marks, sourceIds, type, avoid }`, where `avoid` is the text of every question currently in the list, so the replacement doesn't repeat one. **Delete** removes it.
+- **Edit** makes the question text (and options) editable inline with Save and Cancel. **Regenerate** replaces only that question with a new one of the same marks. It calls `POST /api/generate/regenerate` with `{ marks, sourceIds, type, avoid, model }`, where `model` is the model used for this exam's generation (so a replacement does not silently use a different one) and `avoid` is the text of every question currently in the list, so the replacement doesn't repeat one. **Delete** removes it.
 - If deletions leave the total below the target, show a notice above the list: "You deleted {n} marks. Add a {k}-mark question?" with an **Add** button that generates one question of `min(gap, 5)` marks (the same call as Regenerate, with `avoid` set the same way).
 - Under the list: secondary **Regenerate all** and primary **Publish exam**.
 - **Publish exam** is disabled while the total of the remaining questions does not equal the target, or the title is empty. It calls `POST /api/exams` with an `Idempotency-Key` header holding a UUID generated once per publish attempt and **reused if the user retries** (so a flaky connection never creates two exams). The body sends `closesInSeconds` (or an absolute `closesAt` for the date picker; never compute the deadline from the device clock), `assigneeEmails`, `maxPeeks`, and the questions (with `sourceDocId` and `sourceDocName` as returned by generation).
@@ -347,6 +349,19 @@ Lets anyone who can open the exam print it, so it can be taken on paper, and sav
 
 **Components:** `PrintToolbar` and `PrintSheet` (pure components that take the exam data and the options, used by both the preview and the print output).
 
+### 6.10 AI usage (`/usage`)
+Open to every signed-in user. It shows **aggregate numbers only**: no user names, no file names, no question text. Priority P1 (the counters behind it are part of the core build).
+
+- Header: h1 "AI usage", subtitle "Live. Updates every 5 seconds.", and a muted "Updated 10:42:07" (the time of the last successful refresh, from `serverTime`).
+- Card **This month ({month key})**: a `Meter` (spend against budget) with the text "$3.42 of $15.00"; the meter is `--accent` normally, `warn` from 80% and `bad` from 100%. Under it, counts: jobs, calls, and tokens (input, output, cache read, cache write, in thousands with one decimal). At 100% add a `Notice`: "The monthly AI budget has been used. New question sets are paused until next month."
+- Card **Today** (UTC day): jobs, calls, spend, tokens.
+- Line **Running now: N**.
+- Table **By model**: model, jobs, calls, tokens, spend. Only models with usage this month, cheapest first.
+- List **Latest jobs** (newest 50 of today): time, kind ("Generate" or "Regenerate"), model, a status pill (`queued`, `running` warn, `done` ok, `failed` bad, `cancelled` neutral), calls, cost.
+- **Polling:** `GET /api/ai/usage` every 5 seconds, paused while the tab is hidden and refreshed once when it becomes visible. On a failed refresh show "Couldn't refresh. Retrying…" in `--bad` and keep the last numbers on screen.
+- Empty state (no jobs this month): "No AI jobs yet."
+- Mobile: cards stack; the tables scroll horizontally inside their card, the page does not.
+
 ## 7. Shared components
 
 Build these once and reuse.
@@ -359,7 +374,7 @@ Build these once and reuse.
 | `MarkBadge` | Takes 1 to 5, uses mark-value colours, text "N mark(s)" |
 | `FileTile` | PDF, JPG, PNG, TXT colour tile |
 | `Stepper` | − count + with min 0 and subtotal |
-| `Meter` | Horizontal bar with colour prop |
+| `Meter` | Horizontal bar with colour prop. Also used for the monthly spend on the AI usage page |
 | `DotNav` | Numbered question dots with states answered, current, blank |
 | `Timer` | Takes a deadline ISO string, ticks every second, tabular numbers, low state under 5 minutes |
 | `SelectionBar` | Fixed bottom bar for the library |
@@ -405,9 +420,11 @@ type AttemptStatus = "not_started" | "in_progress" | "submitted" | "missed" | "d
 | `GET /api/documents`, `DELETE /api/documents/:id` | library | only the caller's `ready` documents |
 | `POST /api/documents/upload-url` (`type` = MIME), `PUT` to S3, `POST /api/documents/:id/complete` | upload | 20 MB cap; `422` on type or size mismatch |
 | `GET /api/documents/:id/file` | viewer | `{ url, expiresAt }`, refetch once on `403` |
-| `POST /api/generate` `{sourceIds, type, counts, shuffle}` | create | `202 {jobId}`; `422` naming a file when caps are exceeded; `429` limits |
-| `GET /api/generate/:jobId`, `DELETE /api/generate/:jobId` | create | poll every 1.5 s; `error` text is user-ready |
-| `POST /api/generate/regenerate` `{marks, sourceIds, type, avoid[]}` | regenerate, add | same polling; separate daily limit |
+| `GET /api/ai/models` | create | `{ models: [{ id, name, provider, tier, priceInPerMTok, priceOutPerMTok, approxJobCost: { small, heavy }, default }], serverTime }`; enabled models only, cheapest first; any signed-in user |
+| `GET /api/ai/usage` | usage page | aggregate only: `month`, `today`, `byModel`, `running`, `recent` (newest 50 jobs of today); poll every 5 s; any signed-in user |
+| `POST /api/generate` `{sourceIds, type, counts, shuffle, model?}` | create | `202 {jobId}`; `422` naming a file when caps are exceeded, or with `fields.model` for an unknown or disabled model; `429` limits and the monthly budget |
+| `GET /api/generate/:jobId`, `DELETE /api/generate/:jobId` | create | poll every 1.5 s; the response includes `model`; `error` text is user-ready |
+| `POST /api/generate/regenerate` `{marks, sourceIds, type, avoid[], model?}` | regenerate, add | same polling; separate daily limit; send the model used for the exam |
 | `POST /api/exams` (optional `Idempotency-Key` header) | publish | body has `closesInSeconds` or `closesAt`, `assigneeEmails`, `maxPeeks`, `questions`; no key-visibility field; response `{ id, unknownEmails, serverTime }` |
 | `GET /api/exams?scope=open\|closed\|created` | home | declined exams are never returned; `created` has `counts` including `declined`; each exam has `createdBy`, `attemptStatus`, `score` |
 | `GET /api/exams/:id` | take | `{ exam, attempt, keyVisible, acceptingUntil, serverTime }`; `attempt` carries `answers`, `lastQuestionIndex`, and (P1) `revealed` and `peeksLeft` |
@@ -490,7 +507,8 @@ Consequences the frontend relies on:
 2. **Documents:** library, upload with the sheet, camera input, validation, progress, selection bar, delete dialog, viewer.
 3. **Create exam:** sources, type, target chips, steppers, sticky footer total, generation with progress, question list with edit, regenerate, delete, shuffle, exam details, publish.
 4. **Home and taking:** Open and Closed lists with Decline, take screen with dots, timer, autosave, Save & exit, review page, submit (auto-submit with answers at zero), result page (hidden-key state), teacher status, and the print view (`/exams/[id]/print`, section 6.9) with its Print buttons.
-5. **Peeks (P1, build last, first to cut):** "Peeks allowed" stepper on Create, `PeeksCounter`, Reveal answer with its dialog, revealed state on resume, result score with and without the penalty and the "No peeks" badge. The types and requests carry `maxPeeks`, `revealed` and `peeksLeft` from the start, so adding this later needs no rework.
+5. **AI usage page (P1, built before peeks, cut after peeks):** the `/usage` route (section 6.10), the avatar-menu link, the **See AI usage** link on Create. The model select on Create (section 6.4) is part of slice 3 (P0), not this slice.
+6. **Peeks (P1, build last, first to cut):** "Peeks allowed" stepper on Create, `PeeksCounter`, Reveal answer with its dialog, revealed state on resume, result score with and without the penalty and the "No peeks" badge. The types and requests carry `maxPeeks`, `revealed` and `peeksLeft` from the start, so adding this later needs no rework.
 
 Build against mock data first, then connect real endpoints. Do not start slice N+1 until slice N works end to end.
 
@@ -500,6 +518,8 @@ A reviewer can confirm each of these by clicking through the app.
 
 - [ ] No font other than Helvetica renders anywhere (inspect computed styles on buttons, inputs, table, timer).
 - [ ] 375 px width: no horizontal page scroll on any screen.
+- [ ] Model select: Create shows a Model select whose default is the option marked `default` (the cheapest enabled model); each option shows name, tier and an approximate cost per set; choosing a pricier model shows the cost `Notice`; the chosen id is sent as `model` on generate and on regenerate; if `GET /api/ai/models` fails the select is hidden and generation still works.
+- [ ] AI usage: `/usage` is in the avatar menu for every role; it shows month spend against budget (warn at 80%, bad at 100%), today, by-model, running now, and latest jobs; it refreshes every 5 seconds, pauses while the tab is hidden, shows "Couldn't refresh. Retrying…" on failure, and shows no user names, file names, or question text.
 - [ ] Print: from Home, the exam page, the result page and the status page, **Print** opens a view where the question paper, the answer sheet (multiple choice only) and the key can be chosen. Printing (or Save as PDF) on A4 and on Letter gives clean black-on-white pages: no toolbar or buttons, no question split across pages, 60 questions flow over several pages, free-text questions have ruled lines in proportion to their marks, and the answer key is offered only when the key is visible to that person. Opening or printing does not start an attempt.
 - [ ] A student sees Create, can publish a practice exam, and can assign only to student emails (up to 10); a teacher or parent can assign up to 50 people.
 - [ ] Signup offers both "Sign up with Google" and an email form, and a role must be chosen for either.
@@ -558,6 +578,8 @@ Password reset, other sign-in providers, Google One Tap, screens for linking or 
 - Students can create exams and assign only to students (cap 10). Teachers and parents assign to anyone (cap 50). Assignees can decline.
 - Peeking mid-exam for half marks is a P1 feature with minimal gamification (counter, "No peeks" badge, score with and without penalty). Creators set the number of peeks (default 3 for self-practice, 0 when assigning).
 - Generation gives up at 6 minutes and sends `DELETE`. Upload cap is 20 MB.
+- Model choice is open to every signed-in user: a Model select on Create, defaulting to the cheapest enabled model, with a cost hint and a notice for pricier models. There is no admin role or admin page.
+- An AI usage page (`/usage`, every role) shows live aggregate spend and usage, polled every 5 seconds. It is P1; the model select is P0. Cut order: peeks first, then the usage page.
 - Exams can be printed so they can be taken on paper: browser printing only (a print route and a print stylesheet), parts chosen by checkbox (question paper, answer sheet for multiple choice, answer key when visible). Paper results are not recorded in the app.
 - The API contract lives in `backend-spec.md` section 8.
 - Deployment: frontend on Vercel, backend on AWS, joined by a Vercel `/api/*` rewrite (same-origin, cookie auth, no CORS for API calls).

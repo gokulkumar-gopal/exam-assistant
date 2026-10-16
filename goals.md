@@ -13,7 +13,7 @@ Rules for coding agents:
 1. **Exactly two deployables, no more.** (a) A **frontend**: a Next.js app deployed to **Vercel**. (b) A **backend**: one service deployed to **AWS**. No microservices, no cron jobs, and no queues or workers except the single mechanism question-generation jobs need (rule 8).
 2. **Two languages, one per deployable.** The frontend is TypeScript: Next.js (App Router) with Tailwind and shadcn/ui. The backend is one Go service on the standard library (`backend-spec.md`). The frontend holds **no business logic and no database access**; it only renders UI and calls the backend API.
 3. **Simplest possible data layer, on AWS.** **DynamoDB** (on-demand) is the database (no other database, and no `Scan` in request paths), and one S3 bucket holds files. **No SQLite and no local disk**: neither persists on Vercel or on serverless hosts. No caching layer, no search engine.
-4. **Buy, don't build.** Use managed services instead of writing them. Files go to S3 through presigned URLs (the browser uploads directly, never through the app server). Auth is the backend's own session (a backend-set cookie) with two ways in: **email and password**, and **Sign in with Google** (Google Identity Services in the browser, ID-token verification in the backend). No managed identity service such as Cognito. Use one LLM API, through its official Go SDK, as set out in `AI-spec.md`.
+4. **Buy, don't build.** Use managed services instead of writing them. Files go to S3 through presigned URLs (the browser uploads directly, never through the app server). Auth is the backend's own session (a backend-set cookie) with two ways in: **email and password**, and **Sign in with Google** (Google Identity Services in the browser, ID-token verification in the backend). No managed identity service such as Cognito. Use LLM APIs only through their official Go SDKs (Google Gemini and Anthropic Claude), as set out in `AI-spec.md`.
 5. **Let the LLM do the heavy lifting.** Question generation is done by an LLM: the backend sends the selected files to a vision-capable LLM, which reads PDFs and images directly and returns the questions. Do not build a separate OCR pipeline unless the LLM approach fails. All AI requirements are in `AI-spec.md`.
 6. **Use browser-native features first.** Camera capture via `<input type="file" accept="image/*" capture>`, PDF viewing via PDF.js, and responsive layout via Tailwind with shadcn/ui.
 7. **Minimal AWS footprint.** Use the fewest services that work: Lambda (an API function and a worker function from one Go binary, called through a Function URL), DynamoDB, and one S3 bucket per stage. No VPC, no API Gateway, no Kubernetes, no multi-region, no custom CI. The setup is a single SAM template plus `make deploy`, defined in `deployment-spec.md`, because one person has to be able to rebuild it on demand.
@@ -61,6 +61,7 @@ Rules for coding agents:
 
 ### 4a. AI question generation (detailed in `AI-spec.md`)
 - [ ] **P0** When the user generates questions, the backend sends the content of the selected files to an LLM and gets back the list of questions. The LLM is the only source of generated questions.
+- [ ] **P0** Any signed-in user can choose which model generates their questions, from a fixed catalog. The default is the cheapest available model (Gemini 3.1 Flash-Lite when Gemini is enabled, otherwise Claude Haiku 4.5). There is no admin role.
 - [ ] **P0** The LLM is called only from the backend. The API key, prompts, and raw model output never reach the browser.
 - [ ] **P0** The result has exactly the requested number of questions at each mark value, in the requested type (multiple choice with four options and one correct answer, or free text with a model answer).
 - [ ] **P0** Questions use only the supplied files (nothing invented), are readable without the file in front of the student, and each names the file it came from.
@@ -69,6 +70,8 @@ Rules for coding agents:
 - [ ] **P0** Text inside uploaded files is treated as content, never as instructions to the model.
 - [ ] **P0** Each job is bounded: file size and page caps (checked before the job starts), a cap on questions per call, hard daily limits per user and for the whole app, and a soft limit on jobs running at once. Token usage is recorded for every job.
 - [ ] **P0** The user is told near the Generate button that the selected files are sent to an AI service.
+- [ ] **P0** Monthly LLM spend is estimated by the app and new jobs are refused once the estimate reaches the monthly budget ($15 by default, under the $20 limit at the provider), with a clear message to the user.
+- [ ] **P1** Anyone signed in can see live AI usage (monthly spend against the budget, today's jobs and tokens, usage per model, jobs running now, and the latest jobs), without any user names or content, refreshed every few seconds.
 - [ ] **P1** Regenerate or add a single question without repeating the questions already in the exam.
 - [ ] **P1** The model and its settings are changeable by environment variable, and a manual evaluation on sample files exists (`AI-spec.md` section 13).
 
@@ -157,12 +160,12 @@ Note: `frontend-spec.md` already describes the viewer's Generate button, per-que
 - Parents see linked students' exams and scores, but not private documents.
 - MVP grading: multiple choice is automatic, and free text is self-checked or manually marked.
 - Timer is a fixed deadline. Saving doesn't pause it, and saved answers are auto-submitted at the deadline.
-- File limit is 20 MB per file, in PDF, TXT, JPG, or PNG. One generation job can use up to 10 files, 20 MB and 100 PDF pages in total.
-- Daily limits: 10 generate jobs and 30 regenerates per user, 200 jobs for the whole app. The provider-side monthly spend limit on the LLM key is set before the production deploy.
+- File limit is 20 MB per file, in PDF, TXT, JPG, or PNG. One generation job can use up to 10 files, 20 MB and 40 PDF pages in total.
+- **LLM budget: about $20 a month.** The app keeps its own estimate of LLM spend and refuses new generation jobs once it reaches $15 for the month (`LLM_MONTHLY_BUDGET_USD`); the LLM key has a $20 monthly limit at the provider, set before the production deploy. Other limits: 3 generate jobs and 10 regenerates per user a day, 10 jobs a day for the whole app. On the default cheap model that is a few hundred jobs a month; on Sonnet or Opus it is a few dozen.
 - Both sign-in methods are offered. Google is the lower-friction path; email and password stays because many students are minors or use school accounts that may not allow Google sign-in.
 - A new Google user without a chosen role is asked for one before the account is created.
 - Roles are self-selected and unverified in the MVP, for both sign-in methods.
-- The LLM is Anthropic Claude through the official Go SDK. The default model is `claude-opus-5-5`; the cheaper `claude-sonnet-5-5` is chosen by changing one environment variable if the golden-set evaluation shows it is good enough (`AI-spec.md` sections 3.2 and 17).
+- The LLM is Anthropic Claude through the official Go SDK. The default is the cheapest enabled model (Gemini 3.1 Flash-Lite, else Claude Haiku 4.5), chosen to fit the $20 a month budget. Anyone signed in may pick a pricier model (Sonnet or Opus) for a generation if the cheap one's questions are not good enough; the shared monthly budget guard limits the total. Gemini must be used on a paid-tier key, because the free tier uses submitted content to improve Google's products (`AI-spec.md` sections 3.2, 3.5 and 17).
 - The frontend stays on Vercel. If it moves to AWS, only the deployment section of `frontend-spec.md` (8.1) changes.
 - The backend runs on Lambda with a Function URL, as set out in `deployment-spec.md`. That choice keeps the project inexpensive and free of a VPC. DynamoDB is on-demand: it is not in the always-free tier but costs cents at demo volume and is covered by AWS credits; revisit it only if Lambda proves unworkable (for example, jobs that need more than the worker's 10-minute limit).
 
@@ -175,6 +178,6 @@ Note: `frontend-spec.md` already describes the viewer's Generate button, per-que
 - Question quality and difficulty mapping for 1 to 5 marks.
 - Free-text grading is unsolved for the MVP.
 - Students assigning exams to other students can send unwanted exams. Mitigated by the cap of 10, the student-only rule, showing the creator's name, and the decline option.
-- LLM cost per generation job (about $0.40 to $0.75 on the cases in `AI-spec.md` section 10.3, to be measured), refusals on legitimate school material, and wrong or ungrounded questions. Mitigated by caching, per-user limits, a provider spend limit, server-side checks, and the golden-set evaluation.
+- LLM cost against a $20 a month budget (about $0.03 to $0.10 per job on the default Gemini model and $0.08 to $0.80 on the Claude models, `AI-spec.md` section 10.3, to be measured), refusals on legitimate school material, and wrong or ungrounded questions. Anyone can pick a pricier model, which uses the shared budget faster. Mitigated by caching, the cost notice on the Create screen, the app-side monthly budget guard, per-user and global daily limits, the provider spend limit, server-side checks, and the golden-set evaluation.
 - Privacy and consent rules for minors' data. Google sign-in adds names and emails from Google accounts of possibly minor users.
 - Google setup (consent screen, authorized origins, test users) happens outside the code and can block sign-in if left late.

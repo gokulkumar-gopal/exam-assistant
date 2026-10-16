@@ -45,7 +45,7 @@ Audience: a coding agent building the backend. Read this whole file before writi
 | Google sign-in | `google.golang.org/api/idtoken` to validate Google ID tokens, behind an `IDTokenVerifier` interface (a fake in tests) |
 | Session | `github.com/golang-jwt/jwt/v5`, HS256, in an `HttpOnly` cookie |
 | PDF page count | `github.com/pdfcpu/pdfcpu` (page count only) |
-| LLM | The official Anthropic Go SDK, behind an interface (section 7). Everything about the LLM is defined in `AI-spec.md` |
+| LLM | The official Go SDK of each provider (`anthropic-sdk-go` for Claude, `google.golang.org/genai` for Gemini), behind one interface (section 7). The model catalog, selection, prompts, and cost are defined in `AI-spec.md` |
 | Logging | `log/slog` JSON to stdout (goes to CloudWatch) |
 | Tests | `testing` with table-driven tests and an in-memory fake store. No mocking library |
 | Deployment | Not covered here. See `deployment-spec.md` |
@@ -168,6 +168,8 @@ type Attempt struct {            // one row per (exam, user): assignment AND att
 type Job struct {
     ID, OwnerID   string
     Kind          string // "generate" | "regenerate"
+    Model         string // catalog id chosen for this job (AI-spec.md 3.2)
+    Day           string // yyyymmdd (UTC) of creation; the day-index key
     Status        string // "queued" | "running" | "done" | "failed" | "cancelled"
     Request       GenerateRequest
     Done, Total   int
@@ -176,7 +178,7 @@ type Job struct {
     FailedSources []FailedSource // {docId, name, reason}
     Error         string
     CancelRequested bool
-    Usage         JobUsage // prompt version, model, effort, token counts, calls, kept/dropped (AI-spec.md section 11)
+    Usage         JobUsage // prompt version, model, effort, token counts, estimated cost, calls, kept/dropped; updated after every call (AI-spec.md section 11)
     CreatedAt, UpdatedAt time.Time
     TTL           int64    // 24 hours
 }
@@ -196,7 +198,7 @@ Table names are `<STAGE>-<name>`, for example `prod-users`. All keys are strings
 | `documents` | `ownerId` | `id` | none | every document access is owner-scoped, which also enforces privacy; `ttl` attribute enabled |
 | `exams` | `id` | none | GSI `creator-index` on `creatorId` (sort `id`), projecting `INCLUDE` title, type, totalMarks, closesAt, createdAt (not the questions) | |
 | `attempts` | `examId` | `userId` | GSI `user-index` on `userId` (sort `examId`), projecting `INCLUDE` status, scoreHalves, scoreBeforePeeksHalves, submittedAt. Autosave changes none of these, so autosaves never write to the index | |
-| `jobs` | `id` | none | GSI `owner-index` on `ownerId` (sort `id`), projecting `INCLUDE` status, createdAt, updatedAt, kind | `ttl` attribute enabled. Holds three kinds of item: the job (`id` = job ID, 24 h), its questions (`id` = `<jobId>#questions`, 24 h), and quota counters (`id` = `quota#<userId>#<yyyymmdd>` and `quota#global#<yyyymmdd>`, 3 days) |
+| `jobs` | `id` | none | GSI `owner-index` on `ownerId` (sort `id`), projecting `INCLUDE` status, createdAt, updatedAt, kind; and GSI `day-index` on `day` (sort `createdAt`), projecting `INCLUDE` status, model, kind, costMicros, calls, inTok, outTok, cacheReadTok, cacheWriteTok. Only job items have `day` | `ttl` attribute enabled. Holds three kinds of item: the job (`id` = job ID, 24 h), its questions (`id` = `<jobId>#questions`, 24 h), quota counters (`id` = `quota#<userId>#<yyyymmdd>` and `quota#global#<yyyymmdd>`, 3 days; `quota#global#<yyyymm>`, 40 days), and usage counters per model (`id` = `usage#<yyyymm>#<modelId>`, 40 days, and `usage#<yyyymmdd>#<modelId>`, 3 days) |
 
 Enable the DynamoDB TTL feature on `documents` and `jobs`. Never project `ALL` into an index: every write to the base item would be paid for again in the index.
 
@@ -213,6 +215,7 @@ Enable the DynamoDB TTL feature on `documents` and `jobs`. Never project `ALL` i
 | Jobs I have running (soft limit) | `jobs` GSI `owner-index` Query, keep `queued` and `running` jobs that are not stale (section 7.2) |
 | Daily generation limits (hard limit) | the quota items in `jobs` (section 7.5), updated atomically when a job is created |
 | Poll a job | `jobs` GetItem on the job; when `done`, GetItem `<jobId>#questions` |
+| AI usage page | `jobs` BatchGet of the month and day counter items for each catalog model, GetItem `quota#global#<yyyymm>`, and Query `day-index` for today (newest first, limit 50). No `Scan` |
 
 ### 6.4 Repository interfaces (`internal/store`)
 
@@ -237,10 +240,10 @@ type Generator interface {
 
 ### 7.2 Job lifecycle
 
-1. `POST /generate` validates the request (section 8.4) and the caller's limits (section 7.5). In **one `TransactWriteItems`** it increments the quota counters (conditionally) and puts the `Job` with status `queued`. It then starts the job through the `JobRunner` interface (section 5) and returns `202 {jobId}` immediately. If `Start` returns an error (for example the worker invoke is refused), the job is set to `failed` ("We couldn't start that. Try again.") and the response is `503 upstream_unavailable`.
+1. `POST /generate` validates the request (section 8.4, including the optional `model`, which defaults as in `AI-spec.md` 3.1) and the caller's limits (section 7.5). In **one `TransactWriteItems`** it increments the quota counters (conditionally) and puts the `Job` with status `queued`. It then starts the job through the `JobRunner` interface (section 5) and returns `202 {jobId}` immediately. If `Start` returns an error (for example the worker invoke is refused), the job is set to `failed` ("We couldn't start that. Try again.") and the response is `503 upstream_unavailable`.
 2. **Claim.** The worker's first write is a conditional update `queued -> running` (condition: status is `queued`). If the condition fails the job is already running, failed, or cancelled (a duplicate delivery, or a stale or cancelled job), and the worker exits without doing anything. Lambda asynchronous delivery is at-least-once, so this claim is what keeps a job from running twice.
 3. **Deadline and heartbeat.** The worker runs under a context deadline of **8 minutes** from its start. While running it writes `UpdatedAt` about every 20 seconds (a heartbeat), also during a long LLM call.
-4. **Calls.** The worker checks `CancelRequested`, loads the source files from S3 (owner-checked), then calls `Generate` once per mark value that has a non-zero count; a count above 15 is split into chunks of 15, so a job makes at most 10 first-attempt calls, and each call may be retried once (so at most 20). **The first call runs alone** (it writes the prompt cache); the remaining calls then run **concurrently, at most 3 at a time**. After each call the worker validates the output (`AI-spec.md` section 7), keeps the questions in memory, and updates `Done` and `UpdatedAt`. Between calls it re-reads the job; if `CancelRequested`, it stops and sets `cancelled`.
+4. **Calls.** The worker checks `CancelRequested`, loads the source files from S3 (owner-checked), then calls `Generate` once per mark value that has a non-zero count; a count above 15 is split into chunks of 15, so a job makes at most 10 first-attempt calls, and each call may be retried once (so at most 20). **The first call runs alone** (it writes the prompt cache); the remaining calls then run **concurrently, at most 3 at a time**. After each call the worker validates the output (`AI-spec.md` section 7), keeps the questions in memory, and updates `Done` and `UpdatedAt`. Before each call it reads the monthly spend counter and, after each call, adds the call's estimated cost to it (section 7.5); if the budget is used up it stops and fails the job. Between calls it re-reads the job; if `CancelRequested`, it stops and sets `cancelled`.
 5. **Finish.** After the last call the worker sorts the questions (ascending by marks, or randomly if `shuffle`), assigns each a new ID, writes the `<jobId>#questions` item, and only then sets `Status = done`. Every status change after the claim is conditional: `running -> done` only if the status is still `running` and `CancelRequested` is false, and a `failed` or `cancelled` job is never overwritten.
 6. **Failure.** On an unrecoverable error, or when the 8-minute deadline is hit, the worker sets `Status = failed` and a short human-readable `Error` (never a stack trace or raw provider error). The deadline message is "That took too long. Try again."
 7. **Stale jobs.** If a job is `queued` or `running` and `UpdatedAt` is more than **6 minutes** old, the read endpoint reports it as `failed` with "That took too long. Try again." A stale job does not count as running for the limit in 7.5. (This covers a worker that crashed or was throttled before it could write `failed`.)
@@ -262,13 +265,15 @@ Defined in `AI-spec.md` sections 5.5, 6.1, 6.3 and 6.4 (system prompt, output sc
 
 | Counter | Item | Default limit | Env |
 |---|---|---|---|
-| Generate jobs per user per day | `quota#<userId>#<yyyymmdd>`, attribute `generate` | 10 | `GEN_MAX_PER_DAY` |
-| Regenerate jobs per user per day | the same item, attribute `regen` | 30 | `GEN_MAX_REGEN_PER_DAY` |
-| All jobs, all users, per day | `quota#global#<yyyymmdd>`, attribute `jobs` | 200 | `GEN_MAX_GLOBAL_PER_DAY` |
+| Generate jobs per user per day | `quota#<userId>#<yyyymmdd>`, attribute `generate` | 3 | `GEN_MAX_PER_DAY` |
+| Regenerate jobs per user per day | the same item, attribute `regen` | 10 | `GEN_MAX_REGEN_PER_DAY` |
+| All jobs, all users, per day (burst limiter) | `quota#global#<yyyymmdd>`, attribute `jobs` | 10 | `GEN_MAX_GLOBAL_PER_DAY` |
+| Estimated LLM spend, all users, per month | `quota#global#<yyyymm>`, attribute `spendMicros` (micro-dollars) | $15 | `LLM_MONTHLY_BUDGET_USD` |
 
   When any condition fails, return `429 rate_limited` and write nothing. The transaction also covers the job put, so a refused job leaves no counter behind. A job that later fails still counts (the model may already have been paid for).
 - **Running limit (soft):** at most `GEN_MAX_RUNNING` (default 2) non-stale `queued` or `running` jobs per user, checked on `owner-index`. The index is eventually consistent, so two simultaneous requests can both pass; the daily counters are the real bound.
-- LLM usage is the real running cost of this app and is not covered by the AWS free tier. The daily counters, the optional Lambda concurrency reservations (`deployment-spec.md`), and the provider-side monthly spend limit on the API key are the cost guards. The provider limit is a prerequisite for the production deploy.
+- **Monthly budget (the main cost guard).** The worker adds each call's estimated cost, at the job's model's prices, to `spendMicros` and to that model's usage counters (`AI-spec.md` 10.4 and 11). The budget is shared by all users and all models. Creating a job is refused with `429 rate_limited` "The monthly AI budget has been used. Try again next month." when `spendMicros` is at or above the budget (a condition in the same create transaction), and the worker stops a running job with the same message when it finds the budget used up before a call. A month is a UTC month; the item has a 40-day TTL.
+- LLM usage is the real running cost of this app and is not covered by the AWS free tier. The monthly budget, the daily counters, the optional Lambda concurrency reservations (`deployment-spec.md`), and the provider-side monthly spend limit on the API key are the cost guards. The provider limit is a prerequisite for the production deploy.
 
 ### 7.6 Regenerate
 
@@ -386,16 +391,17 @@ The frontend retries a `role_required` response by sending the same credential a
 
 | Method and path | Body and response |
 |---|---|
-| `POST /generate` | body `{ sourceIds: string[], type: "mcq"\|"free", counts: {"1":4,"2":3,...}, shuffle: boolean }`. Response `202 { jobId }` |
+| `POST /generate` | body `{ sourceIds: string[], type: "mcq"\|"free", counts: {"1":4,"2":3,...}, shuffle: boolean, model?: string }`. `model` is a catalog id from `GET /ai/models`; omitted means the default. Response `202 { jobId }` |
 | `GET /generate/{jobId}` | response below |
 | `DELETE /generate/{jobId}` | sets `CancelRequested`, returns `204` (idempotent). The client also calls it when it gives up polling or the user leaves |
-| `POST /generate/regenerate` | body `{ marks, sourceIds, type, avoid: string[] }` (`avoid` at most 60 strings of at most 600 characters), response `202 { jobId }` |
+| `POST /generate/regenerate` | body `{ marks, sourceIds, type, avoid: string[], model?: string }` (`avoid` at most 60 strings of at most 600 characters), response `202 { jobId }` |
 
 Poll response:
 
 ```json
 {
   "status": "running",
+  "model": "gemini-3.1-flash-lite",
   "progress": { "done": 3, "total": 12 },
   "questions": null,
   "failedSources": [],
@@ -413,8 +419,9 @@ When `status` is `done`, `questions` is the final ordered list. Each question is
 (free text has `modelAnswer` instead of `options` and `correctIndex`). The caller is a creator, so the key is included; the frontend needs it for editing and "Review answer key".
 
 **Validation before the job is created** (all from the `Document` rows, no S3 access needed):
+- `model`, if present, must be a catalog model that is enabled (`LLM_PROVIDERS`); otherwise `422` with `fields.model`.
 - Only the job's owner can read or cancel it (`404` otherwise). All `sourceIds` must belong to the caller and be `ready` (`422` otherwise).
-- Total raw bytes of the sources at most `GEN_MAX_TOTAL_BYTES` (20 MB), total PDF pages at most `GEN_MAX_PDF_PAGES` (100), at most 10 sources.
+- Total raw bytes of the sources at most `GEN_MAX_TOTAL_BYTES` (20 MB), total PDF pages at most `GEN_MAX_PDF_PAGES` (40), at most 10 sources.
 - A single file that alone breaks the pages cap gets `422` with `fields.sourceIds` naming that file. A set that is only too large in total gets `422` "These files are too large to use together. Select fewer or smaller files."
 
 ### 8.5 Exams
@@ -538,6 +545,37 @@ When `status` is `done`, `questions` is the final ordered list. Each question is
 - When `keyVisible` is false, omit `correct`, `correctAnswer`, and `modelAnswer` from every question **except those the caller revealed** (they have already seen the answer), set `keyAvailableAt` to `acceptingUntil`, and still return the scores. The frontend must not render correct or incorrect marks when the key is hidden.
 - A never-started attempt on an exam that is over returns `status: "missed"`, no score, and all `yourAnswer` empty.
 
+### 8.6 AI models and usage
+
+Both endpoints need a signed-in user of any role. There is no admin role and no admin page. Responses carry `serverTime` and `Cache-Control: no-store`.
+
+**Models:** `GET /ai/models`
+
+```json
+{ "models": [ { "id": "gemini-3.1-flash-lite", "name": "Gemini 3.1 Flash-Lite", "provider": "gemini",
+                "tier": "cheapest", "priceInPerMTok": 0.25, "priceOutPerMTok": 1.5,
+                "approxJobCost": { "small": 0.03, "heavy": 0.10 }, "default": true } ],
+  "serverTime": "..." }
+```
+- Only enabled models, cheapest first. Exactly one has `default: true` (`LLM_MODEL` if set and enabled, otherwise the cheapest enabled model). The catalog and prices live in code (`AI-spec.md` 3.2).
+
+**Usage:** `GET /ai/usage` (aggregate only: never user names, document names, files, or question text)
+
+```json
+{ "serverTime": "...",
+  "month": { "key": "2026-10", "spendUsd": 3.42, "budgetUsd": 15, "jobs": 21, "calls": 88,
+             "tokens": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 } },
+  "today": { "jobs": 2, "calls": 9, "spendUsd": 0.31, "tokens": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 } },
+  "byModel": [ { "id": "...", "name": "...", "jobs": 0, "calls": 0, "spendUsd": 0, "tokens": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 } } ],
+  "running": 1,
+  "recent": [ { "createdAt": "...", "kind": "generate", "model": "...", "status": "running",
+                "calls": 4, "tokens": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 }, "costUsd": 0.12 } ] }
+```
+- `month` and `byModel` come from the usage counter items; `budgetUsd` is `LLM_MONTHLY_BUDGET_USD`; `spendUsd` is the estimate (`AI-spec.md` 10.4). `today` sums today's per-model counters (UTC day).
+- `recent` is the newest 50 jobs of today from `day-index`; `running` counts those whose status is `queued` or `running` and not stale. A running job's numbers move as its calls finish, because the worker updates the job item and the counters after every call.
+- The frontend polls this every 5 seconds while the usage page is open (REST only, no streaming). It is cheap: a handful of `GetItem`s and one small `Query`.
+- Job items expire after 24 hours, so `recent` never goes back further than yesterday; month totals come from the counters.
+
 ## 9. Business rules
 
 ### 9.1 Roles and access
@@ -547,6 +585,7 @@ When `status` is `done`, `questions` is the final ordered list. Each question is
 | Documents (own) | yes | yes | yes |
 | Generate questions | yes (own documents) | yes | yes |
 | Create exams | yes | yes | yes |
+| Choose the AI model for a generation, see AI usage | yes | yes | yes |
 | Assign exams | students only, max 10 | anyone, max 50 | anyone, max 50 |
 | Take exams assigned to them, decline them | yes | yes | yes |
 | View status of exams they created | yes | yes | yes |
@@ -602,6 +641,7 @@ Rules for `POST /exams/{id}/reveal`:
 - **Input limits:** JSON bodies capped at 1 MB (200 KB for autosave) using `http.MaxBytesReader`. Reject unknown fields on create endpoints. Validate everything in section 8 before touching the store.
 - **Presigned URLs** are short-lived (10 minutes) and scoped to one key; the bucket blocks all public access.
 - **Secrets:** `JWT_SECRET` and `LLM_API_KEY` come from environment variables (how they are stored and injected is defined in `deployment-spec.md`). The API function needs `JWT_SECRET` but not `LLM_API_KEY`; the worker needs `LLM_API_KEY` but not `JWT_SECRET`. Never log them. Rotating is out of scope for the MVP.
+- **Open model choice:** any signed-in user may choose any enabled model for their own generation, so a user can use more of the shared budget by picking a pricier one. The monthly budget guard, the per-user and global daily limits, and the Create screen's cost notice are the controls. `GET /ai/usage` is aggregate only.
 - **Sessions:** a Google link or any future password change sets `SessionsValidAfter`, and the middleware rejects older sessions (section 8.2).
 - **Logging:** one structured line per request with request ID, user ID, method, path, status, duration. Never log passwords, tokens, cookies, answers, or document contents.
 - **Passwords:** bcrypt cost 10. No password reset in the MVP.
@@ -621,13 +661,16 @@ Each variable is listed once. **Required** variables must be set (the backend fa
 | `ALLOWED_ORIGINS` | api | none | comma-separated origins for the CSRF check (the Vercel domain and `http://localhost:3000`) |
 | `S3_BUCKET` | yes | none | the uploads bucket |
 | `WORKER_FUNCTION_NAME` | api on Lambda | none | the worker Lambda to invoke |
-| `LLM_API_KEY` | worker | none | provider key |
-| `LLM_MODEL` | no | `claude-opus-5-5` | model ID |
+| `LLM_PROVIDERS` | api and worker | `anthropic` | comma list of enabled providers (`gemini`, `anthropic`); not secret; decides which catalog models are enabled |
+| `LLM_API_KEY` | worker, when `anthropic` is enabled | none | the Anthropic key |
+| `GEMINI_API_KEY` | worker, when `gemini` is enabled | none | the Gemini key (paid tier) |
+| `LLM_MODEL` | no | empty | default model id; empty means the cheapest enabled model (`AI-spec.md` 3.1) |
 | `GOOGLE_CLIENT_ID` | api | none | the Google OAuth client ID that sign-in tokens must be issued for |
 | `GEN_MAX_RUNNING` | no | `2` | soft limit on running jobs per user |
-| `GEN_MAX_PER_DAY` | no | `10` | generate jobs per user per UTC day |
-| `GEN_MAX_REGEN_PER_DAY` | no | `30` | regenerate jobs per user per UTC day |
-| `GEN_MAX_GLOBAL_PER_DAY` | no | `200` | all jobs, all users, per UTC day |
+| `GEN_MAX_PER_DAY` | no | `3` | generate jobs per user per UTC day |
+| `GEN_MAX_REGEN_PER_DAY` | no | `10` | regenerate jobs per user per UTC day |
+| `GEN_MAX_GLOBAL_PER_DAY` | no | `10` | all jobs, all users, per UTC day |
+| `LLM_MONTHLY_BUDGET_USD` | no | `15` | estimated spend after which new jobs are refused for the rest of the UTC month (api and worker) |
 | `LLM_EFFORT`, `LLM_TIMEOUT_SECONDS`, other `GEN_MAX_*` caps | no | see `AI-spec.md` section 12 | AI settings |
 
 Load once at startup into a single struct.
@@ -678,6 +721,7 @@ Write tests as you build each slice. They must pass with `go test ./...` and nee
 | Exam create | totalMarks computed, MCQ and free text shape validation, unknown assignee emails returned, practice-exam attempt row for creator, `maxPeeks` default and bounds, assignee caps, idempotent replay completes missing attempt rows, another creator's key is `409` |
 | Peeks (later priority) | reveal charges once per question, `403` when off, `409` when out of peeks or the key is visible, revealed answers come back on resume |
 | Printing | `GET /exams/{id}` on an exam that is over still returns the questions to the creator and to every non-declined assignee, with keys only when `keyVisible`; reading it starts no attempt |
+| Models and usage | the default is `LLM_MODEL` if set and enabled, else the cheapest enabled model; an unknown or not-enabled `model` is `422`; the job records its model; each call adds tokens and cost to the model's month and day counters and to the job; `GET /ai/usage` returns aggregates with no user or file data, and `recent` is newest first; `GET /ai/models` lists only enabled models |
 | Sessions | linking Google sets `SessionsValidAfter`; an older cookie is `401`; the same email linked to a different Google account is `409` |
 
 Use a fake `Clock` for all time-dependent tests and the in-memory store. The generator is a fake that returns canned questions.
@@ -711,6 +755,8 @@ Section 8 of this file is the contract. `frontend-spec.md` section 8 lists the c
 - [ ] A user cannot read, list, delete, or use another user's document in generation (all `404` or `422`).
 - [ ] A presigned file URL stops working after about 10 minutes, and no code path makes an object public.
 - [ ] Generation returns `202` immediately, the poll shows progress, cancel stops it, a stale job reads as failed and cannot later turn `done`, and a duplicate worker delivery does nothing.
+- [ ] `GET /ai/models` lists the enabled models cheapest first with one default; `POST /generate` with another enabled model uses it and records it; an unknown or not-enabled model is `422`.
+- [ ] `GET /ai/usage` works for every role, shows live month spend against the budget, today's counts, per-model totals, running jobs and the latest 50 jobs, and contains no user names, file names, or question text.
 - [ ] The daily generate, regenerate, and global limits are enforced atomically (`429`), and over-size source sets are refused up front with `422`.
 - [ ] Generated questions match the requested counts per mark value, are in ascending order by default, and are shuffled when requested.
 - [ ] Creating an exam with unknown assignee emails succeeds and returns them. A student can create an exam and assign only students (max 10); the same `Idempotency-Key` sent twice creates one exam.
@@ -740,6 +786,7 @@ Password reset, email verification for password accounts, other sign-in provider
 - DynamoDB is the database. No other database, no `Scan`.
 - Question generation is a job with polling, one LLM call per mark value (the first alone, the rest at most 3 at a time), behind a `JobRunner` interface. Hard daily counters in DynamoDB are the cost guard.
 - DynamoDB tables are on-demand, with lean index projections.
+- Gemini and Claude both supported; the default is the cheapest enabled model; any signed-in user can choose the model per generation; there is no admin role; usage is visible to everyone, aggregate only.
 - One deadline cutoff (`closesAt` + 60 s) for everything; one fixed answer-key rule; peeking for a half-marks penalty is a later-priority feature.
 - Any role may create exams. Students assign only to students.
 - Deadlines, key visibility, and finalization are computed on the server at read time.
@@ -748,6 +795,6 @@ Password reset, email verification for password accounts, other sign-in provider
 
 **Open, decide before or during the build**
 - The LLM model's current page, image and request-size limits; set the caps in `AI-spec.md` section 12 to match.
-- The LLM budget and the provider-side monthly spend limit (a prerequisite for the production deploy).
+- The monthly LLM budget (app-side $15, provider-side $20, set before the production deploy) and whether a few dozen generation jobs a month is enough.
 - Regions, accounts, and Lambda concurrency reservations: `deployment-spec.md`.
 - Google consent-screen status and authorized origins: `deployment-spec.md` section 8.0.

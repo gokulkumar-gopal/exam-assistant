@@ -26,14 +26,15 @@ The questions then flow into the exam flow in `frontend-spec.md` section 6.4. Th
 
 ## 2. Non-negotiable rules
 
-1. **Server-side only.** The LLM API key and every LLM call live in the Go backend (the worker). The browser never sees the key, a prompt, or raw model output.
-2. **Use the official Anthropic Go SDK** (`github.com/anthropics/anthropic-sdk-go`). Do not hand-write HTTP calls to the API and do not use an OpenAI-compatible shim. Call it only through the `Generator` interface (section 4).
+1. **Server-side only.** The LLM API keys and every LLM call live in the Go backend (the worker). The browser never sees a key, a prompt, or raw model output.
+2. **Use the official Go SDK of each provider**: `github.com/anthropics/anthropic-sdk-go` for Claude and `google.golang.org/genai` for Gemini. Do not hand-write HTTP calls to either API and do not use an OpenAI-compatible shim. Call them only through the `Generator` interface (section 4).
 3. **Files are untrusted data.** Anything inside an uploaded file is study material to read, never instructions to follow (section 9.1).
 4. **Never trust model output.** Every response is parsed, checked, and cleaned by our code before it is stored or shown (section 7). A question that fails a check is dropped, not shown.
 5. **No answer leaks.** Keys the model returns (`correctIndex`, `modelAnswer`) obey the visibility rules in `backend-spec.md` section 9.4.
 6. **Data minimisation.** Send the model only what it needs: file contents and opaque labels. Never send user names, emails, file names, or IDs from our system (section 9.2).
 7. **Cost is bounded.** Every job has hard caps on input size, calls, and tokens, and every call's token usage is recorded (section 10).
-8. **Everything configurable is an environment variable** (section 12): model, effort, caps. No model name in code.
+8. **Everything configurable is an environment variable** (section 12): enabled providers, default model, effort, caps. The model catalog (section 3.2) is the one place model IDs and prices appear in code.
+9. **Any signed-in user may choose the model for a generation** (section 3.2). There is no admin role. The default is the cheapest enabled model, and the monthly budget guard (section 10.4) is shared by everyone.
 
 ## 3. Provider, model, and call settings
 
@@ -41,35 +42,44 @@ The questions then flow into the exam flow in `frontend-spec.md` section 6.4. Th
 
 | Concern | Decision |
 |---|---|
-| Provider | Anthropic (Claude Messages API) |
-| SDK | Official Go SDK |
-| Default model | `claude-opus-5-5` (set by `LLM_MODEL`) |
+| Providers | Google Gemini and Anthropic Claude, each behind the `Generator` interface. A provider is **enabled** by `LLM_PROVIDERS` and by having its key on the worker |
+| SDKs | Official Go SDKs (rule 2) |
+| Model choice | Per generation request, by any signed-in user, from the catalog in 3.2. Optional `model` field on `POST /generate` and `POST /generate/regenerate` |
+| Default model | `LLM_MODEL` if it is set and enabled, otherwise **the cheapest enabled model in the catalog**. With Gemini enabled that is Gemini 3.1 Flash-Lite; with Claude only it is Claude Haiku 4.5 |
 | Needs | vision (reads scanned pages and camera photos), PDF input, structured output |
+| Budget | about $20 a month in total; section 10 |
 | Interface | one `Generator` interface; a fake implementation for tests (`backend-spec.md` 7.1) |
 
-### 3.2 Model options and cost
+### 3.2 Model catalog, selection, and cost
 
-Set `LLM_MODEL` to choose. Prices are per million tokens, input and output. **Check current pricing and model IDs before launch.**
+The catalog is a fixed list in the backend (id, display name, provider, tier, prices). Prices are USD per million tokens. **Check current prices and the exact model IDs on each provider's models page before launch; the IDs below are the intended models, not verified strings.** Gemini 3.x Flash prices are scheduled to rise on 1 December 2026 (check; Flash-Lite 3.1 had no scheduled change when this was written).
 
-| Model (`LLM_MODEL`) | Input / output | Notes |
-|---|---|---|
-| `claude-opus-5-5` (default) | $4 / $20 | Most capable of the three. 1M-token context. |
-| `claude-sonnet-5-5` | $2 / $10 | About half the cost. Evaluate it on the golden set (section 13); if quality holds, it is the cheaper choice. |
-| `claude-haiku-4-5` | $1 / $5 | 200K-token context and a lower PDF page limit. Use only if the golden set shows acceptable quality. Takes different thinking settings, and it **rejects `output_config.effort`**, so leave `LLM_EFFORT` empty (the code then sends no effort) and confirm the other settings below before switching. |
+| Model id | Name | Provider | Input / output | Tier |
+|---|---|---|---|---|
+| `gemini-3.1-flash-lite` | Gemini 3.1 Flash-Lite | Gemini | $0.25 / $1.50 | cheapest (default when Gemini is enabled) |
+| `claude-haiku-4-5` | Claude Haiku 4.5 | Anthropic | $1 / $5 | cheap (default for a Claude-only deployment). 200K context, a lower PDF page limit, rejects `output_config.effort` (leave effort empty for it) |
+| `claude-sonnet-5-5` | Claude Sonnet 5.5 | Anthropic | $2 / $10 | balanced |
+| `claude-opus-5-5` | Claude Opus 5.5 | Anthropic | $4 / $20 | most capable, about twice the cost of Sonnet. 1M context |
 
-Choosing a cheaper model is the owner's decision, made from the golden-set results, not something to do silently in code. The code must work with any of these by changing only the environment variable.
+- Gemini 2.5 Flash-Lite is cheaper still but is not in the catalog: a source suggests some Gemini 2.5 models shut down around October 2026 (unverified). Adding it later is one catalog row after checking.
+- `GET /ai/models` returns the enabled models, cheapest first, with a `default` flag and an approximate cost per set (`backend-spec.md` 8.6). The frontend shows the choice on the Create screen and warns when a pricier model is picked.
+- A request with an unknown or not-enabled `model` is `422` (`fields.model`). The job records the model it used. A choice applies to that job only; it never changes anyone else's default.
+- **Quality is not established for the default.** The cheapest model is the default because of the budget. Check each model's questions on the golden set (section 13); the user can pick a pricier model per generation if the cheap one's questions are not good enough.
+- Budget tracking, usage counters, and `GET /ai/usage` use the catalog's prices (10.4, 11). Fail fast at startup if no provider is enabled, or if `LLM_MODEL` is set but not enabled.
 
-### 3.3 Request settings
+### 3.3 Request settings (Claude)
+
+These apply to the Claude models. Gemini's are in 3.5.
 
 - **Do not send `temperature`, `top_p`, or `top_k`.** Current models reject non-default sampling parameters with a 400.
-- **Thinking:** on the default model thinking is always on. Leave the `thinking` setting unset (or adaptive). Never send `disabled` or a `budget_tokens` value (both return a 400 on the default model). Thinking tokens are billed as output.
-- **Effort:** set `output_config.effort` explicitly from `LLM_EFFORT` (default `medium`; an empty value sends none). The default model's own default is `medium`; setting it explicitly protects you from a change. Tune by evaluation: lower is cheaper and faster, higher helps 4 and 5 mark questions.
+- **Thinking:** on Claude Opus 5.5 and Sonnet 5.5 thinking is always on. Leave the `thinking` setting unset (or adaptive). Never send `disabled` or a `budget_tokens` value (both return a 400 on those models). Thinking tokens are billed as output.
+- **Effort:** set `output_config.effort` explicitly from `LLM_EFFORT` (default `medium`; an empty value sends none). Their own default is `medium`; setting it explicitly protects you from a change. Tune by evaluation: lower is cheaper and faster, higher helps 4 and 5 mark questions.
 - **No assistant prefill.** It is rejected on current models. Control the format with structured output (section 6), not by prefilling.
 - **`max_tokens`:** 16,000 per call. A call asks for at most 15 questions (section 5.3), which fits comfortably. If you raise `max_tokens` above this, use streaming and the SDK's final-message helper to avoid HTTP timeouts.
 - **Timeouts and retries:** per call `LLM_TIMEOUT_SECONDS` (default **120**). Set the SDK's maximum retries to **1** explicitly (it retries 408, 409, 429, and 5xx), so one call can take at most about 240 seconds, and do not add a second retry layer for the same errors. The whole job runs under an **8-minute deadline** set by the worker (`backend-spec.md` 7.2); if the deadline hits, the job fails with the too-long message.
-- **Structured output:** use the API's JSON-schema structured output (`output_config.format`). **Forced tool choice is not available on the default model** (it returns a 400), so do not use `tool_choice` `any` or `tool` as the way to get JSON. If the Go SDK version in use has no typed field for structured output, check the SDK repository for the supported way to set it; do not fall back to raw HTTP.
+- **Structured output:** use the API's JSON-schema structured output (`output_config.format`). **Forced tool choice is not available on Opus 5.5 and Sonnet 5.5** (it returns a 400), so do not use `tool_choice` `any` or `tool` as the way to get JSON. If the Go SDK version in use has no typed field for structured output, check the SDK repository for the supported way to set it; do not fall back to raw HTTP.
 
-### 3.4 Things to verify in the Go SDK before coding
+### 3.4 Things to verify in the Anthropic Go SDK before coding
 
 The skill documentation confirms Go support for PDF document blocks, `CacheControl`, the `refusal` stop reason, and the Files API. It does **not** show Go examples for the items below. Read the SDK's own documentation and examples for each and confirm it exists before relying on it:
 
@@ -80,7 +90,24 @@ The skill documentation confirms Go support for PDF document blocks, `CacheContr
 
 If any is missing from the SDK, stop and decide with the owner; do not improvise raw HTTP or guess field names.
 
+### 3.5 Gemini requests
+
+Gemini is a second `Generator` implementation using `google.golang.org/genai`. **Everything else is shared**: the prompt text, the labelled-source layout, the output schema, the validation in section 7, the failure messages in section 8, the caps in 5.3, and the budget accounting in 10.4. Read the SDK's documentation and examples for each item below and confirm it exists before relying on it; **do not guess field names** (a search for this spec could not confirm the exact Go types):
+
+1. **Structured output:** a JSON-schema response format with the JSON MIME type. Keep the schema in the simple subset (object, array, string, integer, enum, required). Property order follows the schema.
+2. **Inputs:** inline base64 PDF parts (up to about 50 MB inline) and JPEG and PNG image parts, plus text. Use the same labelled layout as in 5.4. Do not use the Files API unless a job needs more than the inline limit (it does not, given the 20 MB cap).
+3. **Thinking:** map `LLM_EFFORT` (`low`, `medium`, `high`) to the model's thinking setting; an empty value uses the model's default. Thinking tokens are billed as output.
+4. **No sampling parameters** unless the model's documentation says they are supported; leave temperature and the others at their defaults for consistency with Claude.
+5. **Usage and cost:** read input, output (including thinking) and any cached-token counts from the response. Bill cached tokens at the cache-read price if the response reports them (verify the price table).
+6. **Caching:** do **not** use explicit context caching (it has a storage fee). Rely on implicit caching if the model has it. The cost estimates in 10.3 assume no cache discount for Gemini.
+7. **Blocked or filtered responses:** a safety block or an empty candidate is treated like a Claude refusal (section 8): fail the batch, log the finish reason, never retry the identical request repeatedly.
+8. **Token counting** before the first call (10.2), if the SDK provides it; otherwise estimate from file sizes and page counts and set the cap conservatively.
+9. **Paid tier only.** On Gemini's free tier, submitted content is used to improve Google's products. The key must belong to a billing-enabled project (paid tier), and `deployment-spec.md` says how to set it up and cap it.
+10. Timeouts and retries follow 3.3: 120 seconds per call, at most one SDK retry, under the 8-minute job deadline.
+
 ## 4. The `Generator` interface
+
+A small factory returns the `Generator` for a model (by the model's provider). `GenInput` carries the chosen model id.
 
 `backend-spec.md` 7.1 defines the interface. This file extends it:
 
@@ -95,6 +122,7 @@ type GenInput struct {
     Marks     int          // 1..5
     Count     int          // 1..15 (the worker chunks larger requests)
     Avoid     []string     // texts of questions already produced or already in the exam
+    Model     string       // catalog id; the factory picks the provider from it
 }
 
 type GenOutput struct {
@@ -134,8 +162,8 @@ Sources are labelled `doc-1`, `doc-2`, and so on, in the stable order. The label
 |---|---|---|
 | Files per job | 10 | matches the request limit in `backend-spec.md` 7.5 |
 | Total raw bytes per job | 20 MB | the API request limit is about 32 MB, and base64 grows data by about a third. Larger sets need the Files API (section 16) |
-| Total PDF pages per job | 100 | keeps cost and time predictable |
-| Input tokens per job (measured) | 200,000 | a cost guard (section 10.2) |
+| Total PDF pages per job | 40 | keeps cost and time predictable |
+| Input tokens per job (measured) | 80,000 | a cost guard (section 10.2); about 40 PDF pages |
 | Questions per call | 15 | keeps each response small and reliable. A request for 30 1-mark questions is two calls of 15 |
 | Calls per job | 10 first-attempt calls | five mark values, each at most two chunks. Each call may be retried once (a shortfall or `max_tokens` retry), so at most 20 in total |
 
@@ -276,6 +304,7 @@ A question is kept only if all of these hold. Otherwise it is dropped and counte
 | 429 or 5xx after the SDK's own retries | Fail the job with "The AI service is busy. Try again in a minute." |
 | Call exceeds `LLM_TIMEOUT_SECONDS` (after the one SDK retry), or the 8-minute job deadline is hit | Stop, fail the job with "That took too long. Try again." |
 | 401 or 403 from the API (bad or missing key) | Fail the job with a generic message; log loudly; this is a deployment error, not a user error |
+| The monthly budget is used up (at job creation, or before a call) | Refuse the job (`429`) or stop it, with "The monthly AI budget has been used. Try again next month." |
 | Model lists unreadable sources | Continue with the rest; report them in `failedSources` (the frontend shows which files to retry) |
 | Cancel requested | Stop between calls (`backend-spec.md` 7.2) |
 
@@ -297,6 +326,8 @@ Sent: the contents of the files the user selected, an opaque label for each, and
 
 ### 9.3 Privacy and minors
 
+Selected files go to whichever provider the chosen model belongs to (Google or Anthropic). Read both providers' current terms on retention, training use and minors' data, and use a **paid-tier** Gemini key only.
+
 The files may contain a student's own work and the users may be minors. Before real users: complete the privacy review in `goals.md`; read the provider's current terms on data retention, training use, and products used by minors, and confirm they are acceptable **(verify)**; and tell users, near the Generate button, that selected files are sent to an AI service (section 14).
 
 ### 9.4 Logging
@@ -314,8 +345,9 @@ The generated material is for school-age users. The system prompt asks for age-a
 1. **Prompt caching** (section 5.4): the biggest saving, because the files are the large part of every call.
 2. **One call per mark value** with at most 15 questions per call: bounded output.
 3. **Effort** (`LLM_EFFORT`): lower effort costs less; raise only if evaluation shows a quality gain.
-4. **Model choice** (`LLM_MODEL`): section 3.2.
-5. **Hard daily counters** per user (generate 10, regenerate 30) and globally (200 jobs), plus the soft running limit `GEN_MAX_RUNNING` (`backend-spec.md` 7.5).
+4. **Model choice**: the default is the cheapest enabled model; users can pick a pricier one per generation (section 3.2).
+5. **A monthly dollar budget** (section 10.4), the main guard for a $20 a month budget.
+6. **Hard daily counters** per user (generate 3, regenerate 10) and globally (10 jobs a day), plus the soft running limit `GEN_MAX_RUNNING` (`backend-spec.md` 7.5).
 
 ### 10.2 Input-size guard
 
@@ -323,20 +355,38 @@ Before the first generation call, count the tokens of the shared prefix with the
 
 ### 10.3 Rough cost per job (an illustration, not a promise)
 
-Assume 60,000 input tokens of files, five mark values (five calls), about 4,000 output tokens per call including thinking, on the default model. Cache writes cost roughly 1.25 times the normal input price and cache reads roughly one tenth of it. **Measure with the recorded usage before relying on any of these numbers.**
+Two cases, both with five mark values. Claude uses prompt caching with cache writes at 1.25 times the input price and reads at 0.1 times (the conservative end). Gemini is shown **without** any cache discount: every call resends the files. **Measure with the recorded usage before relying on any of these numbers.**
 
-| | Approximate cost |
-|---|---|
-| With caching, default model | about $0.75 per job |
-| Without caching, default model | about $1.60 per job |
-| With caching, `claude-sonnet-5-5` | about $0.40 per job |
+- **Small:** 15,000 input tokens of files (about 10 pages), four calls of about 3,000 output tokens each including thinking.
+- **Heavy:** 60,000 input tokens of files (about 30 to 40 pages), five calls of about 4,000 output tokens each.
 
-At the default limit of 10 generate jobs per user per day, one user's worst case is about $7.50 a day on the default model, plus up to 30 single-question regenerates. The global cap of 200 jobs a day bounds the total at roughly $150 a day on the default model if every job costs $0.75, which is high for a demo, so lower `GEN_MAX_GLOBAL_PER_DAY` to match your budget. The **monthly spend limit on the API key at the provider is a prerequisite for the production deploy** (`deployment-spec.md`) and is the final guard.
+| Model | Small job | Heavy job | Jobs a month on a $15 budget (small / heavy) |
+|---|---|---|---|
+| `gemini-3.1-flash-lite` (default when enabled) | about $0.03 | about $0.10 | about 450 / 140 |
+| `claude-haiku-4-5` | about $0.08 | about $0.20 | about 190 / 75 |
+| `claude-sonnet-5-5` | about $0.17 | about $0.40 | about 85 / 35 |
+| `claude-opus-5-5` | about $0.33 | about $0.80 | about 45 / 19 |
+
+Output tokens (including thinking) are a large part of the cost, so `LLM_EFFORT` and the number of questions matter as well as the file size. A single-question regenerate resends the files, usually with a cold cache: about $0.01 on Gemini Flash-Lite, $0.05 on Sonnet for a small set.
+
+Because any user can pick a model, a few generations on a pricier model use the shared budget faster. That is what the guard below is for, and the Create screen warns before a pricier model is chosen.
+
+### 10.4 Monthly budget guard
+
+The provider-side limit stops spending but fails every request when it trips and says nothing useful to the user, so the app keeps its own estimate and refuses new work first.
+
+- Config: `LLM_MONTHLY_BUDGET_USD` (default **15**), which should stay below the provider-side monthly limit (**$20**, a hard prerequisite for the production deploy) so that estimation errors and calls that fail without usage data (timeouts, refusals) cannot reach the real limit.
+- After every call (including retries), the worker computes the call's cost from the response usage (input, output, cache write, cache read tokens) and the job's model's prices in the catalog, and adds it, in whole micro-dollars, to the item `quota#global#<yyyymm>` (attribute `spendMicros`, UTC month, 40-day TTL) in the jobs table. For a call that fails with no usage data, add the cost of its input as counted before the call (section 10.2).
+- **Creating a job** (`POST /generate`, `POST /generate/regenerate`) is refused with `429 rate_limited` "The monthly AI budget has been used. Try again next month." when `spendMicros` is at or above the budget (a condition in the create transaction).
+- **The worker checks the counter before each call.** If the budget is used up mid-job, it stops and fails the job with the same message. The job's questions so far are not kept.
+- The estimate is approximate (prices and the cache ratios above are assumptions). Check it against the provider's usage page after the first week and adjust `LLM_MONTHLY_BUDGET_USD` or the price overrides.
+- One job can overshoot the budget by the cost of the call in progress, which the headroom below the provider limit absorbs.
 
 ## 11. Observability and records
 
-- **Per job, store** (the Job record, `backend-spec.md` 6.1; it expires after 24 hours, so the per-call logs below are the long-term cost record): `PromptVersion`, `Model`, `Effort`, total input, output, cache-read and cache-write tokens, number of calls, number of questions requested, kept and dropped, and whether any source failed. This gives cost per job and per user without reading logs.
+- **Per job, store** (the Job record, `backend-spec.md` 6.1; it expires after 24 hours, so the per-call logs below and the monthly `spendMicros` counter (10.4) are the long-term cost record): `PromptVersion`, `Model`, `Effort`, total input, output, cache-read and cache-write tokens, estimated cost in micro-dollars, number of calls, number of questions requested, kept and dropped, and whether any source failed. This gives cost per job and per user without reading logs.
 - **Per call, log** the fields in 9.4.
+- **Usage counters (live).** After every call the worker also adds the call's tokens and cost to per-model counters (`usage#<yyyymm>#<modelId>` and `usage#<yyyymmdd>#<modelId>` items in the jobs table) and to the job item, so `GET /ai/usage` (`backend-spec.md` 8.6) can show the month's spend, today's jobs and calls, tokens by type per model, the jobs running now, and the latest 50 jobs. It is aggregate only and open to every signed-in user: no user names, file names, or content. Counters are updated with atomic `ADD`s.
 - **Review regularly** (and after any prompt or model change): drop rate, shortfall-retry rate, refusal rate, cost per job, time per job.
 
 ## 12. Configuration
@@ -345,21 +395,24 @@ These join the variables in `backend-spec.md` section 11.
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `LLM_API_KEY` | none (required) | provider key |
-| `LLM_MODEL` | `claude-opus-5-5` | model ID |
-| `LLM_EFFORT` | `medium` | `low`, `medium`, `high` (and higher only if the model supports it) |
+| `LLM_PROVIDERS` | `anthropic` | comma list of enabled providers, `gemini` and/or `anthropic` (not secret; set on both functions so the API can list and validate models) |
+| `LLM_API_KEY` | none | the **Anthropic** key; required when `anthropic` is enabled (worker only) |
+| `GEMINI_API_KEY` | none | the Gemini key, from a paid-tier project; required when `gemini` is enabled (worker only) |
+| `LLM_MODEL` | empty | default model id; empty means the cheapest enabled model (section 3.2). Must be an enabled catalog id if set |
+| `LLM_EFFORT` | `medium` | `low`, `medium`, `high`; applies to Claude, and is mapped to Gemini's thinking setting (3.5). Empty sends none (leave it empty for Haiku 4.5) |
 | `LLM_TIMEOUT_SECONDS` | `120` | per-call timeout (SDK max retries is fixed at 1) |
 | `GEN_MAX_FILES` | `10` | files per job |
 | `GEN_MAX_TOTAL_BYTES` | `20971520` | raw bytes per job (20 MB) |
-| `GEN_MAX_PDF_PAGES` | `100` | pages per job |
-| `GEN_MAX_INPUT_TOKENS` | `200000` | measured input tokens per job |
+| `GEN_MAX_PDF_PAGES` | `40` | pages per job |
+| `GEN_MAX_INPUT_TOKENS` | `80000` | measured input tokens per job |
 | `GEN_MAX_PER_CALL` | `15` | questions per call |
 | `GEN_MAX_RUNNING` | `2` | soft limit on running jobs per user |
-| `GEN_MAX_PER_DAY` | `10` | generate jobs per user per UTC day |
-| `GEN_MAX_REGEN_PER_DAY` | `30` | regenerate jobs per user per UTC day |
-| `GEN_MAX_GLOBAL_PER_DAY` | `200` | all jobs, all users, per UTC day |
+| `GEN_MAX_PER_DAY` | `3` | generate jobs per user per UTC day |
+| `GEN_MAX_REGEN_PER_DAY` | `10` | regenerate jobs per user per UTC day |
+| `GEN_MAX_GLOBAL_PER_DAY` | `10` | all jobs, all users, per UTC day (a burst limiter) |
+| `LLM_MONTHLY_BUDGET_USD` | `15` | estimated spend after which new jobs are refused for the rest of the UTC month (section 10.4) |
 
-Fail fast at startup if `LLM_API_KEY` is missing. Never include any of these in the frontend.
+Fail fast at startup if no provider is enabled, if an enabled provider's key is missing on the worker, or if `LLM_MODEL` is set but not enabled. Never include any of these in the frontend.
 
 ## 13. Testing and evaluation
 
@@ -413,16 +466,16 @@ Any change to the system prompt, the schema, the model, or the effort bumps `Pro
 ## 14. How the other specs reflect this file
 
 Applied together with this file: `goals.md` (the AI goals), `backend-spec.md` (authority of this file over section 7, the job lifecycle and limits, the Job usage field, the configuration table), `deployment-spec.md` (default model, the spend-limit gate), and `frontend-spec.md`:
-1. **AI notice** near the Generate button: "Selected files are sent to an AI service to write questions."
+1. **Model select** on the Create screen (default from `GET /ai/models`, cost hint, a notice for pricier models) and a live **AI usage** page (`/usage`). **AI notice** near the Generate button: "Selected files are sent to an AI service to write questions."
 2. **Regenerate** carries the texts of the questions already in the exam as `avoid` (`backend-spec.md` 8.4).
 3. **Plain-text questions.** Questions and answers are plain text with Unicode math and are rendered as text, never as HTML. Formatted maths (LaTeX) would be a frontend change and a prompt change together.
 4. **Failure messages.** The job's `error` text is shown as written (the messages in section 8 are written for end users), and `failedSources` is shown by file name.
 
 ## 15. Acceptance checklist
 
-- [ ] The backend calls the model only through the `Generator` interface, using the official Go SDK; no raw HTTP to the API.
-- [ ] `LLM_MODEL`, `LLM_EFFORT`, and every cap in section 12 are read from the environment; no model name is hard-coded.
-- [ ] No request sends `temperature`, `top_p`, `top_k`, a prefill, a disabled thinking setting, or a thinking budget.
+- [ ] The backend calls the model only through the `Generator` interface, using each provider's official Go SDK; no raw HTTP to either API.
+- [ ] `LLM_PROVIDERS`, `LLM_MODEL`, `LLM_EFFORT`, and every cap in section 12 are read from the environment; model IDs and prices appear only in the catalog.
+- [ ] No Claude request sends `temperature`, `top_p`, `top_k`, a prefill, a disabled thinking setting, or a thinking budget.
 - [ ] Structured output is used and responses are parsed and checked as in section 7.
 - [ ] Sources are sent with opaque labels only; no file name, user detail, or internal ID reaches the provider.
 - [ ] Later calls in a job show a cache-read token count above zero (the prefix is cache-friendly).
@@ -435,7 +488,11 @@ Applied together with this file: `goals.md` (the AI goals), `backend-spec.md` (a
 - [ ] No log line contains file content, prompts, model output, or question text; usage and request IDs are logged.
 - [ ] Each job records `PromptVersion`, model, effort, and token usage.
 - [ ] The golden set has been run and the section 13.3 targets are met, or the owner has accepted the gaps.
-- [ ] The API key has a spend limit at the provider.
+- [ ] Every enabled provider's key has a monthly spend limit or quota at the provider (about $20 in total; Google's may be an alert rather than a hard cap, in which case the Gemini key sits on a small-quota paid-tier project), and `LLM_MONTHLY_BUDGET_USD` is below it.
+- [ ] The default model is the cheapest enabled one, any signed-in user can choose another per generation, an unknown or not-enabled `model` is `422`, and the job records the model used.
+- [ ] Gemini and Claude both pass the same checks (section 7) and the golden set; a Gemini safety block fails the batch cleanly like a refusal.
+- [ ] No Gemini call uses a free-tier key.
+- [ ] Each call's estimated cost is added to the monthly counter; new jobs are refused (`429`) once it reaches the budget, and a running job stops before its next call.
 
 ## 16. Out of scope
 
@@ -444,7 +501,8 @@ AI grading of free-text answers, tutoring or chat, document summaries, retrieval
 ## 17. Decisions and open items
 
 **Decided**
-- Anthropic through the official Go SDK; the default model is `claude-opus-5-5`, switchable by environment variable.
+- Gemini and Claude, each through its official Go SDK, behind the `Generator` interface. The default model is the cheapest enabled one (Gemini 3.1 Flash-Lite with Gemini enabled, else Claude Haiku 4.5). Any signed-in user can choose a model per generation; there is no admin role.
+- A monthly dollar budget guard (default $15) sits under the provider's $20 limit.
 - Structured JSON output; no forced tool use; no sampling parameters; thinking left to the model; effort set explicitly (`medium`).
 - One call per mark value (at most 15 questions each), documents first and cached, per-call instructions last.
 - Server-side validation, one shortfall retry, then fail cleanly. Server-side option shuffling.
@@ -452,9 +510,11 @@ AI grading of free-text answers, tutoring or chat, document summaries, retrieval
 - Questions are self-contained, plain text, and never depend on figures in the source.
 
 **Open: decide before or during the build**
-- **Model and cost:** launch on `claude-opus-5-5`; in the first test pass on Day 3 run the golden set on `claude-sonnet-5-5` and switch with the environment variable if quality holds. The default costs about twice as much.
+- **Quality of the cheap default:** run the golden set on Gemini 3.1 Flash-Lite and Claude Haiku 4.5 first (Day 3, or earlier). If neither is good enough, users can pick Sonnet or Opus per generation (about 2 to 8 times the cost) or you can raise `LLM_EFFORT`; both reduce the number of jobs the budget covers.
+- **Gemini specifics** in 3.5 (SDK types, structured output, thinking mapping, usage fields), exact model IDs, current prices, and Gemini 3.x price changes from 1 December 2026.
+- **Gemini project and key:** a billing-enabled (paid-tier) project with a small quota, since the free tier trains on submitted content.
 - **Go SDK checks** in section 3.4 (structured output, images, token counting, fallbacks).
 - **Refusal rate** on biology and chemistry material, and whether to enable server-side fallbacks.
-- **The global daily cap** (`GEN_MAX_GLOBAL_PER_DAY`) sized to your budget, and the provider-side monthly spend limit (set before the production deploy).
+- **The monthly budget** (default $15 app-side, $20 provider-side, set before the production deploy), the price table and cache ratios behind the estimate, and whether a few dozen jobs a month is enough for your users.
 - **Legal and privacy review** for minors' data and the provider's terms (section 9.3).
 - **Per-image and per-request limits** at the provider: confirm them before launch, because camera photos are large.

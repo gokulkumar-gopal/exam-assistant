@@ -52,7 +52,7 @@ Browser ──► S3 (presigned PUT and GET, direct)
 - An AWS account. Never deploy with the root user. Create an admin-capable identity for yourself (IAM Identity Center user or an IAM user with access keys) and turn on MFA for it and for the root user.
 - A Vercel account (the Hobby plan is for personal, non-commercial use; check its terms **(verify)**).
 - A GitHub repository connected to Vercel.
-- An account with the LLM provider and an API key. **Set a monthly spend limit on that key at the provider before anything is deployed to prod.** This is a hard gate (section 8.4), not a nicety: it is the only cap that bounds LLM spend if the app's own limits are bypassed.
+- An account with each LLM provider you enable, and an API key for each: an **Anthropic** key (`LLM_API_KEY`) and, for the cheapest default, a **Gemini** key (`GEMINI_API_KEY`). **Set a monthly spend limit of $20 on every enabled provider's key before anything is deployed to prod.** This is a hard gate (section 8.4), not a nicety. Anthropic's console enforces a limit. Google's tools (a Google AI Studio or Cloud Billing budget, and project quotas) may only **alert** or throttle rather than stop spending **(verify)**, so keep the Gemini key on its own **billing-enabled, paid-tier** project with a small quota, and rely on the app's own monthly budget (`LLM_MONTHLY_BUDGET_USD`) as the cap that actually refuses work. Never use a free-tier Gemini key: free-tier content is used to improve Google's products, and this app handles students' study material.
 - A Google account for the Google Cloud Console, to create the OAuth clients for sign-in (free for basic profile sign-in **(verify)**).
 
 **Tools on the machine that deploys**
@@ -71,7 +71,7 @@ Details **(verify)** on AWS's own pages before relying on them.
 - Accounts created after July 15, 2025 are on a **Free plan**: up to $200 in credits (the first $100 at sign-up, up to $100 more for completing tasks), and **the account closes 6 months after it opens, or when credits run out, whichever comes first** unless you upgrade to a Paid plan. Older accounts may still be on the previous 12-month program. Find out which one you have (Billing console) before planning anything long-lived.
 - **Lambda** has a monthly always-free allowance that does not use up credits. **DynamoDB on-demand** is *not* covered by the always-free allowance (that covers provisioned capacity only **(verify)**), but at this project's volume it costs cents a month and is paid from the credits. That trade was made on purpose: provisioned units this small throttle under real use with items this size.
 - **S3** and **CloudWatch Logs** usage at this project's volume is small. Treat both as credit-funded.
-- **The LLM is not an AWS cost and is not free.** It is the main running cost (about $0.40 to $0.75 per generation job; see `AI-spec.md` section 10.3). The default model is `claude-opus-5-5`; set `LlmModel` to `claude-sonnet-5-5` to roughly halve it. The guards, in order: the provider-side monthly spend limit (hard gate), the global limit of 200 jobs a day, the per-user limits of 10 generate and 30 regenerate a day (`backend-spec.md` section 7.5). At the global limit, a day on the default model costs up to about $150, so the provider limit, not the app limits, is what actually protects your budget.
+- **The LLM is not an AWS cost and is not free.** It is the main running cost, and the budget is about **$20 a month**. The default model is the **cheapest enabled** one: Gemini 3.1 Flash-Lite when `gemini` is in `LLM_PROVIDERS`, otherwise Claude Haiku 4.5. Illustrative cost per generation job, small / heavy set (`AI-spec.md` section 10.3): Gemini 3.1 Flash-Lite about $0.03 / $0.10, Haiku 4.5 about $0.08 / $0.20, Sonnet 5.5 about $0.17 / $0.40, Opus 5.5 about $0.33 / $0.80. On the $15 app-side budget that is roughly 450 / 140 jobs on Gemini Flash-Lite, 190 / 75 on Haiku, 85 / 35 on Sonnet and 45 / 19 on Opus. Anyone can pick a pricier model per job, which uses up the shared budget faster. The guards, in order: the provider-side monthly limits of $20 (hard gate; see the Google caveat in section 3), the app's own monthly budget estimate (`LLM_MONTHLY_BUDGET_USD`, default $15, refuses new jobs when reached), the global limit of 10 jobs a day, and the per-user limits of 3 generate and 10 regenerate a day (`backend-spec.md` section 7.5). Prices and model IDs change; re-check them before launch **(verify)**, in particular Google's scheduled price changes.
 - **Google sign-in** (basic profile and email only) has no AWS cost. Verifying tokens means the backend fetches Google's public keys over the internet, which is one more reason not to put the Lambdas in a VPC.
 - **Things that cause surprise bills, and that this design avoids on purpose:** NAT gateways (about $30 a month), unattached Elastic IPs, putting Lambdas in a VPC, RDS, extra regions, high-retention logs. Do not add any of these.
 - **Budget alerts lag** (hours, sometimes a day). Set one anyway (section 11).
@@ -124,8 +124,10 @@ Description: Exam Assistant backend
 Parameters:
   Stage:           { Type: String, AllowedValues: [dev, prod] }
   JwtSecret:       { Type: String, NoEcho: true, MinLength: 32 }
-  LlmApiKey:       { Type: String, NoEcho: true }
-  LlmModel:        { Type: String, Default: claude-opus-5-5 }
+  LlmProviders:    { Type: String, Default: anthropic, Description: "Enabled providers, comma-separated: anthropic, gemini (for example gemini,anthropic)" }
+  LlmApiKey:       { Type: String, NoEcho: true, Default: "", Description: "Anthropic API key (LLM_API_KEY). Required when anthropic is enabled" }
+  GeminiApiKey:    { Type: String, NoEcho: true, Default: "", Description: "Gemini API key (GEMINI_API_KEY), paid tier only. Required when gemini is enabled" }
+  LlmModel:        { Type: String, Default: "", Description: "Default model ID. Empty means the cheapest enabled model in the backend's catalog" }
   GoogleClientId:  { Type: String, Description: "Google OAuth client ID that sign-in tokens must be issued for" }
   AllowedOrigins:  { Type: String, Description: "Comma-separated, e.g. https://app.example.com,http://localhost:3000" }
   FrontendOrigins: { Type: CommaDelimitedList, Description: "Same origins, for S3 CORS" }
@@ -147,6 +149,8 @@ Globals:
         ENV: production
         STAGE: !Ref Stage
         S3_BUCKET: !Ref UploadsBucket
+        LLM_PROVIDERS: !Ref LlmProviders  # not secret; the API lists and validates models with it, the worker uses it to pick a provider
+        LLM_MODEL: !Ref LlmModel          # not secret; empty means the cheapest enabled model
 
 Resources:
   ApiFunction:
@@ -159,7 +163,7 @@ Resources:
       ReservedConcurrentExecutions: !If [ReserveApi, !Ref ApiReservedConcurrency, !Ref "AWS::NoValue"]
       FunctionUrlConfig: { AuthType: NONE }
       Environment:
-        Variables:                     # the API never calls the LLM, so it gets no LLM key
+        Variables:                     # the API never calls the LLM, so it gets no provider keys
           MODE: api
           JWT_SECRET: !Ref JwtSecret
           GOOGLE_CLIENT_ID: !Ref GoogleClientId
@@ -178,7 +182,7 @@ Resources:
                 - !GetAtt AttemptsTable.Arn
                 - !Sub "${AttemptsTable.Arn}/index/*"
                 - !GetAtt JobsTable.Arn
-                - !Sub "${JobsTable.Arn}/index/*"
+                - !Sub "${JobsTable.Arn}/index/*"     # includes day-index, which the usage page queries
             - Effect: Allow
               Action: [s3:PutObject, s3:GetObject, s3:DeleteObject]
               Resource: !Sub "${UploadsBucket.Arn}/*"
@@ -198,10 +202,10 @@ Resources:
       Timeout: 600                     # platform ceiling; the job's own deadline is 8 minutes (backend-spec 7.2)
       ReservedConcurrentExecutions: !If [ReserveWorker, !Ref WorkerReservedConcurrency, !Ref "AWS::NoValue"]
       Environment:
-        Variables:                     # the worker needs the LLM, not the session secret or Google
+        Variables:                     # the worker needs the provider keys, not the session secret or Google
           MODE: worker
-          LLM_API_KEY: !Ref LlmApiKey
-          LLM_MODEL: !Ref LlmModel
+          LLM_API_KEY: !Ref LlmApiKey        # Anthropic
+          GEMINI_API_KEY: !Ref GeminiApiKey  # Gemini (paid tier)
       EventInvokeConfig:
         MaximumRetryAttempts: 0          # a retried job would run the LLM calls twice
         MaximumEventAgeInSeconds: 3600
@@ -211,7 +215,7 @@ Resources:
               Action: dynamodb:GetItem     # reads source document rows only
               Resource: !GetAtt DocumentsTable.Arn
             - Effect: Allow
-              Action: [dynamodb:GetItem, dynamodb:PutItem, dynamodb:UpdateItem, dynamodb:Query]
+              Action: [dynamodb:GetItem, dynamodb:PutItem, dynamodb:UpdateItem, dynamodb:Query]   # UpdateItem also adds to the quota and usage counter items
               Resource:
                 - !GetAtt JobsTable.Arn
                 - !Sub "${JobsTable.Arn}/index/*"
@@ -289,18 +293,25 @@ Resources:
           KeySchema: [{ AttributeName: userId, KeyType: HASH }, { AttributeName: examId, KeyType: RANGE }]
           Projection: { ProjectionType: INCLUDE, NonKeyAttributes: [status, scoreHalves, scoreBeforePeeksHalves] }   # never the answers
 
-  JobsTable:                           # also holds quota items (quota#...) and question items (<jobId>#questions)
+  JobsTable:                           # also holds quota items (quota#...), usage counters (usage#...) and question items (<jobId>#questions)
     Type: AWS::DynamoDB::Table
     Properties:
       TableName: !Sub "${Stage}-jobs"
       BillingMode: PAY_PER_REQUEST
-      AttributeDefinitions: [{ AttributeName: id, AttributeType: S }, { AttributeName: ownerId, AttributeType: S }]
+      AttributeDefinitions:
+        - { AttributeName: id, AttributeType: S }
+        - { AttributeName: ownerId, AttributeType: S }
+        - { AttributeName: day, AttributeType: S }         # yyyymmdd (UTC), set on job items only
+        - { AttributeName: createdAt, AttributeType: S }   # ISO 8601 UTC string, sorts by time
       KeySchema: [{ AttributeName: id, KeyType: HASH }]
       TimeToLiveSpecification: { AttributeName: ttl, Enabled: true }
       GlobalSecondaryIndexes:
         - IndexName: owner-index
           KeySchema: [{ AttributeName: ownerId, KeyType: HASH }, { AttributeName: id, KeyType: RANGE }]
           Projection: { ProjectionType: INCLUDE, NonKeyAttributes: [status, createdAt, updatedAt, kind] }
+        - IndexName: day-index                              # the AI usage page lists today's jobs without a Scan
+          KeySchema: [{ AttributeName: day, KeyType: HASH }, { AttributeName: createdAt, KeyType: RANGE }]
+          Projection: { ProjectionType: INCLUDE, NonKeyAttributes: [status, model, kind, costMicros, calls, inTok, outTok, cacheReadTok, cacheWriteTok] }
 
 Outputs:
   FunctionUrl: { Value: !GetAtt ApiFunctionUrl.FunctionUrl }
@@ -309,13 +320,13 @@ Outputs:
 ```
 
 **Notes on the template**
-- **Data layer is five tables and three indexes, all on-demand.** `users` has no index (login uses the email lock item, `backend-spec.md` section 6.2). Index projections are `INCLUDE` lists, never `ALL`: an index copies a write only when a projected attribute changes, so autosaving answers or embedding questions never writes to an index. `NonKeyAttributes` must match the attribute names the store implementation writes; the key attributes are projected automatically.
-- **The jobs table holds three kinds of item:** job status items, a questions item per job (`<jobId>#questions`, written just before the job turns `done`), and quota counters (`quota#<userId>#<yyyymmdd>`, `quota#global#<yyyymmdd>`). All carry `ttl` (jobs 24 hours, quota items 3 days).
+- **Data layer is five tables and four indexes, all on-demand.** `users` has no index (login uses the email lock item, `backend-spec.md` section 6.2). Index projections are `INCLUDE` lists, never `ALL`: an index copies a write only when a projected attribute changes, so autosaving answers or embedding questions never writes to an index. (`day-index` has one partition per UTC day, which is fine at this volume: a handful of jobs a day.) `NonKeyAttributes` must match the attribute names the store implementation writes; the key attributes are projected automatically.
+- **The jobs table holds four kinds of item:** job status items (with `day`, `model` and live usage fields; `day-index` reads these), a questions item per job (`<jobId>#questions`, written just before the job turns `done`), quota counters (`quota#<userId>#<yyyymmdd>`, `quota#global#<yyyymmdd>`, `quota#global#<yyyymm>`), and usage counters per model (`usage#<yyyymm>#<modelId>`, `usage#<yyyymmdd>#<modelId>`). All carry `ttl` (jobs 24 hours, daily quota and usage items 3 days, monthly items 40 days).
 - **`ENV: production`** is set for both stages so the session cookie always has the `Secure` flag when deployed. Only a locally run server uses `ENV=local`.
 - **Worker retries are off on purpose.** The default for asynchronous invocation is to retry twice, which would run a generation job (and pay for its LLM calls) up to three times. Asynchronous delivery is still at-least-once, so the worker claims a job with a conditional `queued -> running` write and exits if it loses (`backend-spec.md` section 7.2).
 - **Timeouts line up like this.** Worker function timeout 600 s is the ceiling; the job's own deadline is 8 minutes, and a job with no heartbeat for 6 minutes reads as failed to the client. The API function's 29 s matches the Function URL's practical limit; nothing long runs there.
 - **Reserved concurrency is optional and off by default.** When set, it caps how many API or worker executions run at once, which bounds LLM spend and DynamoDB load under abuse. It only works if the account's concurrency quota is high enough: AWS requires at least 100 unreserved executions to remain, and a new account's quota may be lower. Check Service Quotas first **(verify)**; if you cannot reserve, rely on the quota counters and the provider spend limit. A worker invoke throttled by its reservation is dropped (retries are 0), so that job stays `queued` until the 6-minute stale rule fails it and the user retries.
-- **Secrets are scoped per function.** `JWT_SECRET` and `GOOGLE_CLIENT_ID` exist only on the API; `LLM_API_KEY` and `LLM_MODEL` only on the worker. `backend-spec.md` section 11 must therefore mark each variable required per `MODE`, so config loading does not fail in a mode that does not need it.
+- **Secrets are scoped per function.** `JWT_SECRET` and `GOOGLE_CLIENT_ID` exist only on the API; `LLM_API_KEY` (Anthropic) and `GEMINI_API_KEY` only on the worker. `LLM_PROVIDERS` and `LLM_MODEL` are not secret and are on both: the API needs them to list the enabled models (`GET /ai/models`), mark the default, and validate the `model` a request asks for, without ever holding a key. An empty `LLM_MODEL` means "the cheapest enabled model" and the backend must treat an empty value as unset. If a model is enabled but its key is missing, the worker fails that job with a generic message and logs it loudly. `backend-spec.md` section 11 must therefore mark each variable required per `MODE`, so config loading does not fail in a mode that does not need it.
 - **No VPC, no API Gateway, no Cognito, no queue.** Do not add them.
 - **Public function URL.** `AuthType: NONE` means anyone with the URL can call it; the app authenticates every request itself. Keep the URL out of public docs, and know it is reachable directly, not only through Vercel. If a newly created function URL returns `403`, check its resource policy: AWS has tightened what the permission for public URLs requires **(verify)**.
 - **Memory** is 1024 MB for both because PDF page counting happens in the API function and reads the whole file. Lower it after measuring.
@@ -331,7 +342,10 @@ Outputs:
 | `AllowedOrigins` | `http://localhost:3000` | the production Vercel domain, for example `https://exam-assistant.vercel.app`, plus any custom domain, and `http://localhost:3000` if you want local frontend against prod (not recommended) |
 | `FrontendOrigins` | same list as `AllowedOrigins` | same list as `AllowedOrigins` |
 | `JwtSecret` | random, different per stage | random, different per stage |
-| `LlmApiKey` | a key with a low spend limit | a key with a spend limit sized to your budget |
+| `LlmProviders` | `anthropic`, or `gemini,anthropic` once the Gemini key exists | the same list |
+| `LlmApiKey` (Anthropic) | a key with a low spend limit; may be empty if `anthropic` is not enabled | a key with a **$20 monthly** spend limit; may be empty if `anthropic` is not enabled |
+| `GeminiApiKey` | a **paid-tier** key from a billing-enabled project with a small quota; empty if `gemini` is not enabled | a **paid-tier** key from its own billing-enabled project with a small quota and a budget alert at or below $20; empty if `gemini` is not enabled |
+| `LlmModel` | empty (the cheapest enabled model) | empty (the cheapest enabled model), or a model ID from the backend's catalog |
 | `GoogleClientId` | the **dev** OAuth client ID (authorized origin: `http://localhost:3000`) | the **prod** OAuth client ID (authorized origin: the production Vercel domain) |
 
 Generate a secret with `openssl rand -hex 32` (hex has no characters that need quoting in the generated deploy config). Never reuse the prod secret in dev.
@@ -346,9 +360,10 @@ These variables have defaults in the code and are **not** set in the template. A
 | `LLM_TIMEOUT_SECONDS` | `120` | worker |
 | `GEN_MAX_FILES`, `GEN_MAX_TOTAL_BYTES`, `GEN_MAX_PDF_PAGES`, `GEN_MAX_INPUT_TOKENS`, `GEN_MAX_PER_CALL` | see `AI-spec.md` section 12 | API and worker |
 | `GEN_MAX_RUNNING` | `2` | API |
-| `GEN_MAX_PER_DAY` | `10` (per user, generate) | API |
-| `GEN_MAX_REGEN_PER_DAY` | `30` (per user, regenerate) | API |
-| `GEN_MAX_GLOBAL_PER_DAY` | `200` (all users, UTC day) | API |
+| `GEN_MAX_PER_DAY` | `3` (per user, generate) | API |
+| `GEN_MAX_REGEN_PER_DAY` | `10` (per user, regenerate) | API |
+| `GEN_MAX_GLOBAL_PER_DAY` | `10` (all users, UTC day) | API |
+| `LLM_MONTHLY_BUDGET_USD` | `15` (estimated spend; keep below the provider's $20 limit) | API and worker |
 
 ## 7. Frontend on Vercel
 
@@ -433,16 +448,20 @@ Preview deployments cannot use Google sign-in, for the same reason they cannot c
 ```
 # backend/.env.deploy.dev
 JWT_SECRET=<openssl rand -hex 32>
-LLM_API_KEY=<dev key>
-LLM_MODEL=claude-opus-5-5
+LLM_PROVIDERS=gemini,anthropic      # or just anthropic until the Gemini key exists
+LLM_API_KEY=<dev Anthropic key>      # needed when anthropic is enabled
+GEMINI_API_KEY=<dev Gemini key>      # needed when gemini is enabled; paid tier only
+LLM_MODEL=                           # empty = the cheapest enabled model
 ALLOWED_ORIGINS=http://localhost:3000
 GOOGLE_CLIENT_ID=<dev OAuth client ID>
 ```
 ```
 # backend/.env.deploy.prod
 JWT_SECRET=<a different random value>
-LLM_API_KEY=<prod key>
-LLM_MODEL=claude-opus-5-5
+LLM_PROVIDERS=gemini,anthropic
+LLM_API_KEY=<prod Anthropic key>
+GEMINI_API_KEY=<prod Gemini key>
+LLM_MODEL=
 ALLOWED_ORIGINS=https://exam-assistant.vercel.app,http://localhost:3000
 GOOGLE_CLIENT_ID=<prod OAuth client ID>
 # optional, only if the account's concurrency quota allows (section 6.2 notes):
@@ -451,7 +470,7 @@ GOOGLE_CLIENT_ID=<prod OAuth client ID>
 ```
 
 4. Set a budget alert (section 11) before creating anything else.
-5. Create the LLM provider API key for `prod` and **set its monthly spend limit now**. Section 8.4 will not let you deploy prod without it.
+5. Create the `prod` API key for **each enabled provider** and **set its monthly spend limit now** (Anthropic console; for Gemini, a billing-enabled paid-tier project with a small quota and a budget alert, since Google's controls may only alert). Section 8.4 will not let you deploy prod without it.
 
 ### 8.2 `make deploy` (backend)
 
@@ -485,18 +504,24 @@ deploy: check-env
 # usage: write-samconfig.sh <stage>   (variables come from .env.deploy.<stage> via make)
 set -eu
 umask 077
+providers="${LLM_PROVIDERS:-anthropic}"
+case ",$providers," in *,anthropic,*) : "${LLM_API_KEY:?LLM_API_KEY is required when anthropic is enabled}" ;; esac
+case ",$providers," in *,gemini,*)    : "${GEMINI_API_KEY:?GEMINI_API_KEY is required when gemini is enabled}" ;; esac
 extra=""
+if [ -n "${LLM_API_KEY:-}" ]; then extra="$extra LlmApiKey=$LLM_API_KEY"; fi
+if [ -n "${GEMINI_API_KEY:-}" ]; then extra="$extra GeminiApiKey=$GEMINI_API_KEY"; fi
+if [ -n "${LLM_MODEL:-}" ]; then extra="$extra LlmModel=$LLM_MODEL"; fi
 if [ -n "${API_RESERVED_CONCURRENCY:-}" ]; then extra="$extra ApiReservedConcurrency=$API_RESERVED_CONCURRENCY"; fi
 if [ -n "${WORKER_RESERVED_CONCURRENCY:-}" ]; then extra="$extra WorkerReservedConcurrency=$WORKER_RESERVED_CONCURRENCY"; fi
 {
   echo 'version = 0.1'
   echo '[default.deploy.parameters]'
-  printf 'parameter_overrides = "Stage=%s JwtSecret=%s LlmApiKey=%s LlmModel=%s GoogleClientId=%s AllowedOrigins=\\"%s\\" FrontendOrigins=\\"%s\\"%s"\n' \
-    "$1" "$JWT_SECRET" "$LLM_API_KEY" "$LLM_MODEL" "$GOOGLE_CLIENT_ID" "$ALLOWED_ORIGINS" "$ALLOWED_ORIGINS" "$extra"
+  printf 'parameter_overrides = "Stage=%s JwtSecret=%s LlmProviders=\\"%s\\" GoogleClientId=%s AllowedOrigins=\\"%s\\" FrontendOrigins=\\"%s\\"%s"\n' \
+    "$1" "$JWT_SECRET" "$providers" "$GOOGLE_CLIENT_ID" "$ALLOWED_ORIGINS" "$ALLOWED_ORIGINS" "$extra"
 } > ".samconfig.$1.toml"
 ```
 
-The quoting around the origin lists (they contain commas) is the fiddly part. Run the first `sam deploy` with `--debug` and confirm the parameters arrive as intended **(verify)**.
+The script stops with a clear message if an enabled provider has no key. Optional values (the two keys, `LlmModel`, the concurrency settings) are passed only when set, so an empty value never reaches CloudFormation as `Key=`. The quoting around the comma-containing values (the origin lists and `LlmProviders`, for example `gemini,anthropic`) is the fiddly part. Run the first `sam deploy` with `--debug` and confirm the parameters arrive as intended **(verify)**; the Gemini key and the Anthropic key contain only letters, digits, `-` and `_`, so they need no quoting.
 
 `samconfig.toml` may be committed but must not contain secrets. Never run `sam deploy --guided` and commit what it writes without checking the file.
 
@@ -514,7 +539,7 @@ The aim is to find rewrite, cookie, and AWS problems at the start. Do this with 
 
 ### 8.4 Production (Day 2)
 
-**Gate: do not deploy prod until the LLM key's provider-side monthly spend limit is set** and a budget alert exists (section 11). Check the provider's console, not your memory. Nothing else in the design caps spend if the app's own limits are bypassed.
+**Gate: do not deploy prod until the provider-side monthly spend limit of $20 is set on the key of every provider in `LLM_PROVIDERS`** and a budget alert exists (section 11). Check each provider's console, not your memory. For Gemini that means the key belongs to a billing-enabled paid-tier project with a small quota and a budget alert, and you have noted that Google may only alert rather than stop. Nothing else in the design except the app's own monthly budget caps spend if the app's other limits are bypassed.
 
 1. Create `backend/.env.deploy.prod` with the production Vercel domain in `ALLOWED_ORIGINS`.
 2. Confirm the gate above, then `make deploy STAGE=prod`. Copy the `FunctionUrl`.
@@ -537,7 +562,7 @@ The aim is to find rewrite, cookie, and AWS problems at the start. Do this with 
 | 1, first hour | Section 8.3: dev stack with `/health`, Vercel project, rewrite verified, cookie, Google sign-in (OAuth clients from 8.0), and (once built) upload verified |
 | 1, rest of day | Keep deploying `dev` after each backend slice; the frontend builds against the dev stack or the mock flag |
 | 2 | Section 8.4: prod stack, termination protection, Vercel production env var, smoke test, device walk-through, fix production-only problems (cookies, presigned URLs, CORS, timeouts) |
-| 3 | Redeploy fixes with `make deploy` and Git pushes; run the smoke test after each. In the first test pass, run the AI golden set on `claude-sonnet-5-5` (`AI-spec.md` section 13); if quality holds, set `LlmModel` for the stage and redeploy |
+| 3 | Redeploy fixes with `make deploy` and Git pushes; run the smoke test after each. In the first test pass, run the AI golden set on the **cheapest enabled model** (`AI-spec.md` section 13). Use a pricier model (Haiku, Sonnet, Opus) only if its quality is not good enough, by setting `LlmModel` for the stage or by picking it per job in the app; each step up roughly doubles or triples the cost per job. Compare the app's monthly spend estimate with each provider's usage page |
 
 ## 10. Verification checklist
 
@@ -554,18 +579,21 @@ The aim is to find rewrite, cookie, and AWS problems at the start. Do this with 
 - [ ] A generation job started from the deployed app finishes and is not run twice (check the worker's logs for one invocation per job).
 - [ ] A job whose worker never starts or stalls reads as failed after about 6 minutes, and the user can retry.
 - [ ] Every table and index shows on-demand billing in the DynamoDB console, and no index projects all attributes.
-- [ ] The API function has no `LLM_API_KEY` and the worker has no `JWT_SECRET` (check each function's configuration).
+- [ ] The API function has no `LLM_API_KEY`, no `GEMINI_API_KEY` and no `JWT_SECRET` on the worker (check each function's configuration); `LLM_PROVIDERS` and `LLM_MODEL` are on both.
+- [ ] `GET /api/ai/models` lists exactly the enabled models, cheapest first, with the cheapest enabled one marked as the default when `LLM_MODEL` is empty.
+- [ ] The jobs table has `owner-index` and `day-index` (INCLUDE projections), and the AI usage page loads today's jobs through `day-index` without a Scan.
+- [ ] Enabling a provider without its key makes `make deploy` stop with a clear message.
 - [ ] If reserved concurrency was set, both functions show it; if not, that was a conscious choice (quota too low).
 - [ ] `make smoke BASE_URL=https://<vercel-domain>/api` passes against prod.
 - [ ] The prod stack has termination protection on.
-- [ ] **Gate:** the prod LLM key has a provider-side monthly spend limit, set before the prod deploy, and a budget alert exists.
+- [ ] **Gate:** every enabled provider's prod key has a provider-side monthly spend limit of $20 (the Gemini key is on a billing-enabled paid-tier project with a small quota and a budget alert, and its alert-only caveat is accepted), set before the prod deploy, and an AWS budget alert exists.
 - [ ] No secret appears in Git history, in `samconfig.toml`, or in Vercel's `NEXT_PUBLIC_` variables.
 - [ ] CloudWatch log groups exist for both functions with 14-day retention.
 - [ ] No secret appears in the process list or deploy output (`make deploy` uses the generated `.samconfig.<stage>.toml`, which is gitignored).
 
 ## 11. Operations
 
-**Budget alert.** In the AWS Billing console, create a budget with an alert at a small amount (for example $5) to your email. It lags by hours, so it is a backstop, not a limit. The LLM spend limit at the provider is the real cap; review its usage page after the first real day of use. Compare it with the per-job token usage recorded on jobs (`AI-spec.md` section 11).
+**Budget alert.** In the AWS Billing console, create a budget with an alert at a small amount (for example $5) to your email. It lags by hours, so it is a backstop, not a limit. The LLM spend limits at the providers are the outer cap (Google's may only alert); the app's monthly budget is what refuses work. Review each provider's usage page after the first real day of use and compare it with the in-app AI usage page and the per-job token usage recorded on jobs (`AI-spec.md` section 11).
 
 **Logs.** Each function writes JSON lines to CloudWatch Logs with 14-day retention. To follow them: `sam logs --stack-name exam-assistant-prod --name ApiFunction --tail` (and `--name WorkerFunction`).
 
@@ -582,7 +610,7 @@ The aim is to find rewrite, cookie, and AWS problems at the start. Do this with 
 2. Empty the bucket: `aws s3 rm s3://<bucket> --recursive` (`make destroy STAGE=<stage>` should do this first).
 3. Turn off termination protection for prod, then `sam delete --stack-name exam-assistant-<stage> --region <region>`.
 4. Confirm in the console that no tables, buckets, or log groups remain in any region you used.
-5. Revoke the LLM API key.
+5. Revoke every LLM API key (Anthropic and Gemini).
 
 ## 12. Security checklist
 
@@ -594,7 +622,7 @@ The aim is to find rewrite, cookie, and AWS problems at the start. Do this with 
 - Whoever owns the Google Cloud project can change the sign-in configuration; protect that Google account with MFA too.
 - The function URL is public by design; the app authenticates every request, checks the origin on state-changing requests, and uses `HttpOnly`, `Secure`, `SameSite=Lax` cookies.
 - Secrets are injected as stack parameters (`NoEcho`) from a generated, gitignored config file (never on the command line) and stored as Lambda environment variables, scoped per function. They are visible to anyone with read access to the function configuration. Keep that access to yourself. Moving them to a secrets service is out of scope for the MVP.
-- The LLM key has a provider-side monthly spend limit (hard gate before prod).
+- Every enabled LLM provider key has a provider-side monthly spend limit (hard gate before prod). The Gemini key must be a paid-tier key: free-tier content is used to improve Google's products. Provider keys exist only on the worker; the API holds none.
 - Minors' data: complete the privacy review noted in `goals.md` before any real users.
 
 ## 13. Troubleshooting
@@ -613,6 +641,7 @@ The aim is to find rewrite, cookie, and AWS problems at the start. Do this with 
 | Some people can sign in with Google and others cannot | the consent screen is in Testing and the others are not test users, or their school account blocks it | Add them as test users or publish the app; keep email and password available |
 | Generation job stays `queued` | the API cannot invoke the worker, `WORKER_FUNCTION_NAME` is wrong, or the worker's reserved concurrency throttled the invoke (dropped, retries are 0) | Check the API role's `lambda:InvokeFunction` and the env var; check the worker's throttle metric. The 6-minute stale rule fails the job so the user can retry |
 | A job runs twice | worker retries are on, or duplicate async delivery without the claim check | Confirm `MaximumRetryAttempts: 0`; confirm the worker's conditional `queued -> running` claim exists (`backend-spec.md` section 7.2) |
+| A job fails right away, or a model is missing from `GET /ai/models` | the provider is not in `LLM_PROVIDERS`, or the worker has no key for it | Check `LlmProviders` and the key parameters (section 6.3); the worker logs the missing key |
 | `complete` returns an unexpected 500 on a missing upload | the API role lacks `s3:ListBucket`, so `HeadObject` returns 403 instead of 404 | Add `s3:ListBucket` on the bucket ARN (it is in the template) |
 | `sam deploy` shows wrong parameter values (for example origins split in two) | quoting in `.samconfig.<stage>.toml` | Run with `--debug`, fix `scripts/write-samconfig.sh`; origin lists need the escaped quotes |
 | `sam deploy` fails on the bucket | the bucket name is taken or has objects | Use the account ID in the name (already in the template) and empty it before delete |
@@ -629,5 +658,7 @@ The aim is to find rewrite, cookie, and AWS problems at the start. Do this with 
 - **Google consent screen:** stay in Testing with a test-user list, or publish to Production (and whether that needs a privacy policy and homepage link).
 - **Google client layout:** two clients (dev and prod) as recommended, or one shared client.
 - **Reserved concurrency:** whether the account's concurrency quota allows it (check Service Quotas); otherwise rely on the quota counters and the spend limit.
-- **Launch model:** `claude-opus-5-5` now; switch to `claude-sonnet-5-5` after the Day 3 golden-set comparison if quality holds.
+- **Gemini key and project:** create a billing-enabled paid-tier Gemini project for each stage with a small quota and a budget alert, and note that Google's limits may only alert. Decide whether `dev` shares a project with `prod` (not recommended).
+- **Model IDs and prices:** verify the exact model IDs and current prices for every catalog model on the providers' own pages before the first deploy, and re-check Google's scheduled price changes **(verify)**.
+- **Default model:** empty `LlmModel` means the cheapest enabled model (Gemini 3.1 Flash-Lite when Gemini is enabled, else Haiku 4.5). Confirm its quality on the Day 3 golden set; otherwise raise it per stage or per job.
 - **Everything marked (verify)** in this file.
