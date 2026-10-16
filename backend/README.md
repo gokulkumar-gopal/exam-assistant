@@ -12,8 +12,8 @@ Go backend for the Exam Assistant. The design is in `../backend-spec.md`; this f
 ```sh
 make build   # go build ./...
 make test    # go test ./...
-make run     # start cmd/server on :8080
-make smoke BASE_URL=http://localhost:8080   # check a running backend
+make run     # start cmd/server on 127.0.0.1:8080 (override with ADDR=)
+make smoke BASE_URL=http://127.0.0.1:8080   # check a running backend
 make ai-eval # not available until task B-2.11
 ```
 

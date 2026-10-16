@@ -42,7 +42,7 @@ func main() {
 
 	addr := os.Getenv("ADDR")
 	if addr == "" {
-		addr = ":8080"
+		addr = "127.0.0.1:8080" // loopback only: the local blob endpoint is unauthenticated
 	}
 	baseURL := os.Getenv("LOCAL_BASE_URL")
 	if baseURL == "" {

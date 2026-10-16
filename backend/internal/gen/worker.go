@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math/rand/v2"
+	"runtime/debug"
 	"slices"
 	"sort"
 	"strconv"
@@ -182,7 +183,7 @@ func (w *Worker) Run(ctx context.Context, jobID string) error {
 	stopHB := w.startHeartbeat(gctx, cancelGen, job, model, known, state)
 	defer stopHB() // also on a panic in the generator
 
-	qs, genErr := w.generate(gctx, job, state)
+	qs, genErr := w.safeGenerate(gctx, log, job, state)
 	stopHB() // the heartbeat goroutine is gone before any final write
 
 	cause := context.Cause(gctx)
@@ -200,6 +201,7 @@ func (w *Worker) Run(ctx context.Context, jobID string) error {
 		w.recordSpend(fctx, log, job, model, known, sn)
 		return w.finish(fctx, log, job, store.JobCancelled, "", model, known, sn)
 	case genErr != nil:
+		// Includes a recovered generator panic: it is failed with the generic message.
 		w.recordSpend(fctx, log, job, model, known, sn)
 		return w.finish(fctx, log, job, store.JobFailed, w.failureMessage(log, ctx, dctx, genErr), model, known, sn)
 	}
@@ -270,6 +272,8 @@ func (w *Worker) finish(ctx context.Context, log *slog.Logger, job store.Job, to
 func (w *Worker) failureMessage(log *slog.Logger, parent, dctx context.Context, err error) string {
 	var ue *UserError
 	switch {
+	case errors.Is(err, errGeneratorPanic):
+		return GenerateFailedMessage // already logged with its stack
 	case errors.As(err, &ue):
 		log.Warn("worker: generation failed", "err", err)
 		return ue.Message
@@ -344,6 +348,23 @@ func (w *Worker) startHeartbeat(gctx context.Context, cancelGen context.CancelCa
 			<-done
 		})
 	}
+}
+
+var errGeneratorPanic = errors.New("gen: generator panicked")
+
+// safeGenerate is generate with a panic turned into errGeneratorPanic, so Run still stops
+// the heartbeat, records the usage gathered so far and fails the job. The panic value and
+// stack are logged only; the user sees the generic message. Run returns nil afterwards,
+// which keeps Lambda from retrying; InProcessRunner's own recover is defence in depth for
+// panics outside this phase and is harmless here (it never sees this one).
+func (w *Worker) safeGenerate(ctx context.Context, log *slog.Logger, job store.Job, st *runState) (qs []store.Question, err error) {
+	defer func() {
+		if p := recover(); p != nil {
+			log.Error("worker: generator panicked", "panic", fmt.Sprint(p), "stack", string(debug.Stack()))
+			qs, err = nil, errGeneratorPanic
+		}
+	}()
+	return w.generate(ctx, job, st)
 }
 
 // generate loads the sources and calls the Generator once per mark value (ascending) and

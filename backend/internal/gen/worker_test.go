@@ -722,3 +722,55 @@ func TestMissingJobIsNotAnError(t *testing.T) {
 		t.Error("generator called")
 	}
 }
+
+func TestRunRecoversGeneratorPanic(t *testing.T) {
+	e := newWEnv(t, map[string]int{"1": 2})
+	e.w.heartbeatInterval = 2 * time.Millisecond
+	e.gen.fn = func(ctx context.Context, in GenInput) (GenOutput, error) {
+		time.Sleep(10 * time.Millisecond) // let the heartbeat run
+		panic("provider exploded: sk-ant-SECRET")
+	}
+	if err := e.w.Run(context.Background(), e.jobID); err != nil {
+		t.Fatalf("Run returned %v, want nil", err)
+	}
+	j := e.job(t)
+	if j.Status != store.JobFailed || j.Error != GenerateFailedMessage {
+		t.Fatalf("job = %s %q", j.Status, j.Error)
+	}
+	if strings.Contains(j.Error, "SECRET") || strings.Contains(j.Error, "panic") {
+		t.Error("panic value leaked into the job error")
+	}
+	if _, fin := e.jobs.snapshot(); len(fin) != 1 || fin[0] != store.JobFailed {
+		t.Errorf("finish calls = %v", fin)
+	}
+	hb1, _ := e.jobs.snapshot()
+	time.Sleep(20 * time.Millisecond)
+	if hb2, _ := e.jobs.snapshot(); hb1 != hb2 || e.jobs.hbAfterFinish != 0 {
+		t.Errorf("heartbeat still running after Run: %d -> %d (after finish: %d)", hb1, hb2, e.jobs.hbAfterFinish)
+	}
+	calls := e.gen.callCount()
+	if err := e.w.Run(context.Background(), e.jobID); err != nil || e.gen.callCount() != calls {
+		t.Errorf("duplicate Run did work: err=%v calls %d -> %d", err, calls, e.gen.callCount())
+	}
+}
+
+func TestRunRecoversPanicWithUsage(t *testing.T) {
+	e := newWEnv(t, map[string]int{"1": 1, "2": 1})
+	e.gen.fn = func(ctx context.Context, in GenInput) (GenOutput, error) {
+		if in.Marks == 2 {
+			panic("boom")
+		}
+		out := defaultOut(in)
+		out.Usage = Usage{Input: 4_000, Output: 500}
+		return out, nil
+	}
+	e.run(t)
+	m, _ := LookupModel("claude-haiku-4-5")
+	want := CostMicros(m, Usage{Input: 4_000, Output: 500})
+	if len(e.jobs.spend) != 1 || e.jobs.spend[0] != want {
+		t.Fatalf("spend = %v, want [%d]", e.jobs.spend, want)
+	}
+	if j := e.job(t); j.Status != store.JobFailed || j.Usage.CostMicros != want || j.Usage.Calls != 1 {
+		t.Errorf("job = %s usage=%+v", j.Status, j.Usage)
+	}
+}
