@@ -238,6 +238,17 @@ func statusOf(m map[string]types.AttributeValue) string {
 	return ""
 }
 
+// precondErr is the refusal for an attempt whose status does not allow the write.
+func precondErr(status string) error {
+	switch status {
+	case store.AttemptSubmitted:
+		return store.ErrSubmitted
+	case store.AttemptDeclined:
+		return store.ErrDeclined
+	}
+	return fmt.Errorf("%w: attempt is %s", store.ErrPrecondition, status)
+}
+
 var statusName = map[string]string{"#st": "status"}
 
 // Save is up to two conditional writes. The common one (in_progress) sets answers, lastIdx
@@ -257,32 +268,39 @@ func (s *Stores) Save(ctx context.Context, examID, userID string, answers map[st
 	}
 	idx, _ := attributevalue.Marshal(lastIdx)
 	ts := sv(fmtTime(now))
-	// Autosaves are the common case, so try the in_progress form first.
-	_, ok, old, err := s.condUpdate(ctx, examID, userID, "#st = :ip",
-		"SET savedAt = :t, answers = :a, lastIdx = :i, startedAt = if_not_exists(startedAt, :t)", statusName,
-		map[string]types.AttributeValue{":ip": sv(store.AttemptInProgress), ":t": ts, ":a": ans, ":i": idx}, false)
-	if err != nil {
-		return fmt.Errorf("dynamo: save attempt: %w", err)
+	// Autosaves are the common case, so try the in_progress form first. The start form can
+	// lose a race to another first save or a Reveal, which leaves the attempt in_progress and
+	// still writable; then the in_progress form is tried again.
+	for attempt := 0; attempt < maxSaveAttempts; attempt++ {
+		_, ok, old, err := s.condUpdate(ctx, examID, userID, "#st = :ip",
+			"SET savedAt = :t, answers = :a, lastIdx = :i, startedAt = if_not_exists(startedAt, :t)", statusName,
+			map[string]types.AttributeValue{":ip": sv(store.AttemptInProgress), ":t": ts, ":a": ans, ":i": idx}, false)
+		if err != nil {
+			return fmt.Errorf("dynamo: save attempt: %w", err)
+		}
+		if ok {
+			return nil
+		}
+		if len(old) == 0 {
+			return store.ErrNotFound
+		}
+		_, ok, old, err = s.condUpdate(ctx, examID, userID, "#st = :ns",
+			"SET #st = :ip, startedAt = :t, savedAt = :t, answers = :a, lastIdx = :i", statusName,
+			map[string]types.AttributeValue{":ns": sv(store.AttemptNotStarted), ":ip": sv(store.AttemptInProgress), ":t": ts, ":a": ans, ":i": idx}, false)
+		if err != nil {
+			return fmt.Errorf("dynamo: save attempt: %w", err)
+		}
+		if ok {
+			return nil
+		}
+		if len(old) == 0 {
+			return store.ErrNotFound
+		}
+		if statusOf(old) != store.AttemptInProgress {
+			return precondErr(statusOf(old))
+		}
 	}
-	if ok {
-		return nil
-	}
-	if len(old) == 0 {
-		return store.ErrNotFound
-	}
-	_, ok, old, err = s.condUpdate(ctx, examID, userID, "#st = :ns",
-		"SET #st = :ip, startedAt = :t, savedAt = :t, answers = :a, lastIdx = :i", statusName,
-		map[string]types.AttributeValue{":ns": sv(store.AttemptNotStarted), ":ip": sv(store.AttemptInProgress), ":t": ts, ":a": ans, ":i": idx}, false)
-	if err != nil {
-		return fmt.Errorf("dynamo: save attempt: %w", err)
-	}
-	if ok {
-		return nil
-	}
-	if len(old) == 0 {
-		return store.ErrNotFound
-	}
-	return fmt.Errorf("%w: attempt is %s", store.ErrPrecondition, statusOf(old))
+	return errors.New("dynamo: save attempt: too much contention")
 }
 
 func (s *Stores) Submit(ctx context.Context, a store.Attempt) error {
@@ -300,7 +318,12 @@ func (s *Stores) Submit(ctx context.Context, a store.Attempt) error {
 	vals := map[string]types.AttributeValue{":sub": sv(store.AttemptSubmitted), ":dec": sv(store.AttemptDeclined), ":a": ans, ":i": idx,
 		":auto": &types.AttributeValueMemberBOOL{Value: a.AutoSubmitted}}
 	set := "#st = :sub, answers = :a, lastIdx = :i, autoSubmitted = :auto"
-	add := func(attr, ph string, v types.AttributeValue) { set += ", " + attr + " = " + ph; vals[ph] = v }
+	add := func(attr, rhs string, v types.AttributeValue) {
+		set += ", " + attr + " = " + rhs
+		if v != nil {
+			vals[rhs] = v
+		}
+	}
 	if a.ScoreHalves != nil {
 		v, _ := attributevalue.Marshal(*a.ScoreHalves)
 		add("scoreHalves", ":sh", v)
@@ -316,8 +339,8 @@ func (s *Stores) Submit(ctx context.Context, a store.Attempt) error {
 		add("savedAt", ":svd", sv(fmtTime(*a.SavedAt)))
 	}
 	if a.StartedAt != nil {
-		add("startedAt", ":sta", sv(fmtTime(*a.StartedAt)))
-		set = set[:len(set)-len(", startedAt = :sta")] + ", startedAt = if_not_exists(startedAt, :sta)"
+		add("startedAt", "if_not_exists(startedAt, :sta)", nil)
+		vals[":sta"] = sv(fmtTime(*a.StartedAt))
 	}
 	_, ok, old, err := s.condUpdate(ctx, a.ExamID, a.UserID, "attribute_exists(examId) AND #st <> :sub AND #st <> :dec", "SET "+set, statusName, vals, false)
 	if err != nil {
@@ -329,7 +352,7 @@ func (s *Stores) Submit(ctx context.Context, a store.Attempt) error {
 	if len(old) == 0 {
 		return store.ErrNotFound
 	}
-	return fmt.Errorf("%w: attempt is %s", store.ErrPrecondition, statusOf(old))
+	return precondErr(statusOf(old))
 }
 
 func (s *Stores) Decline(ctx context.Context, examID, userID string) error {
@@ -350,16 +373,19 @@ func (s *Stores) Decline(ctx context.Context, examID, userID string) error {
 	case statusOf(old) == store.AttemptDeclined:
 		return nil
 	}
-	return fmt.Errorf("%w: attempt is %s", store.ErrPrecondition, statusOf(old))
+	return precondErr(statusOf(old))
 }
 
-const maxRevealAttempts = 3
+const (
+	maxRevealAttempts = 3
+	maxSaveAttempts   = 3
+)
 
 // Reveal appends questionID to revealed with a conditional update (size(revealed) < max and
 // the question not already in it). A not_started attempt is started by the same write. When
 // the condition fails the row is re-read to say why; a lost race with another reveal loops
 // (bounded) and is then judged on fresh state.
-func (s *Stores) Reveal(ctx context.Context, examID, userID, questionID string, max int) (store.RevealResult, error) {
+func (s *Stores) Reveal(ctx context.Context, examID, userID, questionID string, max int, now time.Time) (store.RevealResult, error) {
 	if examID == "" || userID == "" || questionID == "" {
 		return store.RevealResult{}, store.ErrNotFound
 	}
@@ -367,11 +393,9 @@ func (s *Stores) Reveal(ctx context.Context, examID, userID, questionID string, 
 	qList := &types.AttributeValueMemberL{Value: []types.AttributeValue{sv(questionID)}}
 	guard := " AND size(revealed) < :max AND NOT contains(revealed, :q)"
 	for attempt := 0; attempt < maxRevealAttempts; attempt++ {
-		// Not started: the same write starts the attempt.
-		out, ok, old, err := s.condUpdate(ctx, examID, userID, "#st = :ns"+guard,
-			"SET #st = :ip, startedAt = :t, savedAt = :t, revealed = list_append(revealed, :l)", statusName,
-			map[string]types.AttributeValue{":ns": sv(store.AttemptNotStarted), ":ip": sv(store.AttemptInProgress), ":t": sv(fmtTime(s.Now())),
-				":max": maxAV, ":q": sv(questionID), ":l": qList}, true)
+		out, ok, old, err := s.condUpdate(ctx, examID, userID, "#st = :ip"+guard,
+			"SET revealed = list_append(revealed, :l)", statusName,
+			map[string]types.AttributeValue{":ip": sv(store.AttemptInProgress), ":max": maxAV, ":q": sv(questionID), ":l": qList}, true)
 		if err != nil {
 			return store.RevealResult{}, fmt.Errorf("dynamo: reveal: %w", err)
 		}
@@ -379,9 +403,11 @@ func (s *Stores) Reveal(ctx context.Context, examID, userID, questionID string, 
 			return store.RevealResult{}, store.ErrNotFound
 		}
 		if !ok {
-			out, ok, _, err = s.condUpdate(ctx, examID, userID, "#st = :ip"+guard,
-				"SET revealed = list_append(revealed, :l)", statusName,
-				map[string]types.AttributeValue{":ip": sv(store.AttemptInProgress), ":max": maxAV, ":q": sv(questionID), ":l": qList}, true)
+			// Not started: the same write starts the attempt (no answers were saved, so no savedAt).
+			out, ok, _, err = s.condUpdate(ctx, examID, userID, "#st = :ns"+guard,
+				"SET #st = :ip, startedAt = :t, revealed = list_append(revealed, :l)", statusName,
+				map[string]types.AttributeValue{":ns": sv(store.AttemptNotStarted), ":ip": sv(store.AttemptInProgress), ":t": sv(fmtTime(now)),
+					":max": maxAV, ":q": sv(questionID), ":l": qList}, true)
 			if err != nil {
 				return store.RevealResult{}, fmt.Errorf("dynamo: reveal: %w", err)
 			}
@@ -404,7 +430,7 @@ func (s *Stores) Reveal(ctx context.Context, examID, userID, questionID string, 
 			return store.RevealResult{Revealed: a.Revealed}, nil
 		}
 		if a.Status != store.AttemptNotStarted && a.Status != store.AttemptInProgress {
-			return store.RevealResult{}, fmt.Errorf("%w: attempt is %s", store.ErrPrecondition, a.Status)
+			return store.RevealResult{}, precondErr(a.Status)
 		}
 		if len(a.Revealed) >= max {
 			return store.RevealResult{}, fmt.Errorf("%w: no peeks left", store.ErrConflict)

@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"fmt"
 	"time"
 )
 
@@ -31,6 +32,13 @@ const (
 	AttemptInProgress = "in_progress"
 	AttemptSubmitted  = "submitted"
 	AttemptDeclined   = "declined"
+)
+
+// ErrSubmitted and ErrDeclined say why a write was refused; both satisfy
+// errors.Is(err, ErrPrecondition), so callers that do not care keep working.
+var (
+	ErrSubmitted = fmt.Errorf("%w: attempt is submitted", ErrPrecondition)
+	ErrDeclined  = fmt.Errorf("%w: attempt is declined", ErrPrecondition)
 )
 
 // MaxListByCreator caps ListByCreator results.
@@ -77,8 +85,9 @@ type ExamStore interface {
 	GetExam(ctx context.Context, id string) (Exam, error)
 	// GetExams returns found exams keyed by ID; missing ones are omitted.
 	GetExams(ctx context.Context, ids []string) (map[string]Exam, error)
-	// ListByCreator returns the creator's exams newest first (ID descending; IDs are
-	// time-ordered ULIDs), at most MaxListByCreator (limit <= 0 or above means the cap).
+	// ListByCreator returns the creator's exams newest first (CreatedAt descending, ties by ID
+	// descending; IDs may be client-chosen UUIDs, so they do not order by time), at most
+	// MaxListByCreator (limit <= 0 or above means the cap).
 	ListByCreator(ctx context.Context, creatorID string, limit int) ([]ExamSummary, error)
 }
 
@@ -96,8 +105,8 @@ type AttemptStore interface {
 	ListByExam(ctx context.Context, examID string) ([]Attempt, error)
 	// Save stores answers and the last question index. The first save of a not_started attempt
 	// starts it (status in_progress, StartedAt = now); later saves change only answers,
-	// LastQuestionIndex and SavedAt. ErrNotFound if missing; ErrPrecondition if the attempt is
-	// submitted or declined.
+	// LastQuestionIndex and SavedAt. ErrNotFound if missing; ErrSubmitted or ErrDeclined (both
+	// ErrPrecondition) if the attempt is submitted or declined.
 	Save(ctx context.Context, examID, userID string, answers map[string]string, lastIdx int, now time.Time) error
 	// Submit writes the final state of a (Status, Answers, LastQuestionIndex, scores,
 	// SubmittedAt, SavedAt, AutoSubmitted; StartedAt only if the stored one is unset; never
@@ -109,7 +118,8 @@ type AttemptStore interface {
 	// Reveal atomically records questionID as revealed if it is not yet and fewer than max
 	// are revealed, starting a not_started attempt. Already revealed: success, Charged=false,
 	// even at the cap. ErrConflict when the cap is reached; ErrPrecondition when the attempt
-	// is submitted or declined; ErrNotFound if missing. Whether the exam is open, the
+	// is submitted (ErrSubmitted) or declined (ErrDeclined); ErrNotFound if missing. A reveal starts a
+	// not_started attempt (StartedAt = now) but does not set SavedAt. Whether the exam is open, the
 	// question exists and max > 0 are the caller's checks.
-	Reveal(ctx context.Context, examID, userID, questionID string, max int) (RevealResult, error)
+	Reveal(ctx context.Context, examID, userID, questionID string, max int, now time.Time) (RevealResult, error)
 }

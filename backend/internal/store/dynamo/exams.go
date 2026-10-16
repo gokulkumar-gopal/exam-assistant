@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/feature/dynamodb/attributevalue"
@@ -135,8 +136,20 @@ func (s *Stores) GetExams(ctx context.Context, ids []string) (map[string]store.E
 	return out, nil
 }
 
-// ListByCreator queries creator-index (sort key id, a ULID) newest first with Limit 50.
-// GSIs do not support consistent reads, so an exam created a moment ago may be missing.
+// maxCreatorPages bounds the creator-index pagination (about 5,000 exams per 1 MB page).
+const maxCreatorPages = 20
+
+// ListByCreator returns the creator's newest exams, CreatedAt descending with ID descending
+// as the tie-break, at most limit (capped at 50).
+//
+// creator-index is sorted by id (spec 6.2), and exam IDs may be client-chosen UUIDs
+// (Idempotency-Key), so id order is not creation order and a Limit-50 query could miss
+// today's exams. This therefore reads the creator's whole index partition (following
+// LastEvaluatedKey, bounded) and sorts in memory. Cost: one RCU per ~4 KB of summaries,
+// so a creator with a few hundred exams costs a handful of RCUs per call; the list is
+// small and rarely read. Making createdAt the index sort key would make Limit exact; that
+// is a spec 6.2 change for the owner. GSIs do not support consistent reads, so an exam
+// created a moment ago may be missing.
 func (s *Stores) ListByCreator(ctx context.Context, creatorID string, limit int) ([]store.ExamSummary, error) {
 	if limit <= 0 || limit > store.MaxListByCreator {
 		limit = store.MaxListByCreator
@@ -144,33 +157,48 @@ func (s *Stores) ListByCreator(ctx context.Context, creatorID string, limit int)
 	if creatorID == "" {
 		return nil, nil
 	}
-	res, err := s.api.Query(ctx, &dynamodb.QueryInput{
+	q := dynamodb.QueryInput{
 		TableName: &s.exams, IndexName: ptr("creator-index"),
 		KeyConditionExpression:    ptr("creatorId = :c"),
 		ExpressionAttributeValues: map[string]types.AttributeValue{":c": &types.AttributeValueMemberS{Value: creatorID}},
 		ScanIndexForward:          ptr(false),
-		Limit:                     ptr(int32(limit)),
-	})
-	if err != nil {
-		return nil, fmt.Errorf("dynamo: list exams by creator: %w", err)
 	}
 	var out []store.ExamSummary
-	for _, m := range res.Items {
-		var it examSummaryItem
-		if err := attributevalue.UnmarshalMap(m, &it); err != nil {
-			return nil, fmt.Errorf("dynamo: decode exam summary: %w", err)
+	for page := 0; ; page++ {
+		if page >= maxCreatorPages {
+			return nil, fmt.Errorf("dynamo: list exams by creator: more than %d index pages", maxCreatorPages)
 		}
-		closes, err := parseTime("closesAt", it.ClosesAt)
+		res, err := s.api.Query(ctx, &q)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("dynamo: list exams by creator: %w", err)
 		}
-		created, err := parseTime("createdAt", it.CreatedAt)
-		if err != nil {
-			return nil, err
+		for _, m := range res.Items {
+			var it examSummaryItem
+			if err := attributevalue.UnmarshalMap(m, &it); err != nil {
+				return nil, fmt.Errorf("dynamo: decode exam summary: %w", err)
+			}
+			closes, err := parseTime("closesAt", it.ClosesAt)
+			if err != nil {
+				return nil, err
+			}
+			created, err := parseTime("createdAt", it.CreatedAt)
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, store.ExamSummary{ID: it.ID, CreatorID: it.CreatorID, Title: it.Title, Type: it.Type,
+				TotalMarks: it.TotalMarks, ClosesAt: closes, CreatedAt: created})
 		}
-		out = append(out, store.ExamSummary{ID: it.ID, CreatorID: it.CreatorID, Title: it.Title, Type: it.Type,
-			TotalMarks: it.TotalMarks, ClosesAt: closes, CreatedAt: created})
+		if len(res.LastEvaluatedKey) == 0 {
+			break
+		}
+		q.ExclusiveStartKey = res.LastEvaluatedKey
 	}
+	sort.Slice(out, func(i, j int) bool {
+		if !out[i].CreatedAt.Equal(out[j].CreatedAt) {
+			return out[i].CreatedAt.After(out[j].CreatedAt)
+		}
+		return out[i].ID > out[j].ID
+	})
 	if len(out) > limit {
 		out = out[:limit]
 	}

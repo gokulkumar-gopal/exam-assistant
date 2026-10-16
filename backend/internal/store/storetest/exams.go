@@ -38,6 +38,7 @@ func RunExamStoreSuite(t *testing.T, f ExamFactory) {
 	t.Run("GetExamRoundTripAndNotFound", func(t *testing.T) { GetExamRoundTripAndNotFound(t, f) })
 	t.Run("GetExamsOmitsMissingAndHandlesMoreThan100", func(t *testing.T) { GetExamsOmitsMissingAndHandlesMoreThan100(t, f) })
 	t.Run("CreatorListNewestFirstCap50", func(t *testing.T) { CreatorListNewestFirstCap50(t, f) })
+	t.Run("CreatorListOrdersByCreatedAtNotID", func(t *testing.T) { CreatorListOrdersByCreatedAtNotID(t, f) })
 	t.Run("CreatorListSummaryFieldsAndScope", func(t *testing.T) { CreatorListSummaryFieldsAndScope(t, f) })
 }
 
@@ -53,6 +54,9 @@ func RunAttemptStoreSuite(t *testing.T, f AttemptFactory) {
 	t.Run("ListByExamOrdered", func(t *testing.T) { ListByExamOrdered(t, f) })
 	t.Run("RevealChargesOnceAndRespectsMax", func(t *testing.T) { RevealChargesOnceAndRespectsMax(t, f) })
 	t.Run("RevealStartsAndGuardsState", func(t *testing.T) { RevealStartsAndGuardsState(t, f) })
+	t.Run("SubmitRefusedOnDeclinedAndKeepsStartedAt", func(t *testing.T) { SubmitRefusedOnDeclinedAndKeepsStartedAt(t, f) })
+	t.Run("ErrorsDistinguishSubmittedFromDeclined", func(t *testing.T) { ErrorsDistinguishSubmittedFromDeclined(t, f) })
+	t.Run("ConcurrentFirstSavesAndRevealAllSucceed", func(t *testing.T) { ConcurrentFirstSavesAndRevealAllSucceed(t, f) })
 	t.Run("RevealRaceNeverExceedsMax", func(t *testing.T) { RevealRaceNeverExceedsMax(t, f) })
 }
 
@@ -216,7 +220,7 @@ func SaveKeepsRevealedAndMissingIsNotFound(t *testing.T, f AttemptFactory) {
 	s := f(t)
 	is(t, s.Save(ctx, "e1", "u1", nil, 0, T0), store.ErrNotFound)
 	_, _ = s.PutAttemptIfAbsent(ctx, att("e1", "u1"))
-	_, err := s.Reveal(ctx, "e1", "u1", "q1", 3)
+	_, err := s.Reveal(ctx, "e1", "u1", "q1", 3, T0)
 	noErr(t, err)
 	noErr(t, s.Save(ctx, "e1", "u1", map[string]string{"q1": "a"}, 1, T0.Add(time.Minute)))
 	got, _ := s.GetAttempt(ctx, "e1", "u1")
@@ -256,7 +260,7 @@ func SubmitConditionalAndScores(t *testing.T, f AttemptFactory) {
 	s := f(t)
 	is(t, s.Submit(ctx, att("e1", "u1")), store.ErrNotFound)
 	_, _ = s.PutAttemptIfAbsent(ctx, att("e1", "u1"))
-	_, _ = s.Reveal(ctx, "e1", "u1", "q2", 3)
+	_, _ = s.Reveal(ctx, "e1", "u1", "q2", 3, T0)
 	two, three := 3, 4
 	sat := T0.Add(time.Hour)
 	a := att("e1", "u1")
@@ -275,7 +279,7 @@ func SubmitConditionalAndScores(t *testing.T, f AttemptFactory) {
 		t.Fatalf("submitted: %+v", got)
 	}
 	is(t, s.Submit(ctx, a), store.ErrPrecondition)
-	_, err = s.Reveal(ctx, "e1", "u1", "q1", 3)
+	_, err = s.Reveal(ctx, "e1", "u1", "q1", 3, T0)
 	is(t, err, store.ErrPrecondition)
 }
 
@@ -328,51 +332,61 @@ func ListByExamOrdered(t *testing.T, f AttemptFactory) {
 func RevealChargesOnceAndRespectsMax(t *testing.T, f AttemptFactory) {
 	s := f(t)
 	_, _ = s.PutAttemptIfAbsent(ctx, att("e1", "u1"))
-	r, err := s.Reveal(ctx, "e1", "u1", "q1", 2)
+	r, err := s.Reveal(ctx, "e1", "u1", "q1", 2, T0)
 	noErr(t, err)
 	if !r.Charged || !reflect.DeepEqual(r.Revealed, []string{"q1"}) {
 		t.Fatalf("first: %+v", r)
 	}
-	r, err = s.Reveal(ctx, "e1", "u1", "q1", 2)
+	r, err = s.Reveal(ctx, "e1", "u1", "q1", 2, T0)
 	noErr(t, err)
 	if r.Charged || !reflect.DeepEqual(r.Revealed, []string{"q1"}) {
 		t.Fatalf("repeat: %+v", r)
 	}
-	r, err = s.Reveal(ctx, "e1", "u1", "q2", 2)
+	r, err = s.Reveal(ctx, "e1", "u1", "q2", 2, T0)
 	noErr(t, err)
 	if !r.Charged || !reflect.DeepEqual(r.Revealed, []string{"q1", "q2"}) {
 		t.Fatalf("second: %+v", r)
 	}
-	_, err = s.Reveal(ctx, "e1", "u1", "q3", 2)
+	_, err = s.Reveal(ctx, "e1", "u1", "q3", 2, T0)
 	is(t, err, store.ErrConflict)
-	r, err = s.Reveal(ctx, "e1", "u1", "q2", 2) // already revealed is free even at the cap
+	r, err = s.Reveal(ctx, "e1", "u1", "q2", 2, T0) // already revealed is free even at the cap
 	noErr(t, err)
 	if r.Charged || len(r.Revealed) != 2 {
 		t.Fatalf("repeat at cap: %+v", r)
 	}
-	_, err = s.Reveal(ctx, "e1", "u1", "q1", 0)
+	_, err = s.Reveal(ctx, "e1", "u1", "q1", 0, T0)
 	noErr(t, err) // already revealed beats a zero max: the store enforces only the cap on new reveals
 }
 
 func RevealStartsAndGuardsState(t *testing.T, f AttemptFactory) {
 	s := f(t)
-	_, err := s.Reveal(ctx, "e1", "u1", "q1", 3)
+	_, err := s.Reveal(ctx, "e1", "u1", "q1", 3, T0)
 	is(t, err, store.ErrNotFound)
 	_, _ = s.PutAttemptIfAbsent(ctx, att("e1", "u1"))
-	_, err = s.Reveal(ctx, "e1", "u1", "q1", 0)
+	_, err = s.Reveal(ctx, "e1", "u1", "q1", 0, T0)
 	is(t, err, store.ErrConflict)
 	if got, _ := s.GetAttempt(ctx, "e1", "u1"); got.Status != store.AttemptNotStarted {
 		t.Fatalf("refused reveal started the attempt: %+v", got)
 	}
-	_, err = s.Reveal(ctx, "e1", "u1", "q1", 3)
+	at := T0.Add(7 * time.Minute)
+	_, err = s.Reveal(ctx, "e1", "u1", "q1", 3, at)
 	noErr(t, err)
 	got, _ := s.GetAttempt(ctx, "e1", "u1")
-	if got.Status != store.AttemptInProgress || got.StartedAt == nil {
-		t.Fatalf("reveal must start the attempt: %+v", got)
+	if got.Status != store.AttemptInProgress || got.StartedAt == nil || !got.StartedAt.Equal(at) {
+		t.Fatalf("reveal must start the attempt at the given time: %+v", got)
+	}
+	if got.SavedAt != nil {
+		t.Fatalf("reveal saved no answers, so SavedAt must stay unset: %v", got.SavedAt)
+	}
+	// A later reveal on a started attempt leaves StartedAt alone.
+	_, err = s.Reveal(ctx, "e1", "u1", "q2", 3, at.Add(time.Hour))
+	noErr(t, err)
+	if got, _ = s.GetAttempt(ctx, "e1", "u1"); !got.StartedAt.Equal(at) || got.SavedAt != nil {
+		t.Fatalf("second reveal: %+v", got)
 	}
 	_, _ = s.PutAttemptIfAbsent(ctx, att("e2", "u1"))
 	noErr(t, s.Decline(ctx, "e2", "u1"))
-	_, err = s.Reveal(ctx, "e2", "u1", "q1", 3)
+	_, err = s.Reveal(ctx, "e2", "u1", "q1", 3, T0)
 	is(t, err, store.ErrPrecondition)
 }
 
@@ -385,7 +399,7 @@ func RevealRaceNeverExceedsMax(t *testing.T, f AttemptFactory) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			r, err := s.Reveal(ctx, "e1", "u1", fmt.Sprintf("q%d", i), 3)
+			r, err := s.Reveal(ctx, "e1", "u1", fmt.Sprintf("q%d", i), 3, T0)
 			switch {
 			case err == nil && r.Charged:
 				charged.Add(1)
@@ -400,5 +414,135 @@ func RevealRaceNeverExceedsMax(t *testing.T, f AttemptFactory) {
 	got, _ := s.GetAttempt(ctx, "e1", "u1")
 	if charged.Load() != 3 || conflicts.Load() != 17 || len(got.Revealed) != 3 {
 		t.Fatalf("charged %d conflicts %d revealed %v", charged.Load(), conflicts.Load(), got.Revealed)
+	}
+}
+
+// UUID-like ids (the frontend's Idempotency-Key) do not sort with creation time.
+func CreatorListOrdersByCreatedAtNotID(t *testing.T, f ExamFactory) {
+	s := f(t)
+	for i := 0; i < 60; i++ {
+		e := exam(fmt.Sprintf("f%02dc1-uuid-old-%02d", 99-i, i), "u1") // old exams have the largest ids
+		e.CreatedAt = T0.Add(time.Duration(i) * time.Hour)
+		noErr(t, s.PutExam(ctx, e))
+	}
+	today := exam("0001-uuid-today", "u1") // smallest id, newest exam
+	today.CreatedAt = T0.Add(100 * time.Hour)
+	noErr(t, s.PutExam(ctx, today))
+	// Mixed ULID-like id, same instant as an existing exam: ties break by id descending.
+	tie := exam("01JULID", "u1")
+	tie.CreatedAt = T0.Add(59 * time.Hour)
+	noErr(t, s.PutExam(ctx, tie))
+	got, err := s.ListByCreator(ctx, "u1", 100)
+	noErr(t, err)
+	if len(got) != 50 || got[0].ID != "0001-uuid-today" {
+		t.Fatalf("len %d first %v", len(got), got[0].ID)
+	}
+	for i := 1; i < len(got); i++ {
+		a, b := got[i-1], got[i]
+		if a.CreatedAt.Before(b.CreatedAt) || (a.CreatedAt.Equal(b.CreatedAt) && a.ID < b.ID) {
+			t.Fatalf("not newest first at %d: %s (%v) before %s (%v)", i, a.ID, a.CreatedAt, b.ID, b.CreatedAt)
+		}
+	}
+	if got[1].CreatedAt != tie.CreatedAt && !got[1].CreatedAt.Equal(tie.CreatedAt) {
+		t.Fatalf("second = %+v", got[1])
+	}
+	if !got[2].CreatedAt.Equal(tie.CreatedAt) || got[1].ID < got[2].ID {
+		t.Fatalf("tie order: %s then %s", got[1].ID, got[2].ID)
+	}
+	three, err := s.ListByCreator(ctx, "u1", 3)
+	noErr(t, err)
+	if len(three) != 3 || three[0].ID != "0001-uuid-today" {
+		t.Fatalf("limit 3: %+v", three)
+	}
+}
+
+func SubmitRefusedOnDeclinedAndKeepsStartedAt(t *testing.T, f AttemptFactory) {
+	s := f(t)
+	_, _ = s.PutAttemptIfAbsent(ctx, att("e1", "u1"))
+	noErr(t, s.Decline(ctx, "e1", "u1"))
+	sub := att("e1", "u1")
+	sub.Status = store.AttemptSubmitted
+	is(t, s.Submit(ctx, sub), store.ErrPrecondition)
+	if got, _ := s.GetAttempt(ctx, "e1", "u1"); got.Status != store.AttemptDeclined {
+		t.Fatalf("submit changed a declined attempt: %+v", got)
+	}
+
+	_, _ = s.PutAttemptIfAbsent(ctx, att("e2", "u1"))
+	first := T0.Add(time.Minute)
+	noErr(t, s.Save(ctx, "e2", "u1", map[string]string{}, 0, first))
+	sub = att("e2", "u1")
+	later := T0.Add(time.Hour)
+	sub.StartedAt, sub.SubmittedAt = &later, &later
+	noErr(t, s.Submit(ctx, sub))
+	got, _ := s.GetAttempt(ctx, "e2", "u1")
+	if got.StartedAt == nil || !got.StartedAt.Equal(first) {
+		t.Fatalf("submit overwrote startedAt: %v", got.StartedAt)
+	}
+	// An attempt never started takes the submit's StartedAt.
+	_, _ = s.PutAttemptIfAbsent(ctx, att("e3", "u1"))
+	sub = att("e3", "u1")
+	sub.StartedAt = &later
+	noErr(t, s.Submit(ctx, sub))
+	got, _ = s.GetAttempt(ctx, "e3", "u1")
+	if got.StartedAt == nil || !got.StartedAt.Equal(later) {
+		t.Fatalf("startedAt = %v", got.StartedAt)
+	}
+}
+
+func ErrorsDistinguishSubmittedFromDeclined(t *testing.T, f AttemptFactory) {
+	s := f(t)
+	_, _ = s.PutAttemptIfAbsent(ctx, att("sub", "u1"))
+	_, _ = s.PutAttemptIfAbsent(ctx, att("dec", "u1"))
+	sub := att("sub", "u1")
+	noErr(t, s.Submit(ctx, sub))
+	noErr(t, s.Decline(ctx, "dec", "u1"))
+	writes := map[string]func(exam string) error{
+		"Save":   func(e string) error { return s.Save(ctx, e, "u1", nil, 0, T0) },
+		"Submit": func(e string) error { return s.Submit(ctx, att(e, "u1")) },
+		"Reveal": func(e string) error { _, err := s.Reveal(ctx, e, "u1", "q1", 3, T0); return err },
+	}
+	for name, w := range writes {
+		err := w("sub")
+		if !errors.Is(err, store.ErrSubmitted) || errors.Is(err, store.ErrDeclined) || !errors.Is(err, store.ErrPrecondition) {
+			t.Errorf("%s on submitted: %v", name, err)
+		}
+		err = w("dec")
+		if !errors.Is(err, store.ErrDeclined) || errors.Is(err, store.ErrSubmitted) || !errors.Is(err, store.ErrPrecondition) {
+			t.Errorf("%s on declined: %v", name, err)
+		}
+	}
+	if err := s.Decline(ctx, "sub", "u1"); !errors.Is(err, store.ErrSubmitted) {
+		t.Errorf("Decline on submitted: %v", err)
+	}
+}
+
+// Concurrent first saves, and a first save racing a Reveal (which also starts the attempt),
+// must all succeed: the attempt stays writable throughout.
+func ConcurrentFirstSavesAndRevealAllSucceed(t *testing.T, f AttemptFactory) {
+	for round := 0; round < 40; round++ {
+		s := f(t)
+		_, _ = s.PutAttemptIfAbsent(ctx, att("e1", "u1"))
+		var wg sync.WaitGroup
+		for i := 0; i < 6; i++ {
+			wg.Add(1)
+			go func(i int) {
+				defer wg.Done()
+				if err := s.Save(ctx, "e1", "u1", map[string]string{"q1": "a"}, i, T0.Add(time.Duration(i)*time.Second)); err != nil {
+					t.Errorf("round %d save %d: %v", round, i, err)
+				}
+			}(i)
+		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, err := s.Reveal(ctx, "e1", "u1", "q1", 3, T0); err != nil {
+				t.Errorf("round %d reveal: %v", round, err)
+			}
+		}()
+		wg.Wait()
+		got, _ := s.GetAttempt(ctx, "e1", "u1")
+		if got.Status != store.AttemptInProgress || got.StartedAt == nil || len(got.Revealed) != 1 {
+			t.Fatalf("round %d: %+v", round, got)
+		}
 	}
 }

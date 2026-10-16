@@ -42,8 +42,11 @@ type fakeDynamo struct {
 	failTx            error // returned by TransactWriteItems failTxCount times (once when 0)
 	failTxCount       int
 	upds              []*dynamodb.UpdateItemInput
-	failUpdate        error // returned by UpdateItem failUpdateCount times (once when 0), before any write
-	failUpdateCount   int
+	// beforeUpdate, when set, runs at the start of every UpdateItem with the fake's lock held
+	// (it may edit f.tables directly), to inject a concurrent writer between two calls.
+	beforeUpdate    func(f *fakeDynamo, in *dynamodb.UpdateItemInput)
+	failUpdate      error // returned by UpdateItem failUpdateCount times (once when 0), before any write
+	failUpdateCount int
 	// queryPageSize, when > 0, caps the items one Query evaluates, to exercise pagination.
 	queryPageSize int
 	indexes       map[string]indexDef
@@ -363,6 +366,9 @@ func (f *fakeDynamo) UpdateItem(_ context.Context, in *dynamodb.UpdateItemInput,
 	defer f.mu.Unlock()
 	f.calls = append(f.calls, "UpdateItem")
 	f.upds = append(f.upds, in)
+	if f.beforeUpdate != nil {
+		f.beforeUpdate(f, in)
+	}
 	if f.failUpdate != nil {
 		err := f.failUpdate
 		if f.failUpdateCount > 1 {

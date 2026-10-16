@@ -113,8 +113,11 @@ func (s *AttemptStore) writable(examID, userID string) (store.Attempt, error) {
 	if !ok {
 		return a, store.ErrNotFound
 	}
-	if a.Status != store.AttemptNotStarted && a.Status != store.AttemptInProgress {
-		return a, store.ErrPrecondition
+	switch a.Status {
+	case store.AttemptSubmitted:
+		return a, store.ErrSubmitted
+	case store.AttemptDeclined:
+		return a, store.ErrDeclined
 	}
 	return a, nil
 }
@@ -180,10 +183,13 @@ func (s *AttemptStore) Decline(_ context.Context, examID, userID string) error {
 		s.attempts[k] = a
 		return nil
 	}
+	if a.Status == store.AttemptSubmitted {
+		return store.ErrSubmitted
+	}
 	return store.ErrPrecondition
 }
 
-func (s *AttemptStore) Reveal(_ context.Context, examID, userID, questionID string, max int) (store.RevealResult, error) {
+func (s *AttemptStore) Reveal(_ context.Context, examID, userID, questionID string, max int, now time.Time) (store.RevealResult, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	a, err := s.writable(examID, userID)
@@ -196,7 +202,7 @@ func (s *AttemptStore) Reveal(_ context.Context, examID, userID, questionID stri
 	if len(a.Revealed) >= max {
 		return store.RevealResult{}, store.ErrConflict
 	}
-	start(&a, time.Now())
+	start(&a, now)
 	a.Revealed = append(slices.Clone(a.Revealed), questionID)
 	s.attempts[attemptKey{examID, userID}] = a
 	return store.RevealResult{Revealed: slices.Clone(a.Revealed), Charged: true}, nil

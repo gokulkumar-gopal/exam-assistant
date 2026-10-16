@@ -1,6 +1,8 @@
 package dynamo
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"reflect"
 	"regexp"
@@ -101,14 +103,48 @@ func TestGetExamsGivesUpOnPersistentUnprocessed(t *testing.T) {
 	}
 }
 
-func TestListByCreatorQueriesIndexNewestFirstLimit50(t *testing.T) {
+// The creator list reads the whole index partition (no Limit), page by page, so that sorting
+// by createdAt sees every exam; the result is still capped at 50.
+func TestListByCreatorFollowsPagesAndCaps(t *testing.T) {
 	st, f := newStores()
-	_ = st.PutExam(bg, store.Exam{ID: "e1", CreatorID: "u1", CreatedAt: t0, ClosesAt: t0})
-	_, _ = st.ListByCreator(bg, "u1", 500)
-	q := f.qrys[0]
-	if aws.ToString(q.IndexName) != "creator-index" || aws.ToBool(q.ScanIndexForward) || aws.ToInt32(q.Limit) != 50 || f.saw("Scan") != 0 {
-		t.Fatalf("query: %+v", q)
+	for i := 0; i < 70; i++ {
+		_ = st.PutExam(bg, store.Exam{ID: fmt.Sprintf("id-%02d", 69-i), CreatorID: "u1", CreatedAt: t0.Add(time.Duration(i) * time.Minute), ClosesAt: t0})
 	}
+	f.queryPageSize = 7
+	got, err := st.ListByCreator(bg, "u1", 500)
+	if err != nil || len(got) != 50 || got[0].ID != "id-00" {
+		t.Fatalf("len %d first %v err %v", len(got), got[0].ID, err)
+	}
+	if len(f.qrys) != 10 || f.saw("Scan") != 0 {
+		t.Fatalf("queries = %d", len(f.qrys))
+	}
+	for _, q := range f.qrys {
+		if aws.ToString(q.IndexName) != "creator-index" || q.Limit != nil {
+			t.Fatalf("query: %+v", q)
+		}
+	}
+}
+
+func TestListByCreatorPageLoopIsBounded(t *testing.T) {
+	st, f := newStores()
+	_ = st.PutExam(bg, store.Exam{ID: "a", CreatorID: "u1", CreatedAt: t0, ClosesAt: t0})
+	_ = st.PutExam(bg, store.Exam{ID: "b", CreatorID: "u1", CreatedAt: t0, ClosesAt: t0})
+	f.queryPageSize = 1
+	st2 := New(&pagingForever{f}, "test")
+	if _, err := st2.ListByCreator(bg, "u1", 10); err == nil {
+		t.Fatal("unbounded pagination must be an error")
+	}
+}
+
+// pagingForever wraps the fake and always claims there is another page.
+type pagingForever struct{ *fakeDynamo }
+
+func (p *pagingForever) Query(ctx context.Context, in *dynamodb.QueryInput, o ...func(*dynamodb.Options)) (*dynamodb.QueryOutput, error) {
+	out, err := p.fakeDynamo.Query(ctx, in, o...)
+	if err == nil {
+		out.LastEvaluatedKey = map[string]types.AttributeValue{"id": sv("x")}
+	}
+	return out, err
 }
 
 // parseIndexInclude returns the NonKeyAttributes of a GSI plus its key attributes and the
@@ -255,23 +291,28 @@ func TestPutAttemptOmitsAbsentScoresAndTimes(t *testing.T) {
 	}
 }
 
+// DynamoAPI is the only way the stores reach DynamoDB, so the guard against BatchWriteItem
+// and Scan is its method set. The recorder check below covers the fake's call log too.
 func TestNoBatchWriteItemUsed(t *testing.T) {
+	api := reflect.TypeOf((*DynamoAPI)(nil)).Elem()
+	for i := 0; i < api.NumMethod(); i++ {
+		if n := api.Method(i).Name; n == "BatchWriteItem" || n == "Scan" {
+			t.Fatalf("DynamoAPI must not expose %s", n)
+		}
+	}
 	st, f := newStores()
 	for i := 0; i < 5; i++ {
 		id := fmt.Sprintf("e%d", i)
 		_ = st.PutExam(bg, store.Exam{ID: id, CreatorID: "u1", CreatedAt: t0, ClosesAt: t0})
 		_, _ = st.PutAttemptIfAbsent(bg, newAttempt(id, "u1"))
 		_ = st.Save(bg, id, "u1", nil, 0, t0)
-		_, _ = st.Reveal(bg, id, "u1", "q1", 3)
+		_, _ = st.Reveal(bg, id, "u1", "q1", 3, t0)
 		_ = st.Decline(bg, id, "u1")
 		_ = st.Submit(bg, newAttempt(id, "u1"))
 	}
 	_, _ = st.GetExams(bg, []string{"e1", "e2"})
 	_, _ = st.ListByUser(bg, "u1")
 	_, _ = st.ListByCreator(bg, "u1", 5)
-	if f.saw("BatchWriteItem") != 0 || f.saw("Scan") != 0 {
-		t.Fatalf("calls: %v", f.calls)
-	}
 	for _, c := range f.calls {
 		if strings.Contains(c, "BatchWrite") || c == "Scan" {
 			t.Fatalf("forbidden call %s", c)
@@ -279,10 +320,89 @@ func TestNoBatchWriteItemUsed(t *testing.T) {
 	}
 }
 
+// A first save that loses the race to a Reveal (or another first save) between its two
+// conditional writes must retry, not report the attempt as not writable.
+func TestSaveRetriesWhenStartFormLosesRace(t *testing.T) {
+	st, f := newStores()
+	_, _ = st.PutAttemptIfAbsent(bg, newAttempt("e1", "u1"))
+	raced := false
+	f.beforeUpdate = func(f *fakeDynamo, in *dynamodb.UpdateItemInput) {
+		if !raced && strings.Contains(aws.ToString(in.ConditionExpression), "#st = :ns") {
+			raced = true // another writer starts the attempt just before our start form runs
+			f.tables["test-attempts"]["e1\x00u1"]["status"] = sv(store.AttemptInProgress)
+		}
+	}
+	if err := st.Save(bg, "e1", "u1", map[string]string{"q1": "a"}, 1, t0); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	if !raced {
+		t.Fatal("hook did not run")
+	}
+	got, _ := st.GetAttempt(bg, "e1", "u1")
+	if got.Answers["q1"] != "a" || got.Status != store.AttemptInProgress {
+		t.Fatalf("answers lost: %+v", got)
+	}
+}
+
+func TestSaveGivesUpUnderEndlessContention(t *testing.T) {
+	st, f := newStores()
+	_, _ = st.PutAttemptIfAbsent(bg, newAttempt("e1", "u1"))
+	// Every in_progress form sees not_started, every start form sees in_progress: a writer that
+	// flips the row back and forth. The loop must stop, with a plain error.
+	f.beforeUpdate = func(f *fakeDynamo, in *dynamodb.UpdateItemInput) {
+		it := f.tables["test-attempts"]["e1\x00u1"]
+		if strings.Contains(aws.ToString(in.ConditionExpression), "#st = :ns") {
+			it["status"] = sv(store.AttemptInProgress)
+		} else {
+			it["status"] = sv(store.AttemptNotStarted)
+		}
+	}
+	err := st.Save(bg, "e1", "u1", nil, 0, t0)
+	if err == nil || errors.Is(err, store.ErrPrecondition) {
+		t.Fatalf("err = %v", err)
+	}
+	if len(f.upds) != 2*maxSaveAttempts {
+		t.Fatalf("updates = %d", len(f.upds))
+	}
+}
+
+// Reveal loses a race between its two writes: the row becomes in_progress just before the
+// start form runs. The re-read shows a writable attempt, so a second round must succeed.
+func TestRevealRetriesAfterLostRace(t *testing.T) {
+	st, f := newStores()
+	_, _ = st.PutAttemptIfAbsent(bg, newAttempt("e1", "u1"))
+	raced := false
+	f.beforeUpdate = func(f *fakeDynamo, in *dynamodb.UpdateItemInput) {
+		if !raced && strings.Contains(aws.ToString(in.ConditionExpression), "#st = :ns") {
+			raced = true
+			f.tables["test-attempts"]["e1\x00u1"]["status"] = sv(store.AttemptInProgress)
+		}
+	}
+	r, err := st.Reveal(bg, "e1", "u1", "q1", 3, t0)
+	if err != nil || !r.Charged || len(r.Revealed) != 1 {
+		t.Fatalf("%+v %v", r, err)
+	}
+}
+
+func TestRevealAndSubmitDoNotSetSavedAtOrTouchRevealed(t *testing.T) {
+	st, f := newStores()
+	_, _ = st.PutAttemptIfAbsent(bg, newAttempt("e1", "u1"))
+	_, _ = st.Reveal(bg, "e1", "u1", "q1", 3, t0)
+	if _, has := f.tables["test-attempts"]["e1\x00u1"]["savedAt"]; has {
+		t.Fatal("reveal must not set savedAt")
+	}
+	_ = st.Submit(bg, newAttempt("e1", "u1"))
+	for _, u := range f.upds {
+		if strings.Contains(aws.ToString(u.UpdateExpression), "#st = :sub") && strings.Contains(aws.ToString(u.UpdateExpression), "revealed") {
+			t.Fatal("submit must not write revealed")
+		}
+	}
+}
+
 func TestRevealUsesConditionalUpdate(t *testing.T) {
 	st, f := newStores()
 	_, _ = st.PutAttemptIfAbsent(bg, newAttempt("e1", "u1"))
-	if _, err := st.Reveal(bg, "e1", "u1", "q1", 3); err != nil {
+	if _, err := st.Reveal(bg, "e1", "u1", "q1", 3, t0); err != nil {
 		t.Fatal(err)
 	}
 	c := aws.ToString(f.upds[0].ConditionExpression)

@@ -82,8 +82,12 @@ func (s *ExamStore) ListByCreator(_ context.Context, creatorID string, limit int
 				TotalMarks: e.TotalMarks, ClosesAt: e.ClosesAt, CreatedAt: e.CreatedAt})
 		}
 	}
-	// ID descending, like the creator-index (sort key id; ULIDs are time-ordered).
-	sort.Slice(out, func(i, j int) bool { return out[i].ID > out[j].ID })
+	sort.Slice(out, func(i, j int) bool {
+		if !out[i].CreatedAt.Equal(out[j].CreatedAt) {
+			return out[i].CreatedAt.After(out[j].CreatedAt)
+		}
+		return out[i].ID > out[j].ID
+	})
 	if len(out) > limit {
 		out = out[:limit]
 	}
