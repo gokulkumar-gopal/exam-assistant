@@ -3,7 +3,7 @@ import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "rea
 import { usePathname, useSearchParams } from "next/navigation";
 import { api } from "@/lib/api";
 import { generateErrorNotice, GAVE_UP_MESSAGE, pollJob, startGeneration } from "@/lib/generate";
-import { setGenerated, type GeneratedResult } from "@/lib/generated";
+import { clearGenerated, setGenerated, type GeneratedResult } from "@/lib/generated";
 import { useMe } from "@/lib/session";
 import type { AiModel, Doc, DocsResponse, ExamType, Marks, ModelsResponse, Role } from "@/lib/types";
 import {
@@ -12,7 +12,7 @@ import {
 import { defaultModelId } from "@/lib/models";
 import { ModelSelect } from "@/components/ModelSelect";
 import { GenerationCard } from "@/components/GenerationCard";
-import { GeneratedList } from "@/components/GeneratedList";
+import { QuestionList } from "@/components/QuestionList";
 import { Notice } from "@/components/Notice";
 import { SourcesCard } from "@/components/SourcesCard";
 import { CreateFooter } from "@/components/CreateFooter";
@@ -135,6 +135,8 @@ function CreateInner() {
   const [notices, setNotices] = useState<{ text: string; bad: boolean }[]>([]);
   const [retry, setRetry] = useState(false);
   const [result, setResult] = useState<GeneratedResult | null>(null);
+  const [resultKey, setResultKey] = useState(0); // new list state (edits, shuffle seed) for each generation
+  const lastAgain = useRef<GeneratedResult | undefined>(undefined); // so Try again repeats a Regenerate all
   const busy = useRef(false);
   const runId = useRef(0);
   const ctrl = useRef<AbortController | null>(null);
@@ -142,20 +144,20 @@ function CreateInner() {
   const pathname = usePathname();
 
   // Leaving the page (route change, tab close) stops a running job so it stops spending.
+  // pagehide only: beforeunload also fires when the user declines the leave prompt.
   useEffect(() => {
     const stop = () => ctrl.current?.abort();
-    window.addEventListener("beforeunload", stop);
     window.addEventListener("pagehide", stop);
     return () => {
-      window.removeEventListener("beforeunload", stop);
       window.removeEventListener("pagehide", stop);
       stop();
     };
   }, [pathname]);
 
-  const onGenerate = useCallback(async () => {
+  const onGenerate = useCallback(async (again?: GeneratedResult) => {
     if (busy.current) return;
     busy.current = true;
+    lastAgain.current = again;
     const me = ++runId.current;
     const c = new AbortController();
     ctrl.current = c;
@@ -164,10 +166,18 @@ function CreateInner() {
     setNotices([]);
     setRetry(false);
     setResult(null);
+    clearGenerated();
     resultsRef.current?.scrollIntoView({ block: "nearest" });
+    // Regenerate all repeats the previous run's settings, whatever the form says now.
     const countsBody: Record<string, number> = {};
-    for (const m of MARKS) if (counts[m] > 0) countsBody[String(m)] = counts[m];
-    const req = { sourceIds: chosen.map((d) => d.id), type, counts: countsBody, shuffle, model: modelId };
+    if (again) Object.assign(countsBody, again.params.counts);
+    else for (const m of MARKS) if (counts[m] > 0) countsBody[String(m)] = counts[m];
+    const gType = again ? again.params.type : type;
+    const gTarget = again ? again.params.target : target;
+    const req = {
+      sourceIds: again ? again.params.sourceIds : chosen.map((d) => d.id),
+      type: gType, counts: countsBody, shuffle, model: again ? again.model : modelId,
+    };
     const current = () => runId.current === me;
     const finish = (n: { text: string; bad: boolean }[], canRetry: boolean) => {
       setNotices(n);
@@ -196,10 +206,11 @@ function CreateInner() {
         const out: GeneratedResult = {
           questions: r.questions,
           model: r.model,
-          params: { sourceIds: req.sourceIds, type, counts: countsBody, shuffle, target },
+          params: { sourceIds: req.sourceIds, type: gType, counts: countsBody, shuffle, target: gTarget },
         };
         setGenerated(out);
         setResult(out);
+        setResultKey((k) => k + 1);
         finish((r.failedSources ?? []).map((name) => ({ text: `We couldn't read ${name}. Try a clearer photo or a different file.`, bad: false })), false);
       } else if (r.status === "failed") {
         finish([{ text: r.error, bad: true }], true);
@@ -344,10 +355,18 @@ function CreateInner() {
         {!running && notices.map((n, i) => <Notice key={i} tone={n.bad ? "bad" : "warn"}>{n.text}</Notice>)}
         {!running && retry && (
           <div className="mb-3.5">
-            <button type="button" className="btn-secondary" onClick={() => void onGenerate()}>Try again</button>
+            <button type="button" className="btn-secondary" onClick={() => void onGenerate(lastAgain.current)}>Try again</button>
           </div>
         )}
-        {result && <GeneratedList result={result} />}
+        {result && (
+          <QuestionList
+            key={resultKey}
+            result={result}
+            shuffle={shuffle}
+            title={title}
+            onRegenerateAll={() => void onGenerate(result)}
+          />
+        )}
       </div>
       <CreateFooter
         total={total}

@@ -198,6 +198,8 @@ export function mockFetch(method: string, rawPath: string, body: unknown): Respo
   // Generation
   // Test triggers (mock only), read from the page URL: ?mockGen=
   //   failed | failedSources | rate | budget | file422 | model422 | network
+  //   html (first generated question is the literal text <b>x</b>)
+  //   regenFail (POST /generate/regenerate jobs end in failed)
   // model422 only answers 422 when a non-default model is sent, so the reset-to-default retry succeeds.
   if (route === "POST /generate") {
     const b = as<GenerateBody>();
@@ -216,8 +218,14 @@ export function mockFetch(method: string, rawPath: string, body: unknown): Respo
   }
   if (route === "POST /generate/regenerate") {
     const b = as<RegenerateBody>();
+    const trigger = typeof window === "undefined" ? null : new URLSearchParams(window.location.search).get("mockGen");
     const jobId = `j${++state.seq}`;
-    state.jobs[jobId] = { polls: 0, type: b.type, counts: { [String(b.marks)]: 1 }, marks: b.marks, model: b.model ?? models[0].id, trigger: null };
+    state.jobs[jobId] = {
+      polls: 0, type: b.type, counts: { [String(b.marks)]: 1 }, marks: b.marks, model: b.model ?? models[0].id,
+      trigger: trigger === "regenFail" ? "failed" : null,
+    };
+    (globalThis as unknown as { __mockRegenLog?: unknown[] }).__mockRegenLog ??= [];
+    (globalThis as unknown as { __mockRegenLog: unknown[] }).__mockRegenLog.push(b);
     return json(202, { jobId }, { Location: `/generate/${jobId}` });
   }
   if (route === "GET /generate/:id") {
@@ -237,7 +245,11 @@ export function mockFetch(method: string, rawPath: string, body: unknown): Respo
       return json(200, { status: job.polls === 1 ? "queued" : "running", model: job.model,
         progress: { done: Math.min(total - 1, written), total }, questions: null, failedSources: [], error: null, serverTime: st() });
     }
-    const questions = entries.map((m, i) => ({ ...makeQuestion(i + state.seq, m, job.type), id: `g${state.seq}-${i}` }));
+    const questions = entries.map((m, i) => ({ ...makeQuestion(i + state.seq + (job.marks ? 1000 : 0), m, job.type), id: `g${id}-${i}` }));
+    if (job.trigger === "html" && !job.marks && questions.length > 0) {
+      questions[0].text = "<b>x</b>";
+      if (questions[0].options) questions[0].options[0] = "<i>y</i>";
+    }
     return json(200, { status: "done", model: job.model, progress: { done: total, total }, questions,
       failedSources: job.trigger === "failedSources" ? ["Photosynthesis.jpg"] : [], error: null, serverTime: st() });
   }
