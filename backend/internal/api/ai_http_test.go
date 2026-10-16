@@ -43,7 +43,7 @@ func aiDeps(t *testing.T, providers []string, llmModel string) (Deps, *clock.Fak
 	if err != nil {
 		t.Fatal(err)
 	}
-	return Deps{
+	deps := Deps{
 		Logger: silentLogger(), Clock: clk, Users: users,
 		Auth:           auth.NewService(users, auth.NewBcryptHasher(bcrypt.MinCost), clk),
 		Sessions:       auth.NewSessions([]byte(authSecret), "local"),
@@ -51,7 +51,8 @@ func aiDeps(t *testing.T, providers []string, llmModel string) (Deps, *clock.Fak
 		Models:         enabled,
 		DefaultModelID: def.ID,
 		AllowedOrigins: []string{"http://localhost:3000"},
-	}, clk
+	}
+	return withGen(deps, clk, memory.NewDocStore(clk), gen.StubRunner{}), clk
 }
 
 func getModels(t *testing.T, h http.Handler, signedIn bool) *httptest.ResponseRecorder {

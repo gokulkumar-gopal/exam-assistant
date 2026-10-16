@@ -38,7 +38,11 @@ func main() {
 	// The local server keeps users in memory; the DynamoDB store is wired for deployed stages later.
 	users := memory.NewUserStore()
 	clk := clock.Real{}
-	// The InProcessRunner is wired into Deps here when the generation task adds it.
+	jobs := memory.NewJobStore(clk)
+	docStore := memory.NewDocStore(clk)
+	// B-2.4 replaces the stub runner with the InProcessRunner: until then POST /generate
+	// answers 503 "We couldn't start that. Try again.".
+	var runner gen.JobRunner = gen.StubRunner{}
 	svc := auth.NewService(users, auth.NewBcryptHasher(auth.BcryptCost), clk)
 	if cfg.GoogleClientID != "" {
 		// Without GOOGLE_CLIENT_ID the route is not registered and /auth/google is the JSON 404.
@@ -56,6 +60,9 @@ func main() {
 		Users:          users,
 		Auth:           svc,
 		Sessions:       auth.NewSessions([]byte(cfg.JWTSecret), cfg.Env),
+		Jobs:           jobs,
+		Runner:         runner,
+		Gen:            gen.NewService(jobs, docStore, runner, clk, models, defModel.ID, cfg.GenLimits()),
 		Models:         models,
 		DefaultModelID: defModel.ID,
 		AllowedOrigins: cfg.AllowedOrigins,

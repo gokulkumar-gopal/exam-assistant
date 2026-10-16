@@ -467,6 +467,7 @@ func TestNewHandlerRefusesNilDocs(t *testing.T) {
 	}
 	deps.Docs = docs.NewService(memory.NewDocStore(clk), docs.NewMemBlob(), clk)
 	deps.Models, deps.DefaultModelID = gen.Enabled([]string{"anthropic"}), "claude-haiku-4-5"
+	deps = withGen(deps, clk, memory.NewDocStore(clk), gen.StubRunner{})
 	if _, err := NewHandler(deps); err != nil {
 		t.Fatalf("complete deps: %v", err)
 	}

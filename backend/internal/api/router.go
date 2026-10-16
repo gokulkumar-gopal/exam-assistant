@@ -25,6 +25,9 @@ type Deps struct {
 	Auth           *auth.Service
 	Sessions       *auth.Sessions
 	Docs           *docs.Service
+	Jobs           store.JobStore
+	Gen            *gen.Service
+	Runner         gen.JobRunner
 	Models         []gen.Model // enabled models, cheapest first
 	DefaultModelID string      // one of Models
 	AllowedOrigins []string    // CSRF allow-list for Origin
@@ -110,6 +113,15 @@ func (d Deps) Validate() error {
 	if d.Docs == nil {
 		missing = append(missing, "Docs")
 	}
+	if d.Jobs == nil {
+		missing = append(missing, "Jobs")
+	}
+	if d.Gen == nil {
+		missing = append(missing, "Gen")
+	}
+	if d.Runner == nil {
+		missing = append(missing, "Runner")
+	}
 	if len(d.Models) == 0 {
 		missing = append(missing, "Models")
 	} else if !slices.ContainsFunc(d.Models, func(m gen.Model) bool { return m.ID == d.DefaultModelID }) {
@@ -146,6 +158,9 @@ func NewRouter(deps Deps) http.Handler {
 		}
 		if len(deps.Models) > 0 {
 			registerAIRoutes(rt, deps)
+		}
+		if deps.Gen != nil {
+			registerGenRoutes(rt, deps)
 		}
 	}
 	rt.mux.HandleFunc("/", rt.fallback)

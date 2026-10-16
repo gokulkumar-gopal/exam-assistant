@@ -64,6 +64,13 @@ func TestBuildAPIDepsPopulatesEverything(t *testing.T) {
 	if !deps.Auth.GoogleEnabled() || len(deps.AllowedOrigins) != 1 {
 		t.Errorf("deps = %+v", deps)
 	}
+	if deps.Jobs == nil || deps.Gen == nil {
+		t.Error("generation dependencies are not wired")
+	}
+	// Until B-2.4 the runner is the stub, so starting a job fails.
+	if err := deps.Runner.Start(context.Background(), "x"); err == nil {
+		t.Error("expected the stub runner")
+	}
 }
 
 func TestDeadlineVerifierBoundsGoogleCall(t *testing.T) {
@@ -90,6 +97,9 @@ func TestValidateAPIDepsFailsOnNilPiece(t *testing.T) {
 	}
 	for name, mut := range map[string]func(*api.Deps){
 		"Docs":     func(d *api.Deps) { d.Docs = nil },
+		"Jobs":     func(d *api.Deps) { d.Jobs = nil },
+		"Gen":      func(d *api.Deps) { d.Gen = nil },
+		"Runner":   func(d *api.Deps) { d.Runner = nil },
 		"Auth":     func(d *api.Deps) { d.Auth = nil },
 		"Users":    func(d *api.Deps) { d.Users = nil },
 		"Sessions": func(d *api.Deps) { d.Sessions = nil },

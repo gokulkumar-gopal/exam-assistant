@@ -179,3 +179,15 @@ func Load(getenv func(string) string) (Config, error) {
 	}
 	return c, nil
 }
+
+// GenLimits returns the generation limits (backend-spec 7.5, 8.4) for gen.NewService.
+func (c Config) GenLimits() gen.Limits {
+	return gen.Limits{
+		MaxSources: c.GenMaxFiles, MaxTotalBytes: c.GenMaxTotalBytes, MaxPDFPages: c.GenMaxPDFPages,
+		MaxRunning: c.GenMaxRunning,
+		Quota: gen.QuotaLimits{
+			MaxUser: c.GenMaxPerDay, MaxRegen: c.GenMaxRegenPerDay, MaxGlobal: c.GenMaxGlobalPerDay,
+			BudgetUSD: c.LLMMonthlyBudgetUSD,
+		},
+	}
+}
