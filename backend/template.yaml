@@ -8,7 +8,7 @@ Parameters:
   LlmProviders:    { Type: String, Default: anthropic, Description: "Enabled providers, comma-separated: anthropic, gemini (for example gemini,anthropic)" }
   GoogleClientId:  { Type: String, Description: "Google OAuth client ID that sign-in tokens must be issued for" }
   AllowedOrigins:  { Type: String, Description: "Comma-separated, e.g. https://app.example.com,http://localhost:3000" }
-  FrontendOrigins: { Type: CommaDelimitedList, Description: "Same origins, for S3 CORS (used by the uploads bucket from D-1.2)" }
+  FrontendOrigins: { Type: CommaDelimitedList, Description: "Same origins, for S3 CORS (used by the uploads bucket CORS)" }
 
 Globals:
   Function:
@@ -20,9 +20,7 @@ Globals:
       Variables:                       # shared, non-secret
         ENV: production
         STAGE: !Ref Stage
-        # PLACEHOLDER: config.Load requires S3_BUCKET in every mode, but the bucket
-        # does not exist yet. D-1.2 replaces this with !Ref UploadsBucket.
-        S3_BUCKET: !Sub "exam-assistant-${Stage}-placeholder"
+        S3_BUCKET: !Ref UploadsBucket
         LLM_PROVIDERS: !Ref LlmProviders
 
 Resources:
@@ -41,10 +39,51 @@ Resources:
           JWT_SECRET: !Ref JwtSecret
           GOOGLE_CLIENT_ID: !Ref GoogleClientId
           ALLOWED_ORIGINS: !Ref AllowedOrigins
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action: [dynamodb:GetItem, dynamodb:PutItem, dynamodb:UpdateItem, dynamodb:DeleteItem,
+                       dynamodb:Query, dynamodb:BatchGetItem, dynamodb:ConditionCheckItem]
+              Resource:
+                - !GetAtt UsersTable.Arn
+                - !GetAtt DocumentsTable.Arn
+                - !GetAtt ExamsTable.Arn
+                - !Sub "${ExamsTable.Arn}/index/*"
+                - !GetAtt AttemptsTable.Arn
+                - !Sub "${AttemptsTable.Arn}/index/*"
+                - !GetAtt JobsTable.Arn
+                - !Sub "${JobsTable.Arn}/index/*"     # includes day-index, which the usage page queries
+            - Effect: Allow
+              Action: [s3:PutObject, s3:GetObject, s3:DeleteObject]
+              Resource: !Sub "${UploadsBucket.Arn}/*"
+            - Effect: Allow
+              Action: s3:ListBucket        # without it, HeadObject on a missing key returns 403, not 404
+              Resource: !GetAtt UploadsBucket.Arn
+            # lambda:InvokeFunction on the worker arrives in D-2.1
 
   ApiLogs:
     Type: AWS::Logs::LogGroup
     Properties: { LogGroupName: !Sub "/aws/lambda/exam-assistant-${Stage}-api", RetentionInDays: 14 }
+
+  UploadsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "exam-assistant-${Stage}-${AWS::AccountId}"
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault: { SSEAlgorithm: AES256 }
+      CorsConfiguration:
+        CorsRules:
+          - AllowedOrigins: !Ref FrontendOrigins
+            AllowedMethods: [GET, PUT, HEAD]
+            AllowedHeaders: ["*"]
+            ExposedHeaders: [ETag]
+            MaxAge: 3600
 
   UsersTable:
     Type: AWS::DynamoDB::Table
@@ -113,3 +152,5 @@ Outputs:
   FunctionUrl:
     Description: Function URL. The value keeps a trailing slash; consumers ($DEV_URL, Vercel API_URL) must strip it.
     Value: !GetAtt ApiFunctionUrl.FunctionUrl
+  BucketName:
+    Value: !Ref UploadsBucket
