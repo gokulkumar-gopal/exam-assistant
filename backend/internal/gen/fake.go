@@ -16,9 +16,12 @@ func (FakeGenerator) Generate(ctx context.Context, in GenInput) (GenOutput, erro
 	}
 	out := GenOutput{StopReason: "end_turn", RequestID: "fake"}
 	for i := 0; i < in.Count; i++ {
+		n := len(in.Avoid) + i
 		q := RawQuestion{
 			Marks: in.Marks,
-			Text:  fmt.Sprintf("Sample %d-mark question %d (%d already asked)", in.Marks, i+1, len(in.Avoid)),
+			// Index-specific words keep the questions apart under the 0.8 word-set duplicate check.
+			Text: fmt.Sprintf("Sample %d-mark question %d (%d already asked): explain topic%d, detail%d, aspect%d and angle%d",
+				in.Marks, i+1, len(in.Avoid), n, n, n, n),
 		}
 		if len(in.Sources) > 0 {
 			q.Source = in.Sources[i%len(in.Sources)].Label

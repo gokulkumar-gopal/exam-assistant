@@ -49,12 +49,17 @@ type RawQuestion struct {
 // the label is not in labelToDoc, and the caller drops the question. The Options slice is
 // copied so the result never aliases the generator's output.
 func (r RawQuestion) ToQuestion(labelToDoc map[string]store.Document) (q store.Question, ok bool) {
+	return r.toQuestion(labelToDoc, func() string { return ulid.Make().String() })
+}
+
+// toQuestion is ToQuestion with the id source injected (the worker passes its clock and entropy).
+func (r RawQuestion) toQuestion(labelToDoc map[string]store.Document, newID func() string) (q store.Question, ok bool) {
 	d, ok := labelToDoc[r.Source]
 	if !ok {
 		return store.Question{}, false
 	}
 	q = store.Question{
-		ID: ulid.Make().String(), Marks: r.Marks, Text: r.Text, ModelAnswer: r.ModelAnswer,
+		ID: newID(), Marks: r.Marks, Text: r.Text, ModelAnswer: r.ModelAnswer,
 		SourceDocID: d.ID, SourceDocName: d.Name,
 	}
 	if r.Options != nil {

@@ -4,16 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
-	"math/rand/v2"
 	"runtime/debug"
 	"slices"
 	"sort"
 	"strconv"
 	"sync"
 	"time"
-
-	"github.com/oklog/ulid/v2"
 
 	"github.com/gokulkumar/exam-assistant/backend/internal/clock"
 	"github.com/gokulkumar/exam-assistant/backend/internal/docs"
@@ -25,6 +23,7 @@ const (
 	TooLongMessage        = "That took too long. Try again."
 	GenerateFailedMessage = "We couldn't generate questions. Try again."
 	NoSourcesMessage      = "We couldn't read any of the selected files."
+	ShortfallMessage      = "We couldn't generate enough questions from these files."
 	SaveFailedMessage     = "We couldn't save your questions. Try again."
 
 	unreadableFileReason = "We couldn't read this file."
@@ -49,8 +48,8 @@ type WorkerConfig struct {
 }
 
 // Worker runs generation jobs: claim, heartbeat, deadline, calls and finish
-// (backend-spec 7.2 steps 2 to 7). What the model is asked and how sources are prepared
-// belongs to the Generator (B-2.5 onward); loadSources is the minimal stand-in until then.
+// (backend-spec 7.2 steps 2 to 7). Sources are prepared with PrepareSources (AI-spec 5.1) and
+// every Generator output goes through Validate, ShuffleOptions and OrderQuestions (AI-spec 7).
 type Worker struct {
 	Jobs  store.JobStore
 	Docs  store.DocStore
@@ -59,9 +58,10 @@ type Worker struct {
 	Clock clock.Clock
 	Cfg   WorkerConfig
 
-	heartbeatInterval time.Duration                    // 0 means DefaultHeartbeatInterval
-	jobDeadline       time.Duration                    // 0 means DefaultJobDeadline
-	shuffle           func(n int, swap func(i, j int)) // nil means math/rand/v2
+	heartbeatInterval time.Duration // 0 means DefaultHeartbeatInterval
+	jobDeadline       time.Duration // 0 means DefaultJobDeadline
+	rnd               io.Reader     // option and question shuffling; nil means crypto/rand
+	idEntropy         io.Reader     // ULID entropy; nil means crypto/rand
 }
 
 func (w *Worker) heartbeatEvery() time.Duration {
@@ -376,6 +376,7 @@ func (w *Worker) generate(ctx context.Context, job store.Job, st *runState) ([]s
 	if err != nil {
 		return nil, err
 	}
+	newID := newIDSource(w.Clock.Now, w.idEntropy)
 	g, err := w.Gens.For(job.Model)
 	if err != nil {
 		return nil, fmt.Errorf("generator for %q: %w", job.Model, err)
@@ -419,28 +420,37 @@ func (w *Worker) generate(ctx context.Context, job store.Job, st *runState) ([]s
 					st.addFailed(store.FailedSource{DocID: d.ID, Name: d.Name, Reason: modelSkippedReason})
 				}
 			}
-			for _, rq := range out.Questions {
-				q, ok := rq.ToQuestion(byLabel)
-				if !ok {
-					dropped++ // an unknown label is dropped (AI-spec 7)
-					continue
-				}
-				kept = append(kept, q)
-				avoid = append(avoid, q.Text)
+			callKept, bad, _ := validate(out.Questions, CallSpec{Type: job.Request.Type, Marks: m}, byLabel, avoid, newID)
+			dropped += bad
+			if extra := len(callKept) - n; extra > 0 {
+				// More valid questions than asked: keep the first n (AI-spec 7.2 wants exactly the count).
+				dropped += extra
+				callKept = callKept[:n]
 			}
+			for i := range callKept {
+				ShuffleOptions(&callKept[i], w.rnd) // after validation (AI-spec 7.3)
+				avoid = append(avoid, callKept[i].Text)
+			}
+			kept = append(kept, callKept...)
 			st.setDone(len(kept), dropped)
+			if len(callKept) < n {
+				// AI-spec 7.4 makes one follow-up call for the missing number before failing;
+				// that retry belongs to B-2.7. Until then a short call fails the job, because
+				// the spec allows no partial exam and no padding.
+				slog.Warn("worker: call returned fewer valid questions than requested",
+					"job_id", job.ID, "marks", m, "requested", n, "kept", len(callKept), "dropped", bad)
+				return nil, &UserError{Message: ShortfallMessage}
+			}
 		}
-	}
-	if len(kept) == 0 {
-		return nil, errors.New("generator returned no usable questions")
 	}
 	return kept, nil
 }
 
-// loadSources reads the job's documents from the blob store, owner-checked, in a stable
-// order (sorted by document id) and labels them doc-1, doc-2, ... The bytes are sent as
-// they are: preprocessing (AI-spec 5.1) arrives in B-2.5. Unreadable documents go to the
-// failed sources; with none left the job fails.
+// loadSources reads the job's documents from the blob store, owner-checked, prepares them
+// with PrepareSources (AI-spec 5.1: PDF as it is, images downscaled, text cleaned; labels
+// doc-1, doc-2, ... in document id order) and records every document that is missing,
+// unreadable or fails preparation in the job's failed sources. With none left the job fails
+// with NoSourcesMessage (RequireSources).
 func (w *Worker) loadSources(ctx context.Context, job store.Job, st *runState) ([]SourceFile, map[string]store.Document, error) {
 	got, err := w.Docs.GetDocs(ctx, job.OwnerID, job.Request.SourceIDs)
 	if err != nil {
@@ -450,11 +460,9 @@ func (w *Worker) loadSources(ctx context.Context, job store.Job, st *runState) (
 	for _, d := range got {
 		have[d.ID] = d
 	}
-	ids := slices.Clone(job.Request.SourceIDs)
-	sort.Strings(ids)
-	var files []SourceFile
-	byLabel := map[string]store.Document{}
-	for _, id := range ids {
+	var ready []store.Document
+	blobs := map[string][]byte{}
+	for _, id := range slices.Compact(slices.Sorted(slices.Values(job.Request.SourceIDs))) {
 		d, ok := have[id]
 		if !ok || d.OwnerID != job.OwnerID || d.Status != store.DocReady {
 			st.addFailed(store.FailedSource{DocID: id, Name: d.Name, Reason: missingFileReason})
@@ -469,31 +477,21 @@ func (w *Worker) loadSources(ctx context.Context, job store.Job, st *runState) (
 			st.addFailed(store.FailedSource{DocID: id, Name: d.Name, Reason: unreadableFileReason})
 			continue
 		}
-		label := "doc-" + strconv.Itoa(len(files)+1)
-		files = append(files, SourceFile{Label: label, ContentType: d.ContentType, Bytes: data})
-		byLabel[label] = d
+		ready = append(ready, d)
+		blobs[id] = data
 	}
-	if len(files) == 0 {
-		return nil, nil, &UserError{Message: NoSourcesMessage}
+	sources, byLabel, failed := PrepareSources(ready, blobs)
+	for _, f := range failed {
+		st.addFailed(f)
 	}
-	return files, byLabel, nil
+	if err := RequireSources(sources); err != nil {
+		return nil, nil, err
+	}
+	return sources, byLabel, nil
 }
 
-// arrange sorts the questions ascending by marks (or shuffles them when the request asks
-// for it) and gives each a new id.
+// arrange puts the questions in final order (AI-spec 7.3): ascending by marks, or random when
+// the request asks for it. Ids were assigned when the questions were validated.
 func (w *Worker) arrange(job store.Job, qs []store.Question) []store.Question {
-	out := slices.Clone(qs)
-	if job.Request.Shuffle {
-		sh := w.shuffle
-		if sh == nil {
-			sh = func(n int, swap func(i, j int)) { rand.Shuffle(n, swap) }
-		}
-		sh(len(out), func(i, j int) { out[i], out[j] = out[j], out[i] })
-	} else {
-		sort.SliceStable(out, func(i, j int) bool { return out[i].Marks < out[j].Marks })
-	}
-	for i := range out {
-		out[i].ID = ulid.Make().String()
-	}
-	return out
+	return OrderQuestions(qs, job.Request.Shuffle, w.rnd)
 }
