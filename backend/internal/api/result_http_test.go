@@ -48,8 +48,7 @@ func TestResultOverHTTP(t *testing.T) {
 		sort.Strings(ks)
 		return strings.Join(ks, ",")
 	}
-	if got := keys(out); got != "exam,keyAvailableAt,keyVisible,maxPeeks,maxScore,peeksUsed,questions,score,scoreBeforePeeks,serverTime,status" &&
-		got != "exam,keyAvailableAt,keyVisible,maxScore,peeksUsed,questions,score,scoreBeforePeeks,serverTime,status" {
+	if got := keys(out); got != "exam,keyAvailableAt,keyVisible,maxScore,peeksUsed,questions,score,scoreBeforePeeks,serverTime,status" {
 		t.Fatalf("top keys: %s", got)
 	}
 	if got := keys(out["exam"].(map[string]any)); got != "acceptingUntil,closesAt,id,maxPeeks,title,totalMarks,type" {
@@ -88,7 +87,8 @@ func TestResult404sAreByteIdenticalOverHTTP(t *testing.T) {
 	stranger := e.resultReq(e.other)
 	missing := e.do("GET", "/exams/nope/result", "", "", e.student, "")
 	for _, r := range []*httptest.ResponseRecorder{declined, creator, stranger, missing} {
-		if r.Code != http.StatusNotFound || r.Body.String() != missing.Body.String() || r.Header().Get("Cache-Control") != "no-store" {
+		if r.Code != http.StatusNotFound || r.Body.String() != missing.Body.String() || r.Header().Get("Cache-Control") != "no-store" ||
+			r.Header().Get("Content-Type") != missing.Header().Get("Content-Type") {
 			t.Fatalf("%d %s vs %s", r.Code, r.Body, missing.Body)
 		}
 	}

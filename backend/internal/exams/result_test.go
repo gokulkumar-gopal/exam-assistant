@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gokulkumar/exam-assistant/backend/internal/clock"
 	"github.com/gokulkumar/exam-assistant/backend/internal/exams"
 	"github.com/gokulkumar/exam-assistant/backend/internal/store"
 )
@@ -133,7 +134,7 @@ func TestResultShowsKeyWhenOver(t *testing.T) {
 
 func TestResultMissedStatusNoScoreEmptyAnswers(t *testing.T) {
 	e := resEnv(t, "mcq")
-	e.seedRes(t, "e1", "s1", store.AttemptNotStarted, nil, nil, nil, nil)
+	e.seedRes(t, "e1", "s1", store.AttemptNotStarted, map[string]string{"q3": "o0"}, nil, nil, nil)
 	e.clk.Set(closes.Add(time.Minute))
 	v, m := e.result(t, e.student, "e1")
 	if v.Status != "missed" || m["score"] != nil || m["scoreBeforePeeks"] != nil || m["keyVisible"] != true || m["maxScore"] != float64(6) {
@@ -195,26 +196,50 @@ func TestResultScoreHalfMarksRendered(t *testing.T) {
 }
 
 func TestResultRevealedQuestionsKeepKeyWhenHidden(t *testing.T) {
-	e := resEnv(t, "mcq")
-	e.seedRes(t, "e1", "s1", store.AttemptSubmitted, map[string]string{"q3": "o0", "q1": "o1"}, []string{"q1"}, ip(5), ip(6))
-	e.clk.Set(t0.Add(time.Hour))
-	_, m := e.result(t, e.student, "e1")
-	if m["keyVisible"] != false {
-		t.Fatal("key must stay hidden")
-	}
-	qs := resQs(t, m)
-	if qs[1]["id"] != "q1" || qs[1]["revealed"] != true || qs[1]["correctAnswer"] != "o1" || qs[1]["correct"] != true {
-		t.Fatalf("revealed q1: %v", qs[1])
-	}
-	for _, i := range []int{0, 2} {
-		for _, k := range []string{"correct", "correctAnswer", "modelAnswer"} {
-			if _, ok := qs[i][k]; ok {
-				t.Fatalf("unrevealed %v leaks %s", qs[i]["id"], k)
+	for _, typ := range []string{"mcq", "free_text"} {
+		t.Run(typ, func(t *testing.T) {
+			e := resEnv(t, typ)
+			e.seedRes(t, "e1", "s1", store.AttemptSubmitted, map[string]string{"q3": "o0", "q1": "o1"}, []string{"q1"}, ip(5), ip(6))
+			e.clk.Set(t0.Add(time.Hour))
+			v, m := e.result(t, e.student, "e1")
+			raw := marshal(t, v)
+			if m["keyVisible"] != false {
+				t.Fatal("key must stay hidden")
 			}
-		}
-		if qs[i]["revealed"] != false {
-			t.Fatalf("revealed flag must be present and false: %v", qs[i])
-		}
+			qs := resQs(t, m)
+			if qs[1]["id"] != "q1" || qs[1]["revealed"] != true {
+				t.Fatalf("revealed q1: %v", qs[1])
+			}
+			if typ == "mcq" {
+				if qs[1]["correctAnswer"] != "o1" || qs[1]["correct"] != true {
+					t.Fatalf("revealed q1: %v", qs[1])
+				}
+			} else {
+				if qs[1]["modelAnswer"] != secretModel+"-q1" {
+					t.Fatalf("revealed free-text q1 lost modelAnswer: %v", qs[1])
+				}
+				for _, k := range []string{"correct", "correctAnswer"} {
+					if _, ok := qs[1][k]; ok {
+						t.Fatalf("free text carries %s: %v", k, qs[1])
+					}
+				}
+				for _, id := range []string{"q3", "q2"} {
+					if strings.Contains(raw, secretModel+"-"+id) {
+						t.Fatalf("unrevealed %s model text leaked: %s", id, raw)
+					}
+				}
+			}
+			for _, i := range []int{0, 2} {
+				for _, k := range []string{"correct", "correctAnswer", "modelAnswer"} {
+					if _, ok := qs[i][k]; ok {
+						t.Fatalf("unrevealed %v leaks %s", qs[i]["id"], k)
+					}
+				}
+				if qs[i]["revealed"] != false {
+					t.Fatalf("revealed flag must be present and false: %v", qs[i])
+				}
+			}
+		})
 	}
 }
 
@@ -280,14 +305,60 @@ func TestResultCorrectAnswerIsOptionTextAndStoredOrder(t *testing.T) {
 	}
 }
 
+// Result is a GET: it may write only through the lazy finalizer (spec 8.0, 9.2). The recorders
+// count every store write; a counting finalizer counts the carve-out.
 func TestResultIsReadOnlyForSubmittedAttempt(t *testing.T) {
-	e := resEnv(t, "mcq")
-	e.seedRes(t, "e1", "s1", store.AttemptSubmitted, map[string]string{"q3": "o0"}, []string{"q2"}, ip(3), ip(6))
-	e.clk.Set(closes.Add(time.Hour))
-	before, _ := e.attempts.GetAttempt(context.Background(), "e1", "s1")
-	e.result(t, e.student, "e1")
-	after, _ := e.attempts.GetAttempt(context.Background(), "e1", "s1")
-	if marshal(t, before) != marshal(t, after) {
-		t.Fatalf("row changed: %s vs %s", marshal(t, before), marshal(t, after))
+	type tc struct {
+		name     string
+		user     func(e *env) store.User
+		examID   string
+		seed     func(e *env)
+		at       time.Time
+		wantCode int
+		wantFin  int32
+	}
+	seed := func(user, status string, answers map[string]string) func(e *env) {
+		return func(e *env) {
+			e.seedRes(t, "e1", user, status, answers, []string{"q2"}, ip(3), ip(6))
+		}
+	}
+	stu := func(e *env) store.User { return e.student }
+	cases := []tc{
+		{"submitted key hidden", stu, "e1", seed("s1", store.AttemptSubmitted, map[string]string{"q3": "o0"}), t0.Add(time.Hour), 200, 0},
+		{"submitted key visible", stu, "e1", seed("s1", store.AttemptSubmitted, map[string]string{"q3": "o0"}), closes.Add(time.Hour), 200, 0},
+		{"missed", stu, "e1", seed("s1", store.AttemptNotStarted, nil), closes.Add(time.Hour), 200, 0},
+		{"404 declined", stu, "e1", seed("s1", store.AttemptDeclined, nil), closes.Add(time.Hour), 404, 0},
+		{"404 no row", func(e *env) store.User { return e.parent }, "e1", seed("s1", store.AttemptSubmitted, nil), closes.Add(time.Hour), 404, 0},
+		{"404 missing exam", stu, "nope", seed("s1", store.AttemptSubmitted, nil), closes.Add(time.Hour), 404, 0},
+		{"409 not started", stu, "e1", seed("s1", store.AttemptNotStarted, nil), t0.Add(time.Hour), 409, 0},
+		{"409 in progress", stu, "e1", seed("s1", store.AttemptInProgress, map[string]string{"q3": "o0"}), t0.Add(time.Hour), 409, 0},
+		{"in progress after over finalizes once", stu, "e1", seed("s1", store.AttemptInProgress, map[string]string{"q3": "o0"}), closes.Add(time.Hour), 200, 1},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			e := newEnv(t)
+			e.seedFull(t, "e1", "t1", "mcq")
+			c.seed(e)
+			ra := &getRecAttempts{in: e.attempts}
+			rx := &getRecExams{in: e.exams}
+			fin := &noopFin{}
+			clk := clock.NewFake(c.at)
+			svc := exams.NewService(e.users, rx, ra, clk)
+			svc.SetFinalizer(fin)
+			_, err := svc.Result(context.Background(), c.user(e), c.examID)
+			if c.wantCode == 200 {
+				if err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				wantStatus(t, err, c.wantCode)
+			}
+			if ra.writes.Load() != 0 || rx.writes.Load() != 0 {
+				t.Fatalf("store writes: attempts %d %v exams %d", ra.writes.Load(), ra.names, rx.writes.Load())
+			}
+			if fin.calls.Load() != c.wantFin {
+				t.Fatalf("finalizer calls = %d, want %d", fin.calls.Load(), c.wantFin)
+			}
+		})
 	}
 }
