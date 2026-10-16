@@ -52,9 +52,10 @@ func (b *S3Blob) PresignPut(ctx context.Context, key, contentType string, size i
 
 func (b *S3Blob) PresignGet(ctx context.Context, key, contentType string, ttl time.Duration) (string, error) {
 	r, err := b.presign.PresignGetObject(ctx, &s3.GetObjectInput{
-		Bucket:              aws.String(b.bucket),
-		Key:                 aws.String(key),
-		ResponseContentType: aws.String(contentType),
+		Bucket:                     aws.String(b.bucket),
+		Key:                        aws.String(key),
+		ResponseContentType:        aws.String(contentType),
+		ResponseContentDisposition: aws.String("inline"),
 	}, s3.WithPresignExpires(ttl))
 	if err != nil {
 		return "", fmt.Errorf("presign get: %w", err)

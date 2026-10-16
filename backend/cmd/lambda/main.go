@@ -8,10 +8,10 @@ import (
 	"os"
 
 	"github.com/aws/aws-lambda-go/lambda"
+	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/awslabs/aws-lambda-go-api-proxy/httpadapter"
 
 	"github.com/gokulkumar/exam-assistant/backend/internal/api"
-	"github.com/gokulkumar/exam-assistant/backend/internal/clock"
 	"github.com/gokulkumar/exam-assistant/backend/internal/config"
 )
 
@@ -38,7 +38,22 @@ func main() {
 			return nil
 		})
 	default:
-		handler := api.NewRouter(api.Deps{Logger: logger, Clock: clock.Real{}})
+		awsCfg, err := awsconfig.LoadDefaultConfig(context.Background())
+		if err != nil {
+			logger.Error("aws config", "err", err)
+			os.Exit(1)
+		}
+		deps, err := buildAPIDeps(context.Background(), cfg, awsCfg)
+		if err != nil {
+			logger.Error("api wiring", "err", err)
+			os.Exit(1)
+		}
+		deps.Logger = logger
+		handler, err := api.NewHandler(deps)
+		if err != nil {
+			logger.Error("api wiring", "err", err)
+			os.Exit(1)
+		}
 		lambda.Start(httpadapter.NewV2(handler).ProxyWithContext)
 	}
 }
