@@ -25,7 +25,7 @@ func (s *stubVerifier) Verify(ctx context.Context, _ string) (auth.GoogleClaims,
 func testCfg() config.Config {
 	return config.Config{
 		Env: "production", Stage: "dev", S3Bucket: "bucket", GoogleClientID: "cid",
-		JWTSecret: strings.Repeat("s", 32), AllowedOrigins: []string{"http://localhost:3000"},
+		JWTSecret: strings.Repeat("s", 32), Providers: []string{"anthropic"}, AllowedOrigins: []string{"http://localhost:3000"},
 	}
 }
 
@@ -57,6 +57,9 @@ func TestBuildAPIDepsPopulatesEverything(t *testing.T) {
 	}
 	if _, err := api.NewHandler(deps); err != nil {
 		t.Fatal(err)
+	}
+	if len(deps.Models) != 3 || deps.DefaultModelID != "claude-haiku-4-5" {
+		t.Errorf("models = %v default = %q", deps.Models, deps.DefaultModelID)
 	}
 	if !deps.Auth.GoogleEnabled() || len(deps.AllowedOrigins) != 1 {
 		t.Errorf("deps = %+v", deps)
@@ -103,5 +106,18 @@ func TestValidateAPIDepsFailsOnNilPiece(t *testing.T) {
 	d.Auth = auth.NewService(good.Users, auth.NewBcryptHasher(auth.BcryptCost), good.Clock)
 	if err := validateAPIDeps(d); err == nil || !strings.Contains(err.Error(), "google") {
 		t.Errorf("no google: %v", err)
+	}
+}
+
+func TestBuildAPIDepsRejectsDisabledLLMModel(t *testing.T) {
+	cfg := testCfg()
+	cfg.LLMModel = "gemini-3.1-flash-lite"
+	if _, err := buildAPIDeps(context.Background(), cfg, anonymous()); err == nil || !strings.Contains(err.Error(), "LLM_MODEL") {
+		t.Fatalf("err = %v", err)
+	}
+	cfg = testCfg()
+	cfg.Providers = nil
+	if _, err := buildAPIDeps(context.Background(), cfg, anonymous()); err == nil {
+		t.Fatal("no provider must fail")
 	}
 }
