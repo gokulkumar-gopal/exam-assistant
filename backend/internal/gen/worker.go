@@ -419,13 +419,12 @@ func (w *Worker) generate(ctx context.Context, job store.Job, st *runState) ([]s
 					st.addFailed(store.FailedSource{DocID: d.ID, Name: d.Name, Reason: modelSkippedReason})
 				}
 			}
-			for _, q := range out.Questions {
-				d, ok := byLabel[q.SourceDocID]
+			for _, rq := range out.Questions {
+				q, ok := rq.ToQuestion(byLabel)
 				if !ok {
 					dropped++ // an unknown label is dropped (AI-spec 7)
 					continue
 				}
-				q.SourceDocID, q.SourceDocName = d.ID, d.Name
 				kept = append(kept, q)
 				avoid = append(avoid, q.Text)
 			}
@@ -471,7 +470,7 @@ func (w *Worker) loadSources(ctx context.Context, job store.Job, st *runState) (
 			continue
 		}
 		label := "doc-" + strconv.Itoa(len(files)+1)
-		files = append(files, SourceFile{Label: label, ContentType: d.ContentType, Data: data})
+		files = append(files, SourceFile{Label: label, ContentType: d.ContentType, Bytes: data})
 		byLabel[label] = d
 	}
 	if len(files) == 0 {

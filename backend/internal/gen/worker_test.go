@@ -121,7 +121,7 @@ func (g *testGen) callCount() int {
 func defaultOut(in GenInput) GenOutput {
 	var out GenOutput
 	for i := 0; i < in.Count; i++ {
-		q := store.Question{Marks: in.Marks, Text: fmt.Sprintf("q%d-%d-%d", in.Marks, len(in.Avoid), i), SourceDocID: "doc-1"}
+		q := RawQuestion{Marks: in.Marks, Text: fmt.Sprintf("q%d-%d-%d", in.Marks, len(in.Avoid), i), Source: "doc-1"}
 		if in.Type == "mcq" {
 			zero := 0
 			q.Options, q.CorrectIndex = []string{"a", "b", "c", "d"}, &zero
@@ -602,9 +602,9 @@ func TestSuccessSavesSortedQuestionsMappedToDocuments(t *testing.T) {
 	e.gen.fn = func(ctx context.Context, in GenInput) (GenOutput, error) {
 		out := defaultOut(in)
 		for i := range out.Questions {
-			out.Questions[i].SourceDocID = "doc-2"
+			out.Questions[i].Source = "doc-2"
 		}
-		out.Questions = append(out.Questions, store.Question{Marks: in.Marks, Text: "cites nothing real", SourceDocID: "doc-9"})
+		out.Questions = append(out.Questions, RawQuestion{Marks: in.Marks, Text: "cites nothing real", Source: "doc-9"})
 		out.UnreadableSources = []string{"doc-1"}
 		return out, nil
 	}
@@ -643,7 +643,7 @@ func TestSourcesAreLabelledSortedAndOpaque(t *testing.T) {
 	e.run(t)
 	in := e.gen.calls[0]
 	if len(in.Sources) != 2 || in.Sources[0].Label != "doc-1" || in.Sources[1].Label != "doc-2" ||
-		string(in.Sources[0].Data) != "content of notes.txt" || in.Sources[0].ContentType != "text/plain" {
+		string(in.Sources[0].Bytes) != "content of notes.txt" || in.Sources[0].ContentType != "text/plain" {
 		t.Errorf("sources = %+v", in.Sources)
 	}
 	if in.Model != "claude-haiku-4-5" || in.Type != "mcq" || in.Marks != 1 || in.Count != 1 {
@@ -661,7 +661,7 @@ func TestUnreadableBlobGoesToFailedSources(t *testing.T) {
 	if j.Status != store.JobDone || len(j.FailedSources) != 1 || j.FailedSources[0].DocID != "d1" {
 		t.Errorf("job = %s failed=%+v", j.Status, j.FailedSources)
 	}
-	if got := e.gen.calls[0].Sources; len(got) != 1 || got[0].Label != "doc-1" || string(got[0].Data) != "content of scan.png" {
+	if got := e.gen.calls[0].Sources; len(got) != 1 || got[0].Label != "doc-1" || string(got[0].Bytes) != "content of scan.png" {
 		t.Errorf("sources = %+v", got)
 	}
 }

@@ -3,8 +3,6 @@ package gen
 import (
 	"context"
 	"fmt"
-
-	"github.com/gokulkumar/exam-assistant/backend/internal/store"
 )
 
 // FakeGenerator returns deterministic questions with no provider call. It backs worker
@@ -18,12 +16,12 @@ func (FakeGenerator) Generate(ctx context.Context, in GenInput) (GenOutput, erro
 	}
 	out := GenOutput{StopReason: "end_turn", RequestID: "fake"}
 	for i := 0; i < in.Count; i++ {
-		q := store.Question{
+		q := RawQuestion{
 			Marks: in.Marks,
 			Text:  fmt.Sprintf("Sample %d-mark question %d (%d already asked)", in.Marks, i+1, len(in.Avoid)),
 		}
 		if len(in.Sources) > 0 {
-			q.SourceDocID = in.Sources[i%len(in.Sources)].Label
+			q.Source = in.Sources[i%len(in.Sources)].Label
 		}
 		if in.Type == "mcq" {
 			correct := i % 4

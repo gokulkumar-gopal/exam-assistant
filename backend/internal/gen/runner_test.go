@@ -127,7 +127,7 @@ func TestFakeGeneratorIsDeterministicAndHonoursCounts(t *testing.T) {
 	}
 	b, _ := g.Generate(context.Background(), in)
 	for i, q := range a.Questions {
-		if q.Text != b.Questions[i].Text || q.Marks != 2 || len(q.Options) != 4 || q.CorrectIndex == nil || q.SourceDocID == "" {
+		if q.Text != b.Questions[i].Text || q.Marks != 2 || len(q.Options) != 4 || q.CorrectIndex == nil || q.Source == "" {
 			t.Errorf("question %d = %+v", i, q)
 		}
 	}

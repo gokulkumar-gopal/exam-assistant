@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 
+	"github.com/oklog/ulid/v2"
+
 	"github.com/gokulkumar/exam-assistant/backend/internal/store"
 )
 
@@ -17,7 +19,7 @@ import (
 type SourceFile struct {
 	Label       string
 	ContentType string
-	Data        []byte
+	Bytes       []byte
 }
 
 // GenInput is one Generate call (AI-spec 4).
@@ -30,11 +32,44 @@ type GenInput struct {
 	Model   string   // catalog id; the factory picks the provider from it
 }
 
-// GenOutput is the result of one Generate call (AI-spec 4). In Questions, SourceDocID
-// holds the source label the model cited ("doc-1"), not a document ID: the worker maps
-// it back to the document and drops a question with an unknown label (AI-spec 7).
+// RawQuestion is one question as the model returned it (AI-spec 6.1): no ID, no file name,
+// and Source is the label the model cited ("doc-1"), not a document ID. The worker turns
+// it into a store.Question with ToQuestion and drops one with an unknown label (AI-spec 7).
+type RawQuestion struct {
+	Marks        int      `json:"marks"`
+	Text         string   `json:"text"`
+	Options      []string `json:"options,omitempty"`      // MCQ only
+	CorrectIndex *int     `json:"correctIndex,omitempty"` // MCQ only; nil when absent
+	ModelAnswer  string   `json:"modelAnswer,omitempty"`  // free text only
+	Source       string   `json:"source"`
+}
+
+// ToQuestion builds the stored Question from a RawQuestion (AI-spec 6.2): it assigns a new
+// ID and maps Source back to the document ID and a snapshot of its name. ok is false when
+// the label is not in labelToDoc, and the caller drops the question. The Options slice is
+// copied so the result never aliases the generator's output.
+func (r RawQuestion) ToQuestion(labelToDoc map[string]store.Document) (q store.Question, ok bool) {
+	d, ok := labelToDoc[r.Source]
+	if !ok {
+		return store.Question{}, false
+	}
+	q = store.Question{
+		ID: ulid.Make().String(), Marks: r.Marks, Text: r.Text, ModelAnswer: r.ModelAnswer,
+		SourceDocID: d.ID, SourceDocName: d.Name,
+	}
+	if r.Options != nil {
+		q.Options = append([]string(nil), r.Options...)
+	}
+	if r.CorrectIndex != nil {
+		c := *r.CorrectIndex
+		q.CorrectIndex = &c
+	}
+	return q, true
+}
+
+// GenOutput is the result of one Generate call (AI-spec 4).
 type GenOutput struct {
-	Questions         []store.Question
+	Questions         []RawQuestion
 	UnreadableSources []string // source labels the model could not read
 	Usage             Usage    // tokens of this call, for spend accounting
 	StopReason        string
