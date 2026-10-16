@@ -15,6 +15,7 @@ import (
 	"github.com/gokulkumar/exam-assistant/backend/internal/clock"
 	"github.com/gokulkumar/exam-assistant/backend/internal/config"
 	"github.com/gokulkumar/exam-assistant/backend/internal/docs"
+	"github.com/gokulkumar/exam-assistant/backend/internal/exams"
 	"github.com/gokulkumar/exam-assistant/backend/internal/gen"
 	"github.com/gokulkumar/exam-assistant/backend/internal/store/dynamo"
 )
@@ -64,6 +65,7 @@ func buildAPIDeps(_ context.Context, cfg config.Config, awsCfg aws.Config) (api.
 		Sessions:       auth.NewSessions([]byte(cfg.JWTSecret), cfg.Env),
 		Docs:           docs.NewService(stores, docs.NewS3Blob(awsCfg, cfg.S3Bucket), clk),
 		Jobs:           stores,
+		Exams:          exams.NewService(stores, stores, stores, clk),
 		Runner:         runner,
 		Gen:            gen.NewService(stores, stores, runner, clk, models, def.ID, cfg.GenLimits()),
 		Models:         models,

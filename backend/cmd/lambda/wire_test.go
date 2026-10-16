@@ -109,6 +109,7 @@ func TestValidateAPIDepsFailsOnNilPiece(t *testing.T) {
 		"Docs":     func(d *api.Deps) { d.Docs = nil },
 		"Jobs":     func(d *api.Deps) { d.Jobs = nil },
 		"Gen":      func(d *api.Deps) { d.Gen = nil },
+		"Exams":    func(d *api.Deps) { d.Exams = nil },
 		"Runner":   func(d *api.Deps) { d.Runner = nil },
 		"Auth":     func(d *api.Deps) { d.Auth = nil },
 		"Users":    func(d *api.Deps) { d.Users = nil },

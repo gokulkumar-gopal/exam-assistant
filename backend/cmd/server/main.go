@@ -18,6 +18,7 @@ import (
 	"github.com/gokulkumar/exam-assistant/backend/internal/clock"
 	"github.com/gokulkumar/exam-assistant/backend/internal/config"
 	"github.com/gokulkumar/exam-assistant/backend/internal/docs"
+	"github.com/gokulkumar/exam-assistant/backend/internal/exams"
 	"github.com/gokulkumar/exam-assistant/backend/internal/gen"
 	"github.com/gokulkumar/exam-assistant/backend/internal/gen/prompt"
 	"github.com/gokulkumar/exam-assistant/backend/internal/gen/providers"
@@ -136,6 +137,7 @@ func buildHandler(cfg config.Config, logger *slog.Logger, baseURL string, fakeLL
 		Sessions:       auth.NewSessions([]byte(cfg.JWTSecret), cfg.Env),
 		Docs:           docs.NewService(docStore, blob, clk),
 		Jobs:           jobs,
+		Exams:          exams.NewService(users, memory.NewExamStore(), memory.NewAttemptStore(), clk),
 		Runner:         runner,
 		Gen:            gen.NewService(jobs, docStore, runner, clk, models, defModel.ID, cfg.GenLimits()),
 		Models:         models,
