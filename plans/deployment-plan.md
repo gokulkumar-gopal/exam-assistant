@@ -64,7 +64,7 @@ All paths relative to the repo root `exam-assistant/`. Application code belongs 
 **Spec:** dep 3, 4, 8.1 (steps 1, 2, 4), 11 (budget alert), 14   **Needs:** none
 **Files:** none (local machine and consoles)
 **Interfaces:** Produces the account, region, identity and tools every later task relies on.
-- [ ] Verify tools: `go version` (>= 1.22), `aws --version` (v2), `sam --version`, `node --version`, `make`, `curl`, `jq`, `openssl` all print a version.
+- [ ] Verify tools: `go version` (>= 1.24), `aws --version` (v2), `sam --version`, `node --version`, `make`, `curl`, `jq`, `openssl` all print a version.
 - [ ] Verify identity: `aws sts get-caller-identity` prints the intended account and an ARN that is not `root`. MFA is on for root and your identity.
 - [ ] Pick the region and record it; `aws configure get region` matches. Check the Billing console for free-plan vs 12-month program and note the account's end date (dep 4, 14).
 - [ ] Create the AWS budget with an email alert at about $5 (dep 11).

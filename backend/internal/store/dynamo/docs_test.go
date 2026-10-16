@@ -64,6 +64,9 @@ func TestListReadyIsQueryNotScan(t *testing.T) {
 	if q.ScanIndexForward == nil || *q.ScanIndexForward {
 		t.Fatal("ScanIndexForward must be false")
 	}
+	if !aws.ToBool(q.ConsistentRead) {
+		t.Fatal("ListReady Query must set ConsistentRead")
+	}
 	if v, ok := q.ExpressionAttributeValues[":o"]; !ok || s(v) != "o1" || *q.TableName != "test-documents" {
 		t.Fatalf("query = %+v", q)
 	}

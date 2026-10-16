@@ -46,6 +46,8 @@ type Stores struct {
 	// Now reports the current time; it decides whether a pending document's ttl has passed
 	// (DynamoDB deletes expired items lazily, so reads must filter them).
 	Now func() time.Time
+	// sleep waits between transaction retries; tests replace it to run instantly.
+	sleep func(ctx context.Context, d time.Duration) error
 }
 
 var (
@@ -55,7 +57,7 @@ var (
 
 // New returns Stores over api using tables "<stage>-users" and "<stage>-documents".
 func New(api DynamoAPI, stage string) *Stores {
-	return &Stores{api: api, users: stage + "-users", docs: stage + "-documents", Now: time.Now}
+	return &Stores{api: api, users: stage + "-users", docs: stage + "-documents", Now: time.Now, sleep: sleepCtx}
 }
 
 // isCondFailed reports whether err is a single-item conditional check failure and returns it.
@@ -115,4 +117,56 @@ func ptr[T any](v T) *T { return &v }
 
 func isLockID(id string) bool {
 	return strings.HasPrefix(id, emailLockPrefix) || strings.HasPrefix(id, googleLockPrefix)
+}
+
+func sleepCtx(ctx context.Context, d time.Duration) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-time.After(d):
+		return nil
+	}
+}
+
+const maxTxAttempts = 3
+
+// isTxContention reports a retryable transaction failure: TransactionInProgress, or a
+// cancellation whose reasons include TransactionConflict and no failed condition.
+func isTxContention(err error) bool {
+	var ip *types.TransactionInProgressException
+	if errors.As(err, &ip) {
+		return true
+	}
+	rs, ok := cancelReasons(err)
+	if !ok {
+		return false
+	}
+	conflict := false
+	for i, r := range rs {
+		if reasonIsCondFailed(rs, i) {
+			return false
+		}
+		if r.Code != nil && *r.Code == "TransactionConflict" {
+			conflict = true
+		}
+	}
+	return conflict
+}
+
+// transact runs TransactWriteItems, retrying contention (a double-submitted signup) a
+// bounded number of times. After the cap the last error is returned as-is; it is never
+// reported as store.ErrConflict, which means a uniqueness violation.
+func (s *Stores) transact(ctx context.Context, in *dynamodb.TransactWriteItemsInput) error {
+	var err error
+	for attempt := 0; attempt < maxTxAttempts; attempt++ {
+		if attempt > 0 {
+			if serr := s.sleep(ctx, time.Duration(10<<attempt)*time.Millisecond); serr != nil {
+				return serr
+			}
+		}
+		if _, err = s.api.TransactWriteItems(ctx, in); err == nil || !isTxContention(err) {
+			return err
+		}
+	}
+	return err
 }

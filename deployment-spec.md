@@ -56,7 +56,7 @@ Browser ──► S3 (presigned PUT and GET, direct)
 - A Google account for the Google Cloud Console, to create the OAuth clients for sign-in (free for basic profile sign-in **(verify)**).
 
 **Tools on the machine that deploys**
-- Go 1.22 or newer
+- Go 1.24 or newer
 - AWS CLI v2, configured (`aws configure sso` or `aws configure`) and working (`aws sts get-caller-identity`)
 - AWS SAM CLI
 - Node.js (LTS) and npm, for the frontend

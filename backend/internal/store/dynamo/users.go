@@ -69,7 +69,7 @@ func (s *Stores) CreateUser(ctx context.Context, u store.User) error {
 		}
 		items = append(items, it)
 	}
-	_, err = s.api.TransactWriteItems(ctx, &dynamodb.TransactWriteItemsInput{TransactItems: items})
+	err = s.transact(ctx, &dynamodb.TransactWriteItemsInput{TransactItems: items})
 	if err != nil {
 		if rs, ok := cancelReasons(err); ok {
 			for i := range rs {
@@ -111,7 +111,7 @@ func (s *Stores) LinkGoogle(ctx context.Context, userID, sub string, validAfter 
 		ExpressionAttributeValues:           map[string]types.AttributeValue{":sub": subAV, ":va": vaAV},
 		ReturnValuesOnConditionCheckFailure: types.ReturnValuesOnConditionCheckFailureAllOld,
 	}}
-	_, err = s.api.TransactWriteItems(ctx, &dynamodb.TransactWriteItemsInput{TransactItems: []types.TransactWriteItem{lock, upd}})
+	err = s.transact(ctx, &dynamodb.TransactWriteItemsInput{TransactItems: []types.TransactWriteItem{lock, upd}})
 	if err == nil {
 		return nil
 	}

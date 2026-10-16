@@ -105,6 +105,7 @@ func (s *Stores) ListReady(ctx context.Context, ownerID string, limit int) ([]st
 			ExpressionAttributeNames:  map[string]string{"#st": "status"},
 			ExpressionAttributeValues: map[string]types.AttributeValue{":o": &types.AttributeValueMemberS{Value: ownerID}, ":ready": &types.AttributeValueMemberS{Value: store.DocReady}},
 			ScanIndexForward:          ptr(false),
+			ConsistentRead:            ptr(true),
 			Limit:                     ptr(int32(max(limit-len(out), 50))),
 			ExclusiveStartKey:         start,
 		})

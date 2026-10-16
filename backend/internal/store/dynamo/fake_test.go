@@ -30,7 +30,8 @@ type fakeDynamo struct {
 	// unprocessedOnce, when set, makes each BatchGetItem leave the last key unprocessed once.
 	unprocessedOnce bool
 	pendingRetry    map[string][]map[string]types.AttributeValue
-	failTx          error // returned by the next TransactWriteItems
+	failTx          error // returned by TransactWriteItems failTxCount times (once when 0)
+	failTxCount     int
 }
 
 func newFake() *fakeDynamo {
@@ -328,7 +329,11 @@ func (f *fakeDynamo) TransactWriteItems(_ context.Context, in *dynamodb.Transact
 	f.txs = append(f.txs, in)
 	if f.failTx != nil {
 		err := f.failTx
-		f.failTx = nil
+		if f.failTxCount > 1 {
+			f.failTxCount--
+		} else {
+			f.failTx = nil
+		}
 		return nil, err
 	}
 	reasons := make([]types.CancellationReason, len(in.TransactItems))

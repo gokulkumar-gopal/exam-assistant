@@ -115,8 +115,10 @@ func TestCancelledTransactionIsConflict(t *testing.T) {
 func TestOtherCancellationReasonsAreNotConflicts(t *testing.T) {
 	for _, code := range []string{"TransactionConflict", "ThrottlingError", "ProvisionedThroughputExceeded", "ValidationError"} {
 		st, f := newStores()
+		st.sleep = noSleep
 		f.failTx = &types.TransactionCanceledException{CancellationReasons: []types.CancellationReason{
 			{Code: aws.String(code)}, {Code: aws.String("None")}}}
+		f.failTxCount = 100 // persistent: retries must give up, not turn it into a conflict
 		err := st.CreateUser(bg, u("u1", "a@x.com"))
 		if err == nil || errors.Is(err, store.ErrConflict) || errors.Is(err, store.ErrPrecondition) || errors.Is(err, store.ErrNotFound) {
 			t.Fatalf("%s: err = %v, want an infrastructure error", code, err)
@@ -186,5 +188,56 @@ func TestGetManyChunksAndHandlesUnprocessed(t *testing.T) {
 	byEmail, err := st.GetManyByEmail(bg, emails)
 	if err != nil || len(byEmail) != 250 || byEmail["e007@x.com"].ID != "u007" {
 		t.Fatalf("len=%d err=%v", len(byEmail), err)
+	}
+}
+
+func noSleep(context.Context, time.Duration) error { return nil }
+
+func conflictErr() error {
+	return &types.TransactionCanceledException{CancellationReasons: []types.CancellationReason{
+		{Code: aws.String("TransactionConflict")}, {Code: aws.String("None")}}}
+}
+
+func TestTransactionConflictIsRetried(t *testing.T) {
+	for name, e := range map[string]error{"cancelled": conflictErr(), "in-progress": &types.TransactionInProgressException{}} {
+		st, f := newStores()
+		var slept int
+		st.sleep = func(context.Context, time.Duration) error { slept++; return nil }
+		f.failTx, f.failTxCount = e, 2
+		if err := st.CreateUser(bg, u("u1", "a@x.com")); err != nil {
+			t.Fatalf("%s: err = %v", name, err)
+		}
+		if f.saw("TransactWriteItems") != 3 || slept != 2 {
+			t.Fatalf("%s: tx calls = %d, sleeps = %d", name, f.saw("TransactWriteItems"), slept)
+		}
+		if _, err := st.GetByID(bg, "u1"); err != nil {
+			t.Fatalf("%s: user missing after retry: %v", name, err)
+		}
+	}
+}
+
+func TestPersistentTransactionConflictGivesUp(t *testing.T) {
+	st, f := newStores()
+	st.sleep = noSleep
+	f.failTx, f.failTxCount = conflictErr(), 100
+	err := st.CreateUser(bg, u("u1", "a@x.com"))
+	if err == nil || errors.Is(err, store.ErrConflict) {
+		t.Fatalf("err = %v, want non-nil and not ErrConflict", err)
+	}
+	if f.saw("TransactWriteItems") != 3 {
+		t.Fatalf("attempts = %d, want 3", f.saw("TransactWriteItems"))
+	}
+}
+
+func TestRealConflictIsNotRetried(t *testing.T) {
+	st, f := newStores()
+	st.sleep = noSleep
+	_ = st.CreateUser(bg, u("u1", "a@x.com"))
+	before := f.saw("TransactWriteItems")
+	if err := st.CreateUser(bg, u("u2", "a@x.com")); !errors.Is(err, store.ErrConflict) {
+		t.Fatal(err)
+	}
+	if f.saw("TransactWriteItems")-before != 1 {
+		t.Fatal("uniqueness conflict must not be retried")
 	}
 }

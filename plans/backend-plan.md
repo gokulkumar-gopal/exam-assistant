@@ -6,7 +6,7 @@
 
 **Architecture:** Handler -> service -> store layering over repository interfaces, each with an in-memory fake and a DynamoDB implementation. One binary with two entry points (`cmd/server` local with `InProcessRunner`, `cmd/lambda` with `MODE=api|worker` and `LambdaRunner`). Generation is a polled job resource; a `Generator` interface hides Anthropic and Gemini behind one prompt, schema and validation.
 
-**Tech Stack:** Go 1.22+, `net/http` ServeMux, AWS SDK v2 (dynamodb, attributevalue, s3, lambda), aws-lambda-go + httpadapter, oklog/ulid/v2, x/crypto/bcrypt, golang-jwt/jwt/v5, google.golang.org/api/idtoken, pdfcpu, anthropic-sdk-go, google.golang.org/genai, log/slog.
+**Tech Stack:** Go 1.24+, `net/http` ServeMux, AWS SDK v2 (dynamodb, attributevalue, s3, lambda), aws-lambda-go + httpadapter, oklog/ulid/v2, x/crypto/bcrypt, golang-jwt/jwt/v5, google.golang.org/api/idtoken, pdfcpu, anthropic-sdk-go, google.golang.org/genai, log/slog.
 
 **Spec:** `backend-spec.md` (section 8 is the API contract), `AI-spec.md` (wins on everything LLM), `deployment-spec.md` sections on env, IAM and tables (read-only here), `frontend-spec.md` section 8 (list of calls).
 
@@ -16,7 +16,7 @@
 
 ## Global Constraints
 
-- Go 1.22+, stdlib `net/http`; no web framework, ORM, DI container, config library, validation library or job library (backend 3).
+- Go 1.24+, stdlib `net/http`; no web framework, ORM, DI container, config library, validation library or job library (backend 3).
 - REST only; no GraphQL/gRPC/WebSocket/SSE/long-polling (backend 1.8). Routes have no `/api` prefix. Every response: `Cache-Control: no-store`; deadline/status responses carry `serverTime`.
 - DynamoDB only; **no `Scan`**, no `BatchWriteItem`; index projections `INCLUDE`, never `ALL`; `ConsistentRead: true` on base-table reads that follow a write; SDK retryer at most 5 attempts, then `503 upstream_unavailable` (backend 4).
 - Server time is the only time. Services take a `Clock`, never `time.Now()` (backend 5.1).
