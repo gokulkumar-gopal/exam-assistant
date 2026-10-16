@@ -415,7 +415,7 @@ Vercel creates a new URL for every branch and pull request. The backend's origin
 
 ### 7.6 Local development
 
-- `frontend/.env.local` (gitignored): `API_URL=<dev FunctionUrl>` to use the dev stack, or `API_URL=http://localhost:8080` to use a locally running backend (`make run` in `backend/`, which needs AWS credentials and the dev tables), or the mock flag from `frontend-spec.md` section 8.1 to work with no backend at all.
+- `frontend/.env.local` (gitignored): `API_URL=<dev FunctionUrl>` to use the dev stack, or `API_URL=http://127.0.0.1:8080` to use a locally running backend (`make run` in `backend/`, which needs AWS credentials and the dev tables), or the mock flag from `frontend-spec.md` section 8.1 to work with no backend at all.
 - `ALLOWED_ORIGINS` on the dev stack already includes `http://localhost:3000`.
 
 ## 8. Deployment procedure
