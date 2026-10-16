@@ -14,6 +14,9 @@ import (
 // MinJWTSecretBytes is the shortest accepted JWT_SECRET.
 const MinJWTSecretBytes = 32
 
+// LocalDevOrigin is the only http:// origin ENV=production accepts.
+const LocalDevOrigin = "http://localhost:3000"
+
 // Config is the whole process configuration.
 type Config struct {
 	Env      string // "local" or "production"
@@ -121,14 +124,28 @@ func Load(getenv func(string) string) (Config, error) {
 		if len(c.AllowedOrigins) == 0 {
 			fail("ALLOWED_ORIGINS is required")
 		}
+		if c.Env == "production" {
+			// Production origins must be HTTPS; the one plain-HTTP exception is the
+			// local dev frontend (backend-spec 8.2, 12). Cookies are Secure in production
+			// regardless (auth.NewSessions).
+			for _, o := range c.AllowedOrigins {
+				if strings.HasPrefix(strings.ToLower(o), "http://") && o != LocalDevOrigin {
+					fail("ALLOWED_ORIGINS entry %q must use https:// when ENV=production", o)
+				}
+			}
+		}
 		c.WorkerFunctionName = get("WORKER_FUNCTION_NAME")
 	case "worker":
 		for _, p := range c.Providers {
 			switch p {
 			case "anthropic":
-				c.LLMAPIKey = require("LLM_API_KEY")
+				if c.LLMAPIKey = get("LLM_API_KEY"); c.LLMAPIKey == "" {
+					fail("LLM_API_KEY is required for provider anthropic")
+				}
 			case "gemini":
-				c.GeminiAPIKey = require("GEMINI_API_KEY")
+				if c.GeminiAPIKey = get("GEMINI_API_KEY"); c.GeminiAPIKey == "" {
+					fail("GEMINI_API_KEY is required for provider gemini")
+				}
 			}
 		}
 	}
