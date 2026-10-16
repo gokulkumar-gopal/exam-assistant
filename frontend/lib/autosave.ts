@@ -90,9 +90,11 @@ export function createAutosaver(o: AutosaverOpts) {
           return "closed";
         }
         if ((e as { status?: number } | null)?.status === 422) {
+          // A change made while this put was in flight is a newer snapshot: leave it (and its timer) alone, and
+          // report rejected only when nothing newer is pending.
+          if (dirty) return "rejected";
           rejected = rejectionReason(e);
           failing = false;
-          dirty = false; // a retry of the same snapshot would be refused again; a change makes a new one
           clear();
           emit("rejected", rejected);
           return "rejected";

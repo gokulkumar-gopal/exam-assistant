@@ -116,6 +116,46 @@ describe("createAutosaver", () => {
     expect(put).toHaveBeenCalledTimes(1);
   });
 
+  it("a change made while a put is in flight survives that put being rejected (422)", async () => {
+    let release!: () => void;
+    let first = true;
+    const { saver, put, states, s } = setup(() => {
+      if (!first) return Promise.resolve();
+      first = false;
+      return new Promise<void>((_, rej) => { release = () => rej(rejected422({ answers: "Too long overall" })); });
+    });
+    saver.change();
+    await vi.advanceTimersByTimeAsync(500); // put #1 in flight
+    expect(put).toHaveBeenCalledTimes(1);
+    s.answers = { q1: "newer" };
+    saver.change();
+    release(); // put #1 comes back 422
+    await vi.advanceTimersByTimeAsync(0);
+    expect(states.some((x) => x.status === "rejected")).toBe(false);
+    await vi.advanceTimersByTimeAsync(500);
+    expect(put).toHaveBeenCalledTimes(2);
+    expect(put).toHaveBeenLastCalledWith({ q1: "newer" }, 0);
+    expect(states.at(-1)!.status).toBe("saved");
+  });
+
+  it("flush while a put is in flight and rejected sends the current text", async () => {
+    let release!: () => void;
+    let first = true;
+    const { saver, put, s } = setup(() => {
+      if (!first) return Promise.resolve();
+      first = false;
+      return new Promise<void>((_, rej) => { release = () => rej(rejected422()); });
+    });
+    saver.change();
+    await vi.advanceTimersByTimeAsync(500);
+    s.answers = { q1: "current" };
+    saver.change();
+    const f = saver.flush();
+    release();
+    expect(await f).toBe("saved");
+    expect(put).toHaveBeenLastCalledWith({ q1: "current" }, 0);
+  });
+
   it("a 5xx still retries every 3000 ms", async () => {
     const { saver, put } = setup(async () => { throw Object.assign(new Error("x"), { status: 500 }); });
     saver.change();

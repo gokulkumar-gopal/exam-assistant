@@ -7,8 +7,8 @@ import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { api, ApiError, serverNow } from "@/lib/api";
 import { useAttempt } from "@/lib/attempt";
-import { createAutosaver, keepaliveOk, shouldFlushOnEvent, type AutosaveState } from "@/lib/autosave";
-import { autoSubmitAtZero, canSaveAndExit, submitExam, withTimeout, type SubmitPhase } from "@/lib/submit";
+import { autosaveText, createAutosaver, keepaliveOk, shouldFlushOnEvent, type AutosaveState } from "@/lib/autosave";
+import { autoSubmitAtZero, awaitWithTimeout, canSaveAndExit, submitExam, withTimeout, type SubmitPhase } from "@/lib/submit";
 import { scheduleAt } from "@/lib/timer";
 import { answersByIndex, clampIndex, takeDecision } from "@/lib/take";
 import { applyReveal, applyRevealError, initReveal, peeksOn, revealControl, revealHint, type RevealedAnswer } from "@/lib/reveal";
@@ -24,6 +24,8 @@ export const FORBIDDEN_TOAST = "You don't have access to that.";
 export const NOT_OPEN_TOAST = "This exam is closed";
 /** A submit request that has not answered by then counts as failed (the loop retries; submit is idempotent). */
 const SUBMIT_TIMEOUT_MS = 20_000;
+/** Longest a submit waits for a reveal already sent; after that it submits anyway. */
+const REVEAL_WAIT_MS = 2000;
 const NETWORK_TOAST = "Couldn't reach the server. Try again.";
 
 /** What a reveal attempt ended as: ok, not allowed right now (blocked), refused by the server (403/409), closed, or a failure. */
@@ -155,6 +157,8 @@ function Attempting({ data, children }: { data: ExamResponse; children: React.Re
   useEffect(() => { latest.current = { answers: a.answers, lastQuestionIndex: index }; });
   const initialSaved = attempt?.savedAt ? Date.parse(attempt.savedAt) : NaN;
   const [save, setSave] = useState<AutosaveState>({ status: "idle", savedAt: Number.isNaN(initialSaved) ? null : initialSaved });
+  const saveRef = useRef(save);
+  useEffect(() => { saveRef.current = save; });
   const saverRef = useRef<ReturnType<typeof createAutosaver> | null>(null);
 
   // One way out of the attempt: a toast (if any), then the result page with history replaced so Back never
@@ -189,7 +193,7 @@ function Attempting({ data, children }: { data: ExamResponse; children: React.Re
       },
       snapshot: () => latest.current,
       initialSavedAt: Number.isNaN(initialSaved) ? null : initialSaved,
-      onState: (s) => { setSave(s); if (s.status === "closed") goClosed(); },
+      onState: (s) => { saveRef.current = s; setSave(s); if (s.status === "closed") goClosed(); },
     });
     saverRef.current = saver;
     // Closing the tab or switching away: send what is pending (closing loses at most the last keystroke).
@@ -242,7 +246,7 @@ function Attempting({ data, children }: { data: ExamResponse; children: React.Re
     submitting.current = true;
     setPhase("submitting");
     // A reveal already sent finishes first, like the manual submit, so the server scores with the peek.
-    if (revealing.current) await revealing.current.catch(() => undefined);
+    if (revealing.current) await awaitWithTimeout(revealing.current, REVEAL_WAIT_MS);
     const r = await zero.current();
     submitting.current = false;
     leave(r === "ok" ? TIMES_UP_TOAST : CLOSED_TOAST);
@@ -298,7 +302,7 @@ function Attempting({ data, children }: { data: ExamResponse; children: React.Re
     setPhase("submitting");
     try {
       // A reveal already sent finishes first, so the server has the peek before it scores the attempt.
-      if (revealing.current) await revealing.current.catch(() => undefined);
+      if (revealing.current) await awaitWithTimeout(revealing.current, REVEAL_WAIT_MS);
       const r = await withTimeout(submitExam(examId, latest.current.answers, latest.current.lastQuestionIndex), SUBMIT_TIMEOUT_MS);
       submitting.current = false;
       leave(r === "ok" ? null : CLOSED_TOAST);
@@ -327,7 +331,10 @@ function Attempting({ data, children }: { data: ExamResponse; children: React.Re
     // Failed: stay on the exam (the bar shows "Not saved. Retrying…" and keeps retrying), so no answer is lost.
     setExiting(false);
     if (r === "failed") toast.error(NETWORK_TOAST);
-    // "rejected": the bar already says why; answers stay in memory and Submit still works.
+    // "rejected": the bar says why and so does a toast; answers stay in memory and Submit still works.
+    if (r === "rejected") {
+      toast.error(autosaveText(saveRef.current.status === "rejected" ? saveRef.current : { status: "rejected", savedAt: null }));
+    }
   };
 
   const byIndex = answersByIndex(exam.questions, a.answers);

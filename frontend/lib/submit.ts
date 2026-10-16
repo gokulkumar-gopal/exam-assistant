@@ -57,6 +57,15 @@ export function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
   });
 }
 
+/** Wait for `p` for at most `ms`; resolves either way (a rejection is swallowed). Used to let an in-flight reveal finish before a submit, but never stall it. */
+export function awaitWithTimeout(p: Promise<unknown>, ms: number): Promise<void> {
+  return new Promise<void>((resolve) => {
+    const id = setTimeout(resolve, ms);
+    const done = () => { clearTimeout(id); resolve(); };
+    p.then(done, done);
+  });
+}
+
 export interface AutoSubmitDeps {
   submit: (answers: Record<string, string>, lastQuestionIndex: number) => Promise<SubmitOutcome>;
   /** The newest in-memory answers and index; read once, at the first trigger. */
