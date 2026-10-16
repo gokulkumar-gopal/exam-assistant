@@ -82,6 +82,8 @@ function seedExams() {
  *                    decides per question by `options`), resume state (answers + last index 4), a question
  *                    whose text and options are `<b>x</b>` markup, and a deadline tomorrow 6:00 PM local.
  *   /exams/e12/take  30 MCQ questions, never started (dots wrap at 375 px).
+ *   /exams/e19/take  peeks demo (MCQ, 2 peeks); /exams/e20/take free text, 1 peek. Mock e1 allows 3 peeks.
+ *                    Flag ?mockReveal=403|409|closed|fail|slow (see the reveal route).
  * Other cases reuse seeded exams: e6 is closed and never started (redirect to result), e5 is inside the
  * 60 s grace window, any unknown id is a 404.
  */
@@ -109,6 +111,20 @@ function seedTakeFixtures() {
     { id: "e13", title: "Take demo: 2 questions", type: "mcq", closesAt: iso(Date.now() + 2 * 24 * HOUR), maxPeeks: 0,
       createdBy: rao, questions: Array.from({ length: 2 }, (_, i) => ({ ...makeQuestion(1300 + i, 1 as Marks, "mcq"), id: `w${i + 1}` })), mine: false, unlisted: true,
       attempt: { status: "not_started", answers: {}, lastQuestionIndex: 0 }, assigned: [] },
+    // Peeks demos (also the mock e1): 2 peeks allowed, markup must stay literal.
+    { id: "e19", title: "Peeks demo: multiple choice", type: "mcq", closesAt: iso(Date.now() + 2 * 24 * HOUR), maxPeeks: 2,
+      createdBy: rao, questions: [
+        { id: "k1", marks: 2, text: "Which part makes ATP?", options: ["Nucleus", "<b>Mitochondria</b>", "Ribosome", "Golgi"], correctIndex: 1 },
+        { id: "k2", marks: 2, text: "Second question", options: ["One", "Two", "Three", "Four"], correctIndex: 2 },
+        { id: "k3", marks: 1, text: "Third question", options: ["Red", "Green", "Blue", "Black"], correctIndex: 0 },
+      ], mine: false, unlisted: true,
+      attempt: { status: "not_started", answers: {}, lastQuestionIndex: 0, revealed: [], peeksLeft: 2 }, assigned: [] },
+    { id: "e20", title: "Peeks demo: free text", type: "free", closesAt: iso(Date.now() + 2 * 24 * HOUR), maxPeeks: 1,
+      createdBy: rao, questions: [
+        { id: "k4", marks: 3, text: "Explain photosynthesis.", modelAnswer: "<i>Light</i> energy becomes chemical energy.\nIt happens in chloroplasts." },
+        { id: "k5", marks: 2, text: "What is osmosis?", modelAnswer: "Water moves across a membrane." },
+      ], mine: false, unlisted: true,
+      attempt: { status: "not_started", answers: {}, lastQuestionIndex: 0, revealed: [], peeksLeft: 1 }, assigned: [] },
   );
 }
 /**
@@ -120,6 +136,10 @@ function seedTakeFixtures() {
  *   /exams/e14/result?mockResult=unfinished 409 "Submit the exam to see results."
  *   /exams/e15/result                       free text, closed, key visible, score null (self-check)
  *   /exams/e15/result?mockResult=hidden     free text with the key hidden
+ *   /exams/e21/result                       MCQ, 3 peeks allowed, 2 revealed (r2, r4): "Score 25 / 40", before the penalty 30 / 40
+ *   /exams/e22/result                       MCQ, 3 peeks allowed, none used ("No peeks" badge)
+ *   /exams/e23/result                       free text, 1 peek allowed, x2 revealed (self-check scores it at half marks)
+ *   (e21 to e23 accept the same ?mockResult flags as e14)
  */
 function seedResultFixtures() {
   const mcq = Array.from({ length: 8 }, (_, i) => ({ ...makeQuestion(1400 + i, 5 as Marks, "mcq"), id: `r${i + 1}` }));
@@ -131,7 +151,24 @@ function seedResultFixtures() {
     ...(i === 1 ? { text: "<b>Explain</b> photosynthesis.", modelAnswer: "<i>Light</i> energy becomes chemical energy." } : {}),
   }));
   const freeAnswers: Record<string, string> = { x1: "Plants make food.", x2: "Sunlight makes sugar.", x3: "" , x4: "Because of osmosis." };
+  const peekMcq = (n: number) => mcq.map((q, i) => ({ ...q, id: `${n}r${i + 1}` }));
+  const peekAnswers = (qs: Question[]) => {
+    const a: Record<string, string> = {};
+    qs.forEach((q, i) => { if (i !== 7) a[q.id] = q.options![i < 6 ? q.correctIndex! : (q.correctIndex! + 1) % 4]; });
+    return a;
+  };
+  const used = peekMcq(21), none = peekMcq(22);
+  const revealedOf = (q: Question) => ({ questionId: q.id, correctIndex: q.correctIndex, modelAnswer: q.modelAnswer });
   state.exams.push(
+    { id: "e21", title: "Result demo: peeks used", type: "mcq", closesAt: iso(Date.now() - 2 * 24 * HOUR), maxPeeks: 3,
+      createdBy: rao, questions: used, mine: false, unlisted: true,
+      attempt: { status: "submitted", answers: peekAnswers(used), lastQuestionIndex: 7, revealed: [revealedOf(used[1]), revealedOf(used[3])], peeksLeft: 1 }, assigned: [] },
+    { id: "e22", title: "Result demo: no peeks", type: "mcq", closesAt: iso(Date.now() - 2 * 24 * HOUR), maxPeeks: 3,
+      createdBy: rao, questions: none, mine: false, unlisted: true,
+      attempt: { status: "submitted", answers: peekAnswers(none), lastQuestionIndex: 7, revealed: [], peeksLeft: 3 }, assigned: [] },
+    { id: "e23", title: "Result demo: free text with a peek", type: "free", closesAt: iso(Date.now() - 2 * 24 * HOUR), maxPeeks: 1,
+      createdBy: rao, questions: free.map((q, i) => ({ ...q, id: `${"y"}${i + 1}` })), mine: false, unlisted: true,
+      attempt: { status: "submitted", answers: { y1: "Plants make food.", y2: "Sunlight makes sugar.", y3: "", y4: "Because of osmosis." }, lastQuestionIndex: 3, revealed: [{ questionId: "y2", modelAnswer: free[1].modelAnswer }], peeksLeft: 0 }, assigned: [] },
     { id: "e14", title: "Result demo: multiple choice", type: "mcq", closesAt: iso(Date.now() - 2 * 24 * HOUR), maxPeeks: 0,
       createdBy: rao, questions: mcq, mine: false, unlisted: true,
       attempt: { status: "submitted", answers, lastQuestionIndex: 7 }, assigned: [] },
@@ -205,8 +242,13 @@ function grade(e: MockExam): { score: number | null; before: number | null } {
   if (e.type !== "mcq" || !e.attempt) return { score: null, before: null };
   let before = 0;
   for (const q of e.questions) if (isRight(q, e.attempt.answers[q.id])) before += q.marks;
-  const peeks = e.attempt.revealed?.length ?? 0;
-  return { before, score: Math.max(0, before - peeks * 0.5) };
+  // A correct answer that was revealed earns half its marks (bs 9.3).
+  let score = before;
+  for (const r of e.attempt.revealed ?? []) {
+    const q = e.questions.find((x) => x.id === r.questionId);
+    if (q && isRight(q, e.attempt.answers[q.id])) score -= q.marks / 2;
+  }
+  return { before, score };
 }
 
 const CYCLE: RosterRow["status"][] = ["submitted", "in_progress", "not_started", "declined"];
@@ -596,6 +638,16 @@ export function mockFetch(method: string, rawPath: string, body: unknown, idempo
     }
     if (method === "POST" && sub === "reveal") {
     const b = as<RevealBody>();
+      // Test triggers (mock only), sticky from the page URL: ?mockReveal=403 (peeking off) | 409 (no peeks left,
+      // for a question not yet revealed) | closed (409 exam_closed) | fail (network failure) | slow (2 s).
+      // Log: globalThis.__mockRevealLog = [{ questionId }] (one entry per request that reached the mock).
+      const t = stickyFlag("mockReveal");
+      if (!resumed) ((globalThis as unknown as { __mockRevealLog?: unknown[] }).__mockRevealLog ??= []).push({ questionId: b.questionId });
+      if (t === "slow" && !resumed) return new Promise((res) => setTimeout(() => res(mockFetch(method, rawPath, body, idempotencyKey, true)), 2000));
+      if (t === "fail") throw new TypeError("mock network failure");
+      if (t === "403") return err(403, "forbidden", "Peeking is turned off for this exam.");
+      if (t === "closed") return err(409, "exam_closed", "This exam is closed.");
+      if (t === "409" && !(exam.attempt?.revealed ?? []).some((r) => r.questionId === b.questionId)) return err(409, "conflict", "No peeks left.");
       if (exam.maxPeeks === 0) return err(403, "forbidden", "Peeking is off for this exam.");
       if (keyVisible(exam) || !exam.attempt) return err(409, "conflict", "The answer is already available.");
       if (over(exam)) return err(409, "exam_closed", "This exam is closed.");
@@ -605,6 +657,7 @@ export function mockFetch(method: string, rawPath: string, body: unknown, idempo
       if (left <= 0) return err(409, "conflict", "No peeks left.");
       const revealed = exam.attempt.revealed ?? [];
       if (!revealed.some((r) => r.questionId === q.id)) {
+        if (exam.attempt.status === "not_started") exam.attempt.status = "in_progress"; // a reveal starts the attempt (bs 9.6)
         revealed.push({ questionId: q.id, correctIndex: q.correctIndex, modelAnswer: q.modelAnswer });
         exam.attempt.revealed = revealed;
         exam.attempt.peeksLeft = left - 1;
@@ -671,7 +724,7 @@ export function mockFetch(method: string, rawPath: string, body: unknown, idempo
     if (method === "GET" && sub === "result") {
       if (!exam.attempt) return err(404, "not_found", "That item isn't available.");
       // Mock-only page-URL flag (see seedResultFixtures), honoured for e14 and e15 only: hidden | leak | fractional | unfinished.
-      const flag = exam.id === "e14" || exam.id === "e15" ? stickyFlag("mockResult") : null;
+      const flag = ["e14", "e15", "e21", "e22", "e23"].includes(exam.id) ? stickyFlag("mockResult") : null;
       const isOver = over(exam);
       if (flag === "unfinished" || (exam.attempt.status !== "submitted" && !isOver)) return err(409, "conflict", "Submit the exam to see results.");
       const hide = flag === "hidden" || flag === "leak";

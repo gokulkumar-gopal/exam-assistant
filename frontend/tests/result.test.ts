@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { keyAvailableLine, resultCardData, resultCardView, scoreFraction, scoreSubtitle, selfCheckScore, setCheck } from "../lib/key";
+import { keyAvailableLine, peekLines, resultCardData, resultCardView, scoreFraction, scoreSubtitle, selfCheckScore, setCheck } from "../lib/key";
 import { scoreText } from "../lib/format";
 
 const leaky = {
@@ -141,5 +141,109 @@ describe("self-check scoring (local only)", () => {
   });
   it("ignores checks for unknown questions", () => {
     expect(selfCheckScore({ base: 4, maxScore: 10, questions: qs, checks: { zzz: "got" } })).toBe(4);
+  });
+});
+
+describe("peekLines (fs 6.7)", () => {
+  const base = { maxPeeks: 3, peeksUsed: 2, maxScore: 40, scoreBeforePeeks: 36, submitted: true };
+  it("shows both lines when peeks were used", () => {
+    expect(peekLines(base, true)).toEqual({ withoutPenalty: "Score without the peek penalty: 36 / 40", used: "Peeks used: 2 of 3", noPeeks: false });
+  });
+  it("halves read with one decimal only when needed", () => {
+    expect(peekLines({ ...base, scoreBeforePeeks: 35.5 }, true).withoutPenalty).toBe("Score without the peek penalty: 35.5 / 40");
+  });
+  it("no peek lines and an ok badge when peeks were allowed but none used", () => {
+    expect(peekLines({ ...base, peeksUsed: 0 }, true)).toEqual({ withoutPenalty: null, used: null, noPeeks: true });
+  });
+  it("shows nothing when peeking was off (maxPeeks 0)", () => {
+    expect(peekLines({ ...base, maxPeeks: 0, peeksUsed: 0 }, true)).toEqual({ withoutPenalty: null, used: null, noPeeks: false });
+  });
+  it("used lines need no penalty-free score: a missing score drops only that line", () => {
+    expect(peekLines({ ...base, scoreBeforePeeks: null }, true)).toEqual({ withoutPenalty: null, used: "Peeks used: 2 of 3", noPeeks: false });
+  });
+  it("shows nothing for an attempt that was never submitted, or when the peeks UI is cut", () => {
+    const none = { withoutPenalty: null, used: null, noPeeks: false };
+    expect(peekLines({ ...base, submitted: false }, true)).toEqual(none);
+    expect(peekLines({ ...base, peeksUsed: 0, submitted: false }, true)).toEqual(none);
+    expect(peekLines(base, false)).toEqual(none);
+    expect(peekLines({ ...base, peeksUsed: 0 }, false)).toEqual(none);
+  });
+});
+
+describe("revealed questions on the result page", () => {
+  const mcqKey = { id: "q1", marks: 2, text: "Pick", options: ["A1", "B1"], yourAnswer: "A1", correctIndex: 1, correctAnswer: "B1", correct: false };
+  it("hidden key: a revealed question shows the marker and its revealed answer, still without a pill", () => {
+    const d = resultCardData({ ...mcqKey, revealed: true }, false, 1, "mcq", true);
+    expect(d.revealed).toBe(true);
+    expect(d.revealedText).toBe("B1");
+    expect(d.pill).toBeNull();
+    expect(d.correctText).toBeUndefined();
+    expect(d.canSelfCheck).toBe(false);
+  });
+  it("hidden key: the revealed MCQ answer falls back to options[correctIndex]", () => {
+    expect(resultCardData({ ...mcqKey, correctAnswer: undefined, revealed: true }, false, 1, "mcq", true).revealedText).toBe("B1");
+  });
+  it("hidden key: a revealed free-text question shows its model answer as text, with no self-check", () => {
+    const d = resultCardData({ id: "f", marks: 3, text: "Explain", yourAnswer: "mine", modelAnswer: "<i>m</i>", revealed: true }, false, 2, "free", true);
+    expect(d.revealed).toBe(true);
+    expect(d.revealedText).toBe("<i>m</i>");
+    expect(d.modelAnswer).toBeUndefined();
+    expect(d.canSelfCheck).toBe(false);
+  });
+  it("hidden key: an unrevealed question never carries key material, even if the payload does", () => {
+    const d = resultCardData({ ...mcqKey, modelAnswer: "The model", revealed: false }, false, 1, "mcq", true);
+    expect(d.revealed).toBe(false);
+    expect(d.revealedText).toBeUndefined();
+    expect(JSON.stringify(d)).not.toContain("B1");
+    expect(JSON.stringify(d)).not.toContain("The model");
+  });
+  it("only a real true counts as revealed", () => {
+    for (const v of [undefined, null, 0, 1, "true", "yes", {}] as unknown[]) {
+      const d = resultCardData({ ...mcqKey, revealed: v as boolean }, false, 1, "mcq", true);
+      expect(d.revealed).toBe(false);
+      expect(JSON.stringify(d)).not.toContain("B1");
+    }
+  });
+  it("hidden key and revealed, but the server sent no answer: marker only", () => {
+    const d = resultCardData({ id: "q", yourAnswer: "x", revealed: true }, false, 1, "mcq", true);
+    expect(d.revealed).toBe(true);
+    expect(d.revealedText).toBeUndefined();
+  });
+  it("visible key: the marker is added, the normal pill and correct answer stay, no separate revealed line", () => {
+    const d = resultCardData({ ...mcqKey, revealed: true }, true, 1, "mcq", true);
+    expect(d.revealed).toBe(true);
+    expect(d.revealedText).toBeUndefined();
+    expect(d.pill).toEqual({ variant: "bad", text: "✗ Incorrect" });
+    expect(d.correctText).toBe("B1");
+  });
+  it("a hidden-key payload carrying keys for all questions renders keys only for revealed ones", () => {
+    const payload = Array.from({ length: 6 }, (_, i) => ({
+      id: `q${i}`, marks: 1, text: `T${i}`, options: ["x", "y"], yourAnswer: "x",
+      correctIndex: 1, correctAnswer: `KEY${i}`, modelAnswer: `MODEL${i}`, correct: i % 2 === 0, revealed: i === 1 || i === 4,
+    }));
+    for (const type of ["mcq", "free"] as const) {
+      const cards = payload.map((q, i) => resultCardData(q, false, i + 1, type, true));
+      cards.forEach((c, i) => {
+        const json = JSON.stringify(c);
+        const shown = i === 1 || i === 4;
+        for (let k = 0; k < 6; k++) {
+          const leaks = json.includes(`KEY${k}`) || json.includes(`MODEL${k}`);
+          expect(leaks).toBe(shown && k === i);
+        }
+        expect(c.pill).toBeNull();
+        expect(c.correctText).toBeUndefined();
+        expect(c.modelAnswer).toBeUndefined();
+        expect(c.canSelfCheck).toBe(false);
+      });
+    }
+  });
+  it("resultCardView is unchanged: hidden is always no pill and no correct line", () => {
+    expect(resultCardView({ ...mcqKey, revealed: true }, false, "mcq")).toEqual({ showPill: false, showCorrect: false });
+  });
+  it("with the peeks UI cut, nothing about reveals shows", () => {
+    const d = resultCardData({ ...mcqKey, revealed: true }, false, 1, "mcq", false);
+    expect(d.revealed).toBe(false);
+    expect(d.revealedText).toBeUndefined();
+    expect(JSON.stringify(d)).not.toContain("B1");
   });
 });

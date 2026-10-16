@@ -11,7 +11,8 @@ import { createAutosaver, keepaliveOk, shouldFlushOnEvent, type AutosaveState } 
 import { autoSubmitAtZero, canSaveAndExit, submitExam, withTimeout, type SubmitPhase } from "@/lib/submit";
 import { scheduleAt } from "@/lib/timer";
 import { answersByIndex, clampIndex, takeDecision } from "@/lib/take";
-import type { Attempt, ExamResponse } from "@/lib/types";
+import { applyReveal, applyRevealError, initReveal, peeksOn, revealControl, type RevealedAnswer } from "@/lib/reveal";
+import type { Attempt, ExamResponse, RevealResponse } from "@/lib/types";
 import { EmptyState } from "@/components/EmptyState";
 import { ExamBar } from "@/components/ExamBar";
 import { Notice } from "@/components/Notice";
@@ -22,6 +23,22 @@ export const NOT_OPEN_TOAST = "This exam is closed";
 /** A submit request that has not answered by then counts as failed (the loop retries; submit is idempotent). */
 const SUBMIT_TIMEOUT_MS = 20_000;
 const NETWORK_TOAST = "Couldn't reach the server. Try again.";
+
+/** What a reveal attempt ended as: ok, not allowed right now (blocked), refused by the server (403/409), closed, or a failure. */
+export type RevealOutcome = "ok" | "blocked" | "refused" | "closed" | "failed";
+
+export interface PeeksApi {
+  /** maxPeeks above 0, peeks not turned off, UI flag on: the counter and controls are shown. */
+  on: boolean;
+  left: number;
+  /** A 409 said no peeks are left (or the key is visible). */
+  noneLeft: boolean;
+  control: (questionId: string) => "none" | "disabled" | "enabled";
+  answer: (questionId: string) => RevealedAnswer | undefined;
+  reveal: (questionId: string) => Promise<RevealOutcome>;
+  /** A reveal is in flight. */
+  busy: boolean;
+}
 
 export interface AttemptScreen {
   exam: ExamResponse["exam"];
@@ -40,6 +57,7 @@ export interface AttemptScreen {
   markFocusQuestion: () => void;
   /** True once (and clears) when the review page asked the take page to focus its question heading. */
   takeFocusQuestion: () => boolean;
+  peeks: PeeksApi;
 }
 
 const Ctx = createContext<AttemptScreen | null>(null);
@@ -232,12 +250,47 @@ function Attempting({ data, children }: { data: ExamResponse; children: React.Re
   }, [acceptingMs, offsetMs, goClosed]);
 
   const [busy, setBusy] = useState(false);
+
+  // Peeks (fs 6.5). Revealed answers come from attempt.revealed (so a reload keeps them) and from the reveal response.
+  const [rv, setRv] = useState(() => initReveal(exam.maxPeeks, attempt, data.keyVisible));
+  const rvRef = useRef(rv);
+  useEffect(() => { rvRef.current = rv; });
+  const revealing = useRef<Promise<unknown> | null>(null);
+  const [revealBusy, setRevealBusy] = useState(false);
+  const reveal = useCallback(async (qid: string): Promise<RevealOutcome> => {
+    // Never during or after a submit, and one reveal at a time.
+    if (submitting.current || finished.current || revealing.current) return "blocked";
+    if (revealControl(rvRef.current, qid, false) !== "enabled") return "blocked";
+    setRevealBusy(true);
+    const p = api<RevealResponse>("POST", `/exams/${encodeURIComponent(examId)}/reveal`, { questionId: qid }, { noRetry: true });
+    revealing.current = p;
+    try {
+      const r = await p;
+      setRv((s) => applyReveal(s, r));
+      return "ok";
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 409 && e.code === "exam_closed") { goClosed(); return "closed"; }
+      if (e instanceof ApiError && (e.status === 403 || e.status === 409)) {
+        setRv((s) => applyRevealError(s, e.status));
+        toast(e.message);
+        return "refused";
+      }
+      toast.error(NETWORK_TOAST);
+      return "failed";
+    } finally {
+      revealing.current = null;
+      setRevealBusy(false);
+    }
+  }, [examId, goClosed]);
+
   const submit = useCallback(async (): Promise<boolean> => {
     if (submitting.current || finished.current) return false;
     submitting.current = true;
     setBusy(true);
     setPhase("submitting");
     try {
+      // A reveal already sent finishes first, so the server has the peek before it scores the attempt.
+      if (revealing.current) await revealing.current.catch(() => undefined);
       const r = await withTimeout(submitExam(examId, latest.current.answers, latest.current.lastQuestionIndex), SUBMIT_TIMEOUT_MS);
       submitting.current = false;
       leave(r === "ok" ? null : CLOSED_TOAST);
@@ -269,11 +322,22 @@ function Attempting({ data, children }: { data: ExamResponse; children: React.Re
   };
 
   const byIndex = answersByIndex(exam.questions, a.answers);
+  const submitBusy = busy || phase !== "idle";
+  const peeksOnNow = peeksOn(rv);
+  const peeks = useMemo<PeeksApi>(() => ({
+    on: peeksOnNow,
+    left: rv.peeksLeft,
+    noneLeft: rv.noPeeksLeft || rv.peeksLeft <= 0,
+    control: (qid) => revealControl(rv, qid, submitBusy || revealBusy),
+    answer: (qid) => rv.revealed[qid],
+    reveal,
+    busy: revealBusy,
+  }), [rv, peeksOnNow, submitBusy, revealBusy, reveal]);
   const value = useMemo<AttemptScreen>(
-    () => ({ exam, attempt, answers: a.answers, byIndex, index, setAnswer, goTo: a.goTo, submit, submitting: busy || phase !== "idle", markFocusQuestion, takeFocusQuestion }),
+    () => ({ exam, attempt, answers: a.answers, byIndex, index, setAnswer, goTo: a.goTo, submit, submitting: submitBusy, markFocusQuestion, takeFocusQuestion, peeks }),
     // byIndex derives from exam + answers
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [exam, attempt, a.answers, index, setAnswer, a.goTo, submit, busy, phase, markFocusQuestion, takeFocusQuestion],
+    [exam, attempt, a.answers, index, setAnswer, a.goTo, submit, submitBusy, markFocusQuestion, takeFocusQuestion, peeks],
   );
 
   return (
@@ -281,7 +345,7 @@ function Attempting({ data, children }: { data: ExamResponse; children: React.Re
       <ExamBar
         title={exam.title}
         save={save}
-        peeksLeft={exam.maxPeeks > 0 ? attempt?.peeksLeft : undefined}
+        peeksLeft={peeksOnNow ? rv.peeksLeft : undefined}
         closesAtIso={exam.closesAt}
         offsetMs={offsetMs}
         exiting={exiting}

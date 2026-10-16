@@ -11,6 +11,7 @@ import {
 } from "@/lib/totals";
 import { defaultModelId } from "@/lib/models";
 import { PEEKS_UI } from "@/lib/features";
+import { MAX_PEEKS, peeksValue, stepPeeks } from "@/lib/peeks";
 import { PRESET_SECONDS, assignHelper, parseEmails, type Deadline } from "@/lib/publish";
 import type { PublishForm } from "@/components/PublishBar";
 import { Minus, Plus } from "lucide-react";
@@ -233,8 +234,8 @@ function CreateInner() {
 
   const assignees = useMemo(() => parseEmails(assign, user?.role), [assign, user?.role]);
   // Peeks default to 3 for a personal practice exam and 0 when people are assigned, until the user edits it.
-  const peeksCap = result ? Math.min(10, listCount) : 10;
-  const maxPeeks = Math.min(peeksEdited ?? (assignees.emails.length === 0 ? 3 : 0), peeksCap);
+  const peeksCap = result ? Math.min(MAX_PEEKS, listCount) : MAX_PEEKS;
+  const maxPeeks = peeksValue(peeksEdited, assignees.emails, peeksCap);
   // The deadline is the server's to compute (preset) or the user's chosen time (picker); never the device clock.
   const deadline: Deadline | null = useMemo(() => {
     if (closes !== "custom") return PRESET_SECONDS.includes(Number(closes)) ? { closesInSeconds: Number(closes) } : null;
@@ -364,11 +365,11 @@ function CreateInner() {
               <div>
                 <span id="peeks-l" className="mb-1 block font-semibold">Peeks allowed</span>
                 <div role="group" aria-labelledby="peeks-l" className="flex items-center gap-2.5">
-                  <button type="button" className={PEEK_BTN} aria-label="Decrease peeks allowed" disabled={maxPeeks <= 0} onClick={() => setPeeksEdited(Math.max(0, maxPeeks - 1))}>
+                  <button type="button" className={PEEK_BTN} aria-label="Decrease peeks allowed" disabled={maxPeeks <= 0} onClick={() => setPeeksEdited(stepPeeks(maxPeeks, -1, peeksCap))}>
                     <Minus className="size-4" aria-hidden />
                   </button>
                   <span className="w-[26px] text-center font-semibold tabular-nums" aria-live="polite">{maxPeeks}</span>
-                  <button type="button" className={PEEK_BTN} aria-label="Increase peeks allowed" disabled={maxPeeks >= peeksCap} onClick={() => setPeeksEdited(Math.min(peeksCap, maxPeeks + 1))}>
+                  <button type="button" className={PEEK_BTN} aria-label="Increase peeks allowed" disabled={maxPeeks >= peeksCap} onClick={() => setPeeksEdited(stepPeeks(maxPeeks, 1, peeksCap))}>
                     <Plus className="size-4" aria-hidden />
                   </button>
                 </div>

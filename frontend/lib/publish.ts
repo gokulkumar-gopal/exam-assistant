@@ -46,6 +46,8 @@ export function buildPublishBody(f: {
 }
 
 const EMAIL = /^[^\s@,;]+@[^\s@,;]+\.[^\s@,;]+$/;
+/** The same check parseEmails uses for each address. */
+export const isEmail = (s: string): boolean => EMAIL.test(s);
 
 /** fs 6.4 helper under "Assign to" (and in the Assign dialog). The stricter student text shows until the role is known. */
 export function assignHelper(role: Role | undefined): string {

@@ -3,7 +3,7 @@
 // question, so a hidden answer key cannot reach the DOM. All text is rendered as React text nodes.
 import { MarkBadge } from "@/components/MarkBadge";
 import { Pill } from "@/components/Pill";
-import type { Check, ResultCardData } from "@/lib/key";
+import { REVEALED_MARKER, type Check, type ResultCardData } from "@/lib/key";
 import { cn } from "@/lib/utils";
 import type { Marks } from "@/lib/types";
 
@@ -30,12 +30,19 @@ export function ResultCard({ card, marks, check, onCheck }: Props) {
         </span>
         <MarkBadge marks={marks} />
         {card.pill && <Pill variant={card.pill.variant}>{card.pill.text}</Pill>}
+        {card.revealed && <Pill variant="neutral">{REVEALED_MARKER}</Pill>}
       </div>
       <p className="mb-2 whitespace-pre-wrap break-words text-base font-semibold">{card.text}</p>
       <p className="break-words text-sm">
         <span className="text-muted">Your answer: </span>
         <span className="whitespace-pre-wrap">{card.yourAnswer}</span>
       </p>
+      {card.revealedText !== undefined && (
+        <p className="mt-1 break-words text-sm">
+          <span className="text-muted">Revealed answer: </span>
+          <span className="whitespace-pre-wrap font-semibold">{card.revealedText}</span>
+        </p>
+      )}
       {card.correctText !== undefined && (
         <p className="mt-1 break-words text-sm">
           <span className="text-muted">Correct answer: </span>
