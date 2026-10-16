@@ -34,6 +34,9 @@ export type PutFile = (
   signal?: AbortSignal,
 ) => Promise<void>;
 
+/** A PUT with no progress event for this long is treated as stalled (slow but moving uploads are fine). */
+export const UPLOAD_STALL_MS = 30_000;
+
 const PUT_FAILED = "Couldn't upload the file. Try again.";
 
 /** XHR PUT of the file body to the presigned URL with exactly the given headers (they are signed). */
@@ -44,14 +47,28 @@ export const xhrPut = (
   onProgress: (fraction: number) => void,
   signal?: AbortSignal,
   createXhr: () => XMLHttpRequest = () => new XMLHttpRequest(),
+  stallMs: number = UPLOAD_STALL_MS,
 ): Promise<void> =>
   new Promise<void>((resolve, reject) => {
     const xhr = createXhr();
     const onAbort = () => xhr.abort();
-    const done = () => signal?.removeEventListener("abort", onAbort);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const arm = () => {
+      clearTimeout(timer);
+      timer = setTimeout(() => {
+        done();
+        reject(new UploadError(2, "The upload stalled. Try again."));
+        xhr.abort();
+      }, stallMs);
+    };
+    const done = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+    };
     xhr.open("PUT", url);
     for (const [k, v] of Object.entries(headers)) xhr.setRequestHeader(k, v);
     xhr.upload.onprogress = (e) => {
+      arm();
       if (e.lengthComputable && e.total > 0) onProgress(e.loaded / e.total);
     };
     xhr.onload = () => {
@@ -65,6 +82,7 @@ export const xhrPut = (
       if (signal.aborted) { reject(new UploadError(2, "Upload cancelled.", true)); return; }
       signal.addEventListener("abort", onAbort);
     }
+    arm();
     xhr.send(file);
   });
 

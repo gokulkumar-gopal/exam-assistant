@@ -1,6 +1,6 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
-  MAX_UPLOAD_BYTES, UploadError, UploadQueue, uploadFile, validateFile, xhrPut,
+  MAX_UPLOAD_BYTES, UPLOAD_STALL_MS, UploadError, UploadQueue, uploadFile, validateFile, xhrPut,
   type QueueItem, type UploadDeps,
 } from "../lib/upload";
 import { ApiError } from "../lib/api";
@@ -264,5 +264,75 @@ describe("UploadQueue", () => {
     });
     q.add([file("a")]);
     expect(snap[0].progress).toBe(0.4);
+  });
+});
+
+describe("upload stall timeout", () => {
+  afterEach(() => vi.useRealTimers());
+  const mk = () => new FakeXhr() as unknown as XMLHttpRequest;
+  const prog = (x: FakeXhr, loaded: number) => x.upload.onprogress?.({ lengthComputable: true, loaded, total: 100 });
+
+  it("stall limit is a named constant", () => {
+    expect(UPLOAD_STALL_MS).toBeGreaterThanOrEqual(10_000);
+  });
+
+  it("no progress for the limit: aborts the XHR and fails as step 2", async () => {
+    vi.useFakeTimers();
+    const p = xhrPut("https://s3.example/o", {}, file(), () => {}, undefined, mk);
+    const caught = p.catch((x) => x);
+    await vi.advanceTimersByTimeAsync(UPLOAD_STALL_MS);
+    const e = await caught;
+    expect(e).toBeInstanceOf(UploadError);
+    expect(e.step).toBe(2);
+    expect(e.aborted).toBe(false);
+    expect(FakeXhr.last.aborted).toBe(true);
+  });
+
+  it("continuous progress beyond the limit is not killed", async () => {
+    vi.useFakeTimers();
+    const p = xhrPut("https://s3.example/o", {}, file(), () => {}, undefined, mk);
+    const x = FakeXhr.last;
+    for (let i = 1; i <= 5; i++) {
+      await vi.advanceTimersByTimeAsync(UPLOAD_STALL_MS - 1000);
+      prog(x, i * 10);
+    }
+    expect(x.aborted).toBe(false);
+    x.status = 200; x.onload?.();
+    await expect(p).resolves.toBeUndefined();
+    await vi.advanceTimersByTimeAsync(UPLOAD_STALL_MS * 2);
+    expect(x.aborted).toBe(false);
+  });
+
+  it("a stall frees the queue slot, the next item starts, and Retry restarts from presign", async () => {
+    vi.useFakeTimers();
+    const presigns: string[] = [];
+    const xhrs: FakeXhr[] = [];
+    const upload = (f: File, onProgress: (n: number) => void, signal: AbortSignal) =>
+      uploadFile(f, onProgress, {
+        signal,
+        api: (async (_m: string, path: string) => {
+          if (path === "/documents/upload-url") { presigns.push(f.name); return { docId: "d1", uploadUrl: "https://s3.example/o", headers: {} }; }
+          return DOC;
+        }) as UploadDeps["api"],
+        putFile: (url, h, body, p, sig) => xhrPut(url, h, body, p, sig, () => { const x = new FakeXhr(); xhrs.push(x); return x as unknown as XMLHttpRequest; }),
+      });
+    let snap: QueueItem[] = [];
+    const q = new UploadQueue({ upload, limit: 1, onChange: (i) => { snap = i; } });
+    q.add([file("a"), file("b")]);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(presigns).toEqual(["a"]);
+    await vi.advanceTimersByTimeAsync(UPLOAD_STALL_MS);
+    const a = snap.find((i) => i.file.name === "a")!;
+    expect(a.status).toBe("failed");
+    expect(a.step).toBe(2);
+    expect(presigns).toEqual(["a", "b"]);
+    expect(snap.find((i) => i.file.name === "b")!.status).toBe("uploading");
+    q.retry(a.id);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(snap.find((i) => i.file.name === "a")!.status).toBe("queued");
+    xhrs[1].status = 200; xhrs[1].onload?.();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(presigns).toEqual(["a", "b", "a"]);
+    q.destroy();
   });
 });
