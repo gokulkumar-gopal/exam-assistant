@@ -134,3 +134,59 @@ func TestUploadURLRouteWrongMethodIsJSON405(t *testing.T) {
 		t.Fatalf("status %d allow %q body %s", rec.Code, rec.Header().Get("Allow"), rec.Body)
 	}
 }
+
+func TestCompleteRoute200AndErrors(t *testing.T) {
+	e := newDocsEnv(t)
+	rec := e.post(`{"name":"a.png","type":"image/png","sizeBytes":40}`, true, "")
+	var up struct {
+		DocID string `json:"docId"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &up); err != nil {
+		t.Fatal(err)
+	}
+	complete := func(id string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest("POST", "/documents/"+id+"/complete", nil)
+		req.AddCookie(e.cookie)
+		r := httptest.NewRecorder()
+		e.h.ServeHTTP(r, req)
+		return r
+	}
+	if r := complete(up.DocID); r.Code != http.StatusConflict {
+		t.Fatalf("missing object: %d %s", r.Code, r.Body)
+	}
+	e.blob.Put(e.blob.Puts[0].Key, append([]byte("\x89PNG\r\n\x1a\n"), make([]byte, 32)...))
+	r := complete(up.DocID)
+	if r.Code != http.StatusOK {
+		t.Fatalf("complete: %d %s", r.Code, r.Body)
+	}
+	var doc map[string]any
+	_ = json.Unmarshal(r.Body.Bytes(), &doc)
+	if doc["id"] != up.DocID || doc["name"] != "a.png" || doc["type"] != "PNG" || doc["pages"] != float64(1) || doc["sizeBytes"] != float64(40) || doc["createdAt"] == nil {
+		t.Errorf("doc = %v", doc)
+	}
+	if r := complete("missing"); r.Code != http.StatusNotFound {
+		t.Errorf("missing doc: %d", r.Code)
+	}
+	req := httptest.NewRequest("POST", "/documents/"+up.DocID+"/complete", nil)
+	r2 := httptest.NewRecorder()
+	e.h.ServeHTTP(r2, req)
+	if r2.Code != http.StatusUnauthorized {
+		t.Errorf("no cookie: %d", r2.Code)
+	}
+}
+
+func TestCompleteRouteWrongMethodIsJSON405(t *testing.T) {
+	e := newDocsEnv(t)
+	req := httptest.NewRequest("GET", "/documents/abc123/complete", nil)
+	rec := httptest.NewRecorder()
+	e.h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusMethodNotAllowed || rec.Header().Get("Allow") != "POST" || !strings.Contains(rec.Body.String(), "method_not_allowed") {
+		t.Fatalf("status %d allow %q body %s", rec.Code, rec.Header().Get("Allow"), rec.Body)
+	}
+	req = httptest.NewRequest("GET", "/documents/abc123/nothing", nil)
+	rec = httptest.NewRecorder()
+	e.h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("unknown path: %d", rec.Code)
+	}
+}
