@@ -13,18 +13,21 @@ export function Meter({
   value,
   max,
   tone = "accent",
+  label,
 }: {
   value: number;
   max: number;
   tone?: MeterTone;
+  label?: string;
 }) {
   const pct = max > 0 ? Math.min(100, Math.max(0, (value / max) * 100)) : 0;
   return (
     <div
-      role="meter"
+      role="progressbar"
+      aria-label={label}
       aria-valuemin={0}
       aria-valuemax={max}
-      aria-valuenow={value}
+      aria-valuenow={Math.min(max, Math.max(0, value))}
       data-tone={tone}
       className="h-2 w-full overflow-hidden rounded-[99px] bg-line"
     >
