@@ -10,6 +10,7 @@ describe("routes", () => {
   });
   it("exam take path", () => {
     expect(isExamTakePath("/exams/e1/take")).toBe(true);
+    expect(isExamTakePath("/exams/e1/review")).toBe(true);
     expect(isExamTakePath("/exams/e1/result")).toBe(false);
     expect(isExamTakePath("/exams/take")).toBe(false);
   });
