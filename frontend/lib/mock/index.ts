@@ -121,6 +121,20 @@ const err = (status: number, code: string, message: string, fields?: Record<stri
 const nothing = () => new Response(null, { status: 204 });
 const st = () => iso(Date.now());
 
+/**
+ * Mock-only page-URL flag that survives client-side navigation (take -> review drops the query string):
+ * the value last seen on a page URL is remembered for the session. `?name=` (empty) clears it.
+ */
+function stickyFlag(name: string): string | null {
+  const g = globalThis as unknown as { __mockFlags?: Record<string, string> };
+  const flags = (g.__mockFlags ??= {});
+  if (typeof window !== "undefined") {
+    const v = new URLSearchParams(window.location.search).get(name);
+    if (v !== null) { if (v === "") delete flags[name]; else flags[name] = v; }
+  }
+  return flags[name] ?? null;
+}
+
 const acceptingUntil = (e: MockExam) => iso(Date.parse(e.closesAt) + GRACE);
 const over = (e: MockExam) => Date.now() >= Date.parse(e.closesAt) + GRACE;
 const keyVisible = (e: MockExam) => e.mine || over(e);
@@ -194,6 +208,8 @@ function keyedQuestions(e: MockExam, visible: boolean): Question[] {
 }
 
 export function mockFetch(method: string, rawPath: string, body: unknown, idempotencyKey?: string, resumed = false): Response | Promise<Response> {
+  // Remember the sticky page-URL flags on every call (the first call of a page carries the query string).
+  stickyFlag("mockSubmit"); stickyFlag("mockClose");
   const [path, qs = ""] = rawPath.split("?");
   const query = new URLSearchParams(qs);
   const as = <T>() => (body ?? {}) as T;
@@ -434,6 +450,14 @@ export function mockFetch(method: string, rawPath: string, body: unknown, idempo
     if (!exam) return err(404, "not_found", "That item isn't available.");
     const sub = seg[2];
     if (method === "GET" && !sub) {
+      // Test trigger (mock only): ?mockClose=8 closes this exam 8 s after the first load that carries the flag
+      // (auto-submit at zero; the 60 s grace window follows). Sticky for the session, applied once per exam.
+      const closeIn = Number(stickyFlag("mockClose"));
+      const w = globalThis as unknown as { __mockCloseSet?: string[] };
+      if (Number.isFinite(closeIn) && closeIn !== 0 && !(w.__mockCloseSet ??= []).includes(exam.id)) {
+        w.__mockCloseSet.push(exam.id);
+        exam.closesAt = iso(Date.now() + closeIn * 1000);
+      }
       if (exam.closingDemo) exam.closesAt = iso(Date.now() - 20_000); // stay inside the grace window
       const vis = keyVisible(exam);
       return json(200, {
@@ -461,6 +485,15 @@ export function mockFetch(method: string, rawPath: string, body: unknown, idempo
     }
     if (method === "POST" && sub === "submit") {
     const b = as<SubmitBody>();
+      // Test triggers (mock only), sticky from the page URL: ?mockSubmit=closed (409 exam_closed) | fail (network
+      // failure every time) | failOnce (first call only) | slow (2 s). Log: globalThis.__mockSubmitLog = [body].
+      const t = stickyFlag("mockSubmit");
+      const sg = globalThis as unknown as { __mockSubmitLog?: unknown[]; __mockSubmitFailed?: boolean };
+      if (!resumed) (sg.__mockSubmitLog ??= []).push(b);
+      if (t === "fail") throw new TypeError("mock network failure");
+      if (t === "failOnce" && !sg.__mockSubmitFailed) { sg.__mockSubmitFailed = true; throw new TypeError("mock network failure"); }
+      if (t === "closed") return err(409, "exam_closed", "This exam is closed.");
+      if (t === "slow" && !resumed) return new Promise((res) => setTimeout(() => res(mockFetch(method, rawPath, body, idempotencyKey, true)), 2000));
       if (!exam.attempt) return err(404, "not_found", "That item isn't available.");
       if (exam.attempt.status !== "submitted") {
         if (over(exam)) return err(409, "exam_closed", "This exam is closed.");

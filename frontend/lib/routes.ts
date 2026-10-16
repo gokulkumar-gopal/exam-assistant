@@ -5,9 +5,9 @@ export function isPublicPath(pathname: string): boolean {
   return PUBLIC_PATHS.includes(pathname);
 }
 
-/** `/exams/<id>/take` uses ExamBar instead of AppBar (fs 4). */
+/** `/exams/<id>/take` and `/review` use ExamBar instead of AppBar (fs 4). */
 export function isExamTakePath(pathname: string): boolean {
-  return /^\/exams\/[^/]+\/take\/?$/.test(pathname);
+  return /^\/exams\/[^/]+\/(take|review)\/?$/.test(pathname);
 }
 
 /** Login URL carrying the path (and query) to return to. */

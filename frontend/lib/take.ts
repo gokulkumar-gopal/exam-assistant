@@ -43,4 +43,18 @@ export function takeRedirect(status: string | undefined, acceptingUntilIso: stri
   return null;
 }
 
+export type TakeDecision = "take" | "submit-resumed" | "home-closed" | "result";
+
+/**
+ * What opening the take/review screen does (fs 6.5 "Open after deadline"). Submitted, or past acceptingUntil
+ * (the one server cutoff): the result. Inside the 60 s grace window after closesAt: an in-progress attempt submits
+ * its resumed answers; a never-started one (or no attempt) is NOT submitted blank, it goes Home as closed.
+ */
+export function takeDecision(status: string | undefined, nowMs: number, closesMs: number, acceptingMs: number): TakeDecision {
+  if (status === "submitted") return "result";
+  if (!Number.isNaN(acceptingMs) && nowMs >= acceptingMs) return "result";
+  if (!Number.isNaN(closesMs) && nowMs >= closesMs) return status === "in_progress" ? "submit-resumed" : "home-closed";
+  return "take";
+}
+
 export { timerView } from "./timer";
