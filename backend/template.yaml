@@ -1,6 +1,6 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Transform: AWS::Serverless-2016-10-31
-Description: Exam Assistant backend (health-only skeleton, D-0.3)
+Description: Exam Assistant backend (API function, DynamoDB tables, uploads bucket)
 
 Parameters:
   Stage:           { Type: String, AllowedValues: [dev, prod] }
@@ -8,7 +8,7 @@ Parameters:
   LlmProviders:    { Type: String, Default: anthropic, Description: "Enabled providers, comma-separated: anthropic, gemini (for example gemini,anthropic)" }
   GoogleClientId:  { Type: String, Description: "Google OAuth client ID that sign-in tokens must be issued for" }
   AllowedOrigins:  { Type: String, Description: "Comma-separated, e.g. https://app.example.com,http://localhost:3000" }
-  FrontendOrigins: { Type: CommaDelimitedList, Description: "Same origins, for S3 CORS (used by the uploads bucket from D-1.2)" }
+  FrontendOrigins: { Type: CommaDelimitedList, Description: "Same origins, for S3 CORS (used by the uploads bucket CORS)" }
 
 Globals:
   Function:
@@ -20,9 +20,7 @@ Globals:
       Variables:                       # shared, non-secret
         ENV: production
         STAGE: !Ref Stage
-        # PLACEHOLDER: config.Load requires S3_BUCKET in every mode, but the bucket
-        # does not exist yet. D-1.2 replaces this with !Ref UploadsBucket.
-        S3_BUCKET: !Sub "exam-assistant-${Stage}-placeholder"
+        S3_BUCKET: !Ref UploadsBucket
         LLM_PROVIDERS: !Ref LlmProviders
 
 Resources:
@@ -41,12 +39,118 @@ Resources:
           JWT_SECRET: !Ref JwtSecret
           GOOGLE_CLIENT_ID: !Ref GoogleClientId
           ALLOWED_ORIGINS: !Ref AllowedOrigins
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action: [dynamodb:GetItem, dynamodb:PutItem, dynamodb:UpdateItem, dynamodb:DeleteItem,
+                       dynamodb:Query, dynamodb:BatchGetItem, dynamodb:ConditionCheckItem]
+              Resource:
+                - !GetAtt UsersTable.Arn
+                - !GetAtt DocumentsTable.Arn
+                - !GetAtt ExamsTable.Arn
+                - !Sub "${ExamsTable.Arn}/index/*"
+                - !GetAtt AttemptsTable.Arn
+                - !Sub "${AttemptsTable.Arn}/index/*"
+                - !GetAtt JobsTable.Arn
+                - !Sub "${JobsTable.Arn}/index/*"     # includes day-index, which the usage page queries
+            - Effect: Allow
+              Action: [s3:PutObject, s3:GetObject, s3:DeleteObject]
+              Resource: !Sub "${UploadsBucket.Arn}/*"
+            - Effect: Allow
+              Action: s3:ListBucket        # without it, HeadObject on a missing key returns 403, not 404
+              Resource: !GetAtt UploadsBucket.Arn
+            # lambda:InvokeFunction on the worker arrives in D-2.1
 
   ApiLogs:
     Type: AWS::Logs::LogGroup
     Properties: { LogGroupName: !Sub "/aws/lambda/exam-assistant-${Stage}-api", RetentionInDays: 14 }
 
+  UploadsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "exam-assistant-${Stage}-${AWS::AccountId}"
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault: { SSEAlgorithm: AES256 }
+      CorsConfiguration:
+        CorsRules:
+          - AllowedOrigins: !Ref FrontendOrigins
+            AllowedMethods: [GET, PUT, HEAD]
+            AllowedHeaders: ["*"]
+            ExposedHeaders: [ETag]
+            MaxAge: 3600
+
+  UsersTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "${Stage}-users"
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions: [{ AttributeName: id, AttributeType: S }]
+      KeySchema: [{ AttributeName: id, KeyType: HASH }]
+
+  DocumentsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "${Stage}-documents"
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions: [{ AttributeName: ownerId, AttributeType: S }, { AttributeName: id, AttributeType: S }]
+      KeySchema: [{ AttributeName: ownerId, KeyType: HASH }, { AttributeName: id, KeyType: RANGE }]
+      TimeToLiveSpecification: { AttributeName: ttl, Enabled: true }
+
+  ExamsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "${Stage}-exams"
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions: [{ AttributeName: id, AttributeType: S }, { AttributeName: creatorId, AttributeType: S }]
+      KeySchema: [{ AttributeName: id, KeyType: HASH }]
+      GlobalSecondaryIndexes:
+        - IndexName: creator-index
+          KeySchema: [{ AttributeName: creatorId, KeyType: HASH }, { AttributeName: id, KeyType: RANGE }]
+          Projection: { ProjectionType: INCLUDE, NonKeyAttributes: [title, type, totalMarks, closesAt, createdAt] }   # never the questions
+
+  AttemptsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "${Stage}-attempts"
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - { AttributeName: examId, AttributeType: S }
+        - { AttributeName: userId, AttributeType: S }
+      KeySchema: [{ AttributeName: examId, KeyType: HASH }, { AttributeName: userId, KeyType: RANGE }]
+      GlobalSecondaryIndexes:
+        - IndexName: user-index
+          KeySchema: [{ AttributeName: userId, KeyType: HASH }, { AttributeName: examId, KeyType: RANGE }]
+          Projection: { ProjectionType: INCLUDE, NonKeyAttributes: [status, scoreHalves, scoreBeforePeeksHalves, submittedAt] }   # never the answers
+
+  JobsTable:                           # also holds quota items (quota#...), usage counters (usage#...) and question items (<jobId>#questions)
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "${Stage}-jobs"
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - { AttributeName: id, AttributeType: S }
+        - { AttributeName: ownerId, AttributeType: S }
+        - { AttributeName: day, AttributeType: S }         # yyyymmdd (UTC), set on job items only
+        - { AttributeName: createdAt, AttributeType: S }   # ISO 8601 UTC string, sorts by time
+      KeySchema: [{ AttributeName: id, KeyType: HASH }]
+      TimeToLiveSpecification: { AttributeName: ttl, Enabled: true }
+      GlobalSecondaryIndexes:
+        - IndexName: owner-index
+          KeySchema: [{ AttributeName: ownerId, KeyType: HASH }, { AttributeName: id, KeyType: RANGE }]
+          Projection: { ProjectionType: INCLUDE, NonKeyAttributes: [status, createdAt, updatedAt, kind] }
+        - IndexName: day-index                              # the AI usage page lists today's jobs without a Scan
+          KeySchema: [{ AttributeName: day, KeyType: HASH }, { AttributeName: createdAt, KeyType: RANGE }]
+          Projection: { ProjectionType: INCLUDE, NonKeyAttributes: [status, model, kind, costMicros, calls, inTok, outTok, cacheReadTok, cacheWriteTok] }
+
 Outputs:
   FunctionUrl:
     Description: Function URL. The value keeps a trailing slash; consumers ($DEV_URL, Vercel API_URL) must strip it.
     Value: !GetAtt ApiFunctionUrl.FunctionUrl
+  BucketName:
+    Value: !Ref UploadsBucket
