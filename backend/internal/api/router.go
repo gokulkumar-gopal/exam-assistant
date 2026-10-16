@@ -38,9 +38,40 @@ func (rt *routeTable) handle(method, path string, h http.Handler) {
 	rt.methods[path] = append(rt.methods[path], method)
 }
 
+// matches reports whether path fits pattern, where "{name}" segments match any one non-empty segment.
+func matches(pattern, path string) bool {
+	ps, xs := strings.Split(pattern, "/"), strings.Split(path, "/")
+	if len(ps) != len(xs) {
+		return false
+	}
+	for i, p := range ps {
+		if strings.HasPrefix(p, "{") && strings.HasSuffix(p, "}") {
+			if xs[i] == "" {
+				return false
+			}
+			continue
+		}
+		if p != xs[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// methodsFor returns every method registered on any pattern that matches path.
+func (rt *routeTable) methodsFor(path string) []string {
+	var ms []string
+	for pattern, m := range rt.methods {
+		if matches(pattern, path) {
+			ms = append(ms, m...)
+		}
+	}
+	return ms
+}
+
 func (rt *routeTable) fallback(w http.ResponseWriter, r *http.Request) {
-	if ms, ok := rt.methods[r.URL.Path]; ok {
-		allow := slices.Clone(ms)
+	if ms := rt.methodsFor(r.URL.Path); len(ms) > 0 {
+		allow := slices.Compact(slices.Sorted(slices.Values(ms)))
 		if slices.Contains(allow, http.MethodGet) {
 			allow = append(allow, http.MethodHead)
 		}
