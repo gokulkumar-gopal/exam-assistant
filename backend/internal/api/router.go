@@ -10,6 +10,7 @@ import (
 	"github.com/gokulkumar/exam-assistant/backend/internal/apperr"
 	"github.com/gokulkumar/exam-assistant/backend/internal/auth"
 	"github.com/gokulkumar/exam-assistant/backend/internal/clock"
+	"github.com/gokulkumar/exam-assistant/backend/internal/docs"
 	"github.com/gokulkumar/exam-assistant/backend/internal/store"
 )
 
@@ -21,6 +22,7 @@ type Deps struct {
 	Users          store.UserStore
 	Auth           *auth.Service
 	Sessions       *auth.Sessions
+	Docs           *docs.Service
 	AllowedOrigins []string // CSRF allow-list for Origin
 }
 
@@ -60,6 +62,9 @@ func NewRouter(deps Deps) http.Handler {
 		registerAuthRoutes(rt, deps)
 		if deps.Auth.GoogleEnabled() {
 			registerGoogleRoutes(rt, deps)
+		}
+		if deps.Docs != nil {
+			registerDocsRoutes(rt, deps)
 		}
 	}
 	rt.mux.HandleFunc("/", rt.fallback)
