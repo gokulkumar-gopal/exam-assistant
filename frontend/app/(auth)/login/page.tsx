@@ -6,8 +6,11 @@ import { api, ApiError } from "@/lib/api";
 import { useMe } from "@/lib/session";
 import { safeNext } from "@/lib/safeNext";
 import { validateLogin, type FieldErrors } from "@/lib/authValidation";
-import type { LoginBody, UserResponse } from "@/lib/types";
+import { GOOGLE_COPY } from "@/lib/googleAuth";
+import type { LoginBody, Role, UserResponse } from "@/lib/types";
 import { AuthCard, Field } from "@/components/AuthCard";
+import { GoogleButton } from "@/components/GoogleButton";
+import { RoleChips } from "@/components/RoleChips";
 import { Input } from "@/components/ui/input";
 
 export default function LoginPage() {
@@ -20,6 +23,10 @@ export default function LoginPage() {
   const [failed, setFailed] = useState(false);
   const [formError, setFormError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [googleBusy, setGoogleBusy] = useState(false);
+  const [googleError, setGoogleError] = useState<string | null>(null);
+  const [needRole, setNeedRole] = useState(false);
+  const [role, setRole] = useState<Role | null>(null);
   const form = useRef<HTMLFormElement>(null);
 
   async function onSubmit(e: React.FormEvent) {
@@ -56,9 +63,24 @@ export default function LoginPage() {
       footer={<>New here? <Link href={next ? `/signup?next=${encodeURIComponent(next)}` : "/signup"} className="font-semibold text-accent underline">Create an account</Link></>}
     >
       <form ref={form} method="post" noValidate onSubmit={onSubmit} aria-busy={busy}>
-        <fieldset disabled={busy} className="min-w-0">
-          {/* F-1.2: Google button and "or" divider go here. Email form only for now. */}
-          <div data-slot="google-auth" />
+        <fieldset disabled={busy || googleBusy} className="min-w-0">
+          <GoogleButton
+            text="signin_with"
+            role={role}
+            onNeedRole={() => { setNeedRole(true); setGoogleError(null); }}
+            onError={setGoogleError}
+            onBusy={setGoogleBusy}
+          />
+          <div aria-live="polite">
+            {googleError && <p className="mb-3 text-[13px] text-bad">{googleError}</p>}
+          </div>
+          {needRole && (
+            <div className="mb-3.5">
+              <div id="role-label" className="mb-1 text-[13px] font-semibold">I am a</div>
+              <RoleChips value={role} onChange={setRole} highlight labelledBy="role-label" describedBy="role-msg" disabled={googleBusy} />
+              <p id="role-msg" role="status" className="mt-1 text-[13px] text-bad">{GOOGLE_COPY.needRole}</p>
+            </div>
+          )}
           <Field id="email" label="Email" error={errors.email}>
             <Input id="email" name="email" type="email" autoComplete="username" value={email} onChange={(e) => setEmail(e.target.value)} {...fe("email")} />
           </Field>

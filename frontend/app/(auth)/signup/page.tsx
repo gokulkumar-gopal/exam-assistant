@@ -8,6 +8,8 @@ import { safeNext } from "@/lib/safeNext";
 import { validateSignup, type FieldErrors } from "@/lib/authValidation";
 import type { Role, SignupBody, UserResponse } from "@/lib/types";
 import { AuthCard, Field } from "@/components/AuthCard";
+import { GoogleButton } from "@/components/GoogleButton";
+import { GOOGLE_COPY } from "@/lib/googleAuth";
 import { RoleChips } from "@/components/RoleChips";
 import { Input } from "@/components/ui/input";
 
@@ -24,6 +26,9 @@ export default function SignupPage() {
   const [errors, setErrors] = useState<FieldErrors>({});
   const [formError, setFormError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [googleBusy, setGoogleBusy] = useState(false);
+  const [googleError, setGoogleError] = useState<string | null>(null);
+  const [needRole, setNeedRole] = useState(false);
   const form = useRef<HTMLFormElement>(null);
 
   async function onSubmit(e: React.FormEvent) {
@@ -66,21 +71,30 @@ export default function SignupPage() {
       footer={<>Already have an account? <Link href={next ? `/login?next=${encodeURIComponent(next)}` : "/login"} className="font-semibold text-accent underline">Log in</Link></>}
     >
       <form ref={form} method="post" noValidate onSubmit={onSubmit} aria-busy={busy}>
-        <fieldset disabled={busy} className="min-w-0">
+        <fieldset disabled={busy || googleBusy} className="min-w-0">
           <div className="mb-3.5">
             <div id="role-label" className="mb-1 text-[13px] font-semibold">I am a</div>
             <RoleChips
               value={role}
-              onChange={(r) => { setRole(r); setErrors((x) => ({ ...x, role: undefined })); }}
+              onChange={(r) => { setRole(r); setNeedRole(false); setErrors((x) => ({ ...x, role: undefined })); }}
               labelledBy="role-label"
               describedBy="role-err"
               invalid={!!errors.role}
-              disabled={busy}
+              highlight={needRole}
+              disabled={busy || googleBusy}
             />
-            <p id="role-err" aria-live="polite" className="mt-1 text-[13px] text-bad">{errors.role}</p>
+            <p id="role-err" aria-live="polite" className="mt-1 text-[13px] text-bad">{needRole ? GOOGLE_COPY.needRole : errors.role}</p>
           </div>
-          {/* F-1.2: Google button, "or" divider and Google fallback message go here. Email form only for now. */}
-          <div data-slot="google-auth" />
+          <GoogleButton
+            text="signup_with"
+            role={role}
+            onNeedRole={() => { setNeedRole(true); setGoogleError(null); }}
+            onError={setGoogleError}
+            onBusy={setGoogleBusy}
+          />
+          <div aria-live="polite">
+            {googleError && <p className="mb-3 text-[13px] text-bad">{googleError}</p>}
+          </div>
           <Field id="name" label="Name" error={errors.name}>
             <Input id="name" name="name" autoComplete="name" value={name} onChange={(e) => setName(e.target.value)} {...fe("name")} />
           </Field>

@@ -2,7 +2,7 @@
 // Returns a Response so the client treats it exactly like a network reply.
 import type {
   Attempt, AttemptStatus, ExamListItem, ExamType, Marks, Question, ResultQuestion, User,
-  AssignBody, AttemptBody, CreateExamBody, GenerateBody, RegenerateBody, RevealBody, SignupBody, SubmitBody, UploadUrlBody,
+  AssignBody, AttemptBody, CreateExamBody, GenerateBody, GoogleBody, RegenerateBody, RevealBody, SignupBody, SubmitBody, UploadUrlBody,
 } from "../types";
 import { demoUser, docs as seedDocs, makeQuestion, models, rao, usage } from "./fixtures";
 
@@ -118,6 +118,20 @@ export function mockFetch(method: string, rawPath: string, body: unknown): Respo
     return json(200, { user: state.user });
   }
   if (route === "POST /auth/google") {
+    const b = as<GoogleBody>();
+    // Request log for verification (mock only; this module is never loaded without NEXT_PUBLIC_MOCK_API).
+    const w = globalThis as unknown as { __mockGoogleLog?: { credential: unknown; role: unknown }[] };
+    (w.__mockGoogleLog ??= []).push({ credential: b.credential, role: b.role });
+    // Test triggers: "mock-conflict" -> 409, "mock-new-user" -> new user (422 until a role is sent),
+    // "mock-credential" -> existing user, anything else -> 401.
+    if (b.credential === "mock-conflict") return err(409, "conflict", "This email is already linked to another sign-in. Use the original sign-in method.");
+    if (b.credential === "mock-new-user") {
+      if (!b.role || !["student", "parent", "teacher"].includes(b.role)) return err(422, "role_required", "Choose a role to finish creating your account.");
+      state.user = { id: "u_google_new", name: "Gina Google", email: "gina@example.com", role: b.role };
+      state.loggedIn = true;
+      return json(201, { user: state.user });
+    }
+    if (b.credential !== "mock-credential") return err(401, "unauthenticated", "Google sign-in failed. Try again.");
     state.loggedIn = true;
     return json(200, { user: state.user });
   }
