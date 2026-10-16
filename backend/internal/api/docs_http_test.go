@@ -16,6 +16,7 @@ import (
 	"github.com/gokulkumar/exam-assistant/backend/internal/auth"
 	"github.com/gokulkumar/exam-assistant/backend/internal/clock"
 	"github.com/gokulkumar/exam-assistant/backend/internal/docs"
+	"github.com/gokulkumar/exam-assistant/backend/internal/gen"
 	"github.com/gokulkumar/exam-assistant/backend/internal/store"
 	"github.com/gokulkumar/exam-assistant/backend/internal/store/memory"
 )
@@ -465,6 +466,7 @@ func TestNewHandlerRefusesNilDocs(t *testing.T) {
 		t.Fatalf("nil Docs: h=%v err=%v", h, err)
 	}
 	deps.Docs = docs.NewService(memory.NewDocStore(clk), docs.NewMemBlob(), clk)
+	deps.Models, deps.DefaultModelID = gen.Enabled([]string{"anthropic"}), "claude-haiku-4-5"
 	if _, err := NewHandler(deps); err != nil {
 		t.Fatalf("complete deps: %v", err)
 	}

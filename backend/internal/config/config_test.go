@@ -163,31 +163,6 @@ func TestLoadConfigAPIModeDoesNotRequireWorkerKeys(t *testing.T) {
 	}
 }
 
-func TestLoadConfigModelEnabledHook(t *testing.T) {
-	orig := config.ModelEnabled
-	defer func() { config.ModelEnabled = orig }()
-
-	m := apiEnv()
-	m["LLM_MODEL"] = "some-model"
-
-	config.ModelEnabled = func(model string, providers []string) bool { return false }
-	_, err := config.Load(env(m))
-	if err == nil || !strings.Contains(err.Error(), "LLM_MODEL") {
-		t.Fatalf("want LLM_MODEL error when hook rejects, got %v", err)
-	}
-
-	config.ModelEnabled = func(model string, providers []string) bool { return model == "some-model" }
-	if _, err := config.Load(env(m)); err != nil {
-		t.Fatalf("hook accepts, Load failed: %v", err)
-	}
-
-	delete(m, "LLM_MODEL")
-	config.ModelEnabled = func(string, []string) bool { t.Fatal("hook must not run when LLM_MODEL empty"); return false }
-	if _, err := config.Load(env(m)); err != nil {
-		t.Fatalf("empty LLM_MODEL: %v", err)
-	}
-}
-
 func TestJWTSecretLengthIsMeasuredInBytes(t *testing.T) {
 	m := apiEnv()
 	m["JWT_SECRET"] = strings.Repeat("a", 32)
@@ -217,5 +192,52 @@ func TestShortJWTSecretErrorDoesNotEchoSecret(t *testing.T) {
 func TestWorkerDoesNotNeedJWTSecret(t *testing.T) {
 	if _, err := config.Load(env(workerEnv())); err != nil {
 		t.Errorf("worker without JWT_SECRET: %v", err)
+	}
+}
+
+func TestStartupFailsWhenNoProvider(t *testing.T) {
+	for _, mode := range []string{"api", "worker"} {
+		m := apiEnv()
+		if mode == "worker" {
+			m = workerEnv()
+		}
+		m["LLM_PROVIDERS"] = " , "
+		_, err := config.Load(env(m))
+		if err == nil || !strings.Contains(err.Error(), "at least one provider") {
+			t.Errorf("%s mode with no provider: err = %v", mode, err)
+		}
+	}
+}
+
+func TestLLMModelMustBeEnabled(t *testing.T) {
+	for _, mode := range []string{"api", "worker"} {
+		base := func() map[string]string {
+			if mode == "worker" {
+				return workerEnv()
+			}
+			return apiEnv()
+		}
+		// Set but not enabled (gemini model, anthropic only) and unknown ids both fail clearly.
+		for _, id := range []string{"gemini-3.1-flash-lite", "claude-9"} {
+			m := base()
+			m["LLM_MODEL"] = id
+			_, err := config.Load(env(m))
+			if err == nil || !strings.Contains(err.Error(), "LLM_MODEL") || !strings.Contains(err.Error(), id) {
+				t.Errorf("%s mode LLM_MODEL=%q: err = %v", mode, id, err)
+			}
+		}
+		m := base()
+		m["LLM_MODEL"] = "claude-sonnet-5-5"
+		c, err := config.Load(env(m))
+		if err != nil || c.LLMModel != "claude-sonnet-5-5" {
+			t.Errorf("%s mode enabled model: %v", mode, err)
+		}
+		m = base()
+		m["LLM_PROVIDERS"] = "gemini,anthropic"
+		m["GEMINI_API_KEY"] = "g-test"
+		m["LLM_MODEL"] = "gemini-3.1-flash-lite"
+		if _, err := config.Load(env(m)); err != nil {
+			t.Errorf("%s mode gemini model with gemini enabled: %v", mode, err)
+		}
 	}
 }

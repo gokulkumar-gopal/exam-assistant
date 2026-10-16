@@ -14,6 +14,7 @@ import (
 	"github.com/gokulkumar/exam-assistant/backend/internal/clock"
 	"github.com/gokulkumar/exam-assistant/backend/internal/config"
 	"github.com/gokulkumar/exam-assistant/backend/internal/docs"
+	"github.com/gokulkumar/exam-assistant/backend/internal/gen"
 	"github.com/gokulkumar/exam-assistant/backend/internal/store/dynamo"
 )
 
@@ -42,6 +43,11 @@ func (v deadlineVerifier) Verify(ctx context.Context, credential string) (auth.G
 // clock, and Google sign-in. It makes no network calls.
 func buildAPIDeps(_ context.Context, cfg config.Config, awsCfg aws.Config) (api.Deps, error) {
 	clk := clock.Real{}
+	models := gen.Enabled(cfg.Providers)
+	def, err := gen.DefaultModel(models, cfg.LLMModel)
+	if err != nil {
+		return api.Deps{}, err
+	}
 	stores := dynamo.New(dynamodb.NewFromConfig(awsCfg), cfg.Stage)
 	svc := auth.NewService(stores, auth.NewBcryptHasher(auth.BcryptCost), clk).
 		WithGoogle(deadlineVerifier{inner: newVerifier(cfg.GoogleClientID), timeout: googleVerifyTimeout})
@@ -52,6 +58,8 @@ func buildAPIDeps(_ context.Context, cfg config.Config, awsCfg aws.Config) (api.
 		Auth:           svc,
 		Sessions:       auth.NewSessions([]byte(cfg.JWTSecret), cfg.Env),
 		Docs:           docs.NewService(stores, docs.NewS3Blob(awsCfg, cfg.S3Bucket), clk),
+		Models:         models,
+		DefaultModelID: def.ID,
 		AllowedOrigins: cfg.AllowedOrigins,
 	}
 	if err := validateAPIDeps(deps); err != nil {

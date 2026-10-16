@@ -15,6 +15,7 @@ import (
 	"github.com/gokulkumar/exam-assistant/backend/internal/auth"
 	"github.com/gokulkumar/exam-assistant/backend/internal/clock"
 	"github.com/gokulkumar/exam-assistant/backend/internal/config"
+	"github.com/gokulkumar/exam-assistant/backend/internal/gen"
 	"github.com/gokulkumar/exam-assistant/backend/internal/store/memory"
 )
 
@@ -43,12 +44,20 @@ func main() {
 		// Without GOOGLE_CLIENT_ID the route is not registered and /auth/google is the JSON 404.
 		svc.WithGoogle(auth.NewIDTokenVerifier(cfg.GoogleClientID))
 	}
+	models := gen.Enabled(cfg.Providers)
+	defModel, err := gen.DefaultModel(models, cfg.LLMModel)
+	if err != nil {
+		logger.Error("config", "err", err)
+		os.Exit(1)
+	}
 	handler := api.NewRouter(api.Deps{
 		Logger:         logger,
 		Clock:          clk,
 		Users:          users,
 		Auth:           svc,
 		Sessions:       auth.NewSessions([]byte(cfg.JWTSecret), cfg.Env),
+		Models:         models,
+		DefaultModelID: defModel.ID,
 		AllowedOrigins: cfg.AllowedOrigins,
 	})
 

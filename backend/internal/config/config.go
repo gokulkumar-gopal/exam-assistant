@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+
+	"github.com/gokulkumar/exam-assistant/backend/internal/gen"
 )
 
 // MinJWTSecretBytes is the shortest accepted JWT_SECRET.
@@ -43,12 +45,6 @@ type Config struct {
 	GenMaxRegenPerDay  int
 	GenMaxGlobalPerDay int
 }
-
-// ModelEnabled is the hook that decides whether an LLM_MODEL value is an enabled
-// catalog model for the given providers. Load calls it only when LLM_MODEL is set.
-// The model catalog does not exist yet; B-2.1 replaces this with a catalog lookup.
-// Until then it accepts any model id.
-var ModelEnabled = func(model string, providers []string) bool { return true }
 
 // Load reads configuration through getenv. It returns one error listing every problem.
 func Load(getenv func(string) string) (Config, error) {
@@ -138,8 +134,12 @@ func Load(getenv func(string) string) (Config, error) {
 	}
 
 	c.LLMModel = get("LLM_MODEL")
-	if c.LLMModel != "" && !ModelEnabled(c.LLMModel, c.Providers) {
-		fail("LLM_MODEL %q is not an enabled model", c.LLMModel)
+	// Applies in api and worker mode alike: both must agree on the default (AI-spec 3.2, 12).
+	// With no provider the error above already says so; do not add a second, confusing one.
+	if len(c.Providers) > 0 {
+		if _, err := gen.DefaultModel(gen.Enabled(c.Providers), c.LLMModel); err != nil {
+			fail("%v", err)
+		}
 	}
 
 	// An empty LLM_EFFORT takes the default: getenv cannot tell unset from empty.

@@ -12,6 +12,7 @@ import (
 	"github.com/gokulkumar/exam-assistant/backend/internal/auth"
 	"github.com/gokulkumar/exam-assistant/backend/internal/clock"
 	"github.com/gokulkumar/exam-assistant/backend/internal/docs"
+	"github.com/gokulkumar/exam-assistant/backend/internal/gen"
 	"github.com/gokulkumar/exam-assistant/backend/internal/store"
 )
 
@@ -24,7 +25,9 @@ type Deps struct {
 	Auth           *auth.Service
 	Sessions       *auth.Sessions
 	Docs           *docs.Service
-	AllowedOrigins []string // CSRF allow-list for Origin
+	Models         []gen.Model // enabled models, cheapest first
+	DefaultModelID string      // one of Models
+	AllowedOrigins []string    // CSRF allow-list for Origin
 }
 
 // routeTable registers routes on a mux and remembers which methods each path serves,
@@ -107,6 +110,11 @@ func (d Deps) Validate() error {
 	if d.Docs == nil {
 		missing = append(missing, "Docs")
 	}
+	if len(d.Models) == 0 {
+		missing = append(missing, "Models")
+	} else if !slices.ContainsFunc(d.Models, func(m gen.Model) bool { return m.ID == d.DefaultModelID }) {
+		missing = append(missing, "DefaultModelID (must be one of Models)")
+	}
 	if len(missing) > 0 {
 		return fmt.Errorf("api: missing dependencies: %s", strings.Join(missing, ", "))
 	}
@@ -135,6 +143,9 @@ func NewRouter(deps Deps) http.Handler {
 		}
 		if deps.Docs != nil {
 			registerDocsRoutes(rt, deps)
+		}
+		if len(deps.Models) > 0 {
+			registerAIRoutes(rt, deps)
 		}
 	}
 	rt.mux.HandleFunc("/", rt.fallback)
