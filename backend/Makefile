@@ -35,9 +35,13 @@ run:
 smoke:
 	@sh scripts/smoke.sh
 
+# Golden-set run (AI-spec 13.2). Calls the real provider API and spends money: by hand only.
+# Needs MODEL=<catalog id> and the provider key (LLM_API_KEY or GEMINI_API_KEY) in the shell
+# or .env.deploy.<stage>. Files go in testdata/ai (see its README). Optional: CSV=out.csv,
+# MAX_USD=<spend cap, default 5; an Opus run needs e.g. MAX_USD=12; above 15 also needs ALLOW_HIGH_CAP=1>.
 ai-eval:
-	@echo "ai-eval: cmd/ai-eval does not exist yet (added in task B-2.11)." >&2
-	@exit 1
+	@test -n "$(MODEL)" || { echo "Usage: make ai-eval MODEL=<catalog id>   (for example MODEL=claude-haiku-4-5)" >&2; exit 1; }
+	AI_EVAL=1 go run ./cmd/ai-eval -model "$(MODEL)" $(if $(CSV),-csv "$(CSV)") $(if $(MAX_USD),-max-usd "$(MAX_USD)") $(if $(ALLOW_HIGH_CAP),-allow-high-cap)
 
 # SAM calls these (BuildMethod: makefile) with ARTIFACTS_DIR set; both functions
 # are the same binary.

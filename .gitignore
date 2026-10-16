@@ -10,3 +10,7 @@ node_modules/
 
 # local agent workflow state
 .superpowers/
+
+# golden-set sample files stay local; the README listing them is tracked
+backend/testdata/ai/*
+!backend/testdata/ai/README.md
