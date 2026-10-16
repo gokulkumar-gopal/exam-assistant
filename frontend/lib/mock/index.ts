@@ -12,10 +12,12 @@ interface MockExam {
   id: string; title: string; type: ExamType; closesAt: string; maxPeeks: number;
   createdBy: { id: string; name: string }; questions: Question[]; mine: boolean;
   attempt: Attempt | null; assigned: string[];
-  counts?: { submitted: number; inProgress: number; notStarted: number; declined: number };
+  /** Status-page rows, built lazily from `assigned` (see rosterOf). */
+  roster?: RosterRow[];
   /** Mock only: closesAt is re-set to 20 s ago on each list call so the "Closing…" row stays visible. */
   closingDemo?: boolean;
 }
+interface RosterRow { userId: string; name: string; email: string; status: "not_started" | "in_progress" | "submitted" | "declined"; score?: number; submittedAt?: string }
 interface MockJob { polls: number; marks?: Marks; type: ExamType; counts: Record<string, number>; model: string; trigger: string | null }
 
 const HOUR = 3600_000;
@@ -50,7 +52,7 @@ function seedExams() {
       attempt: { status: "submitted", answers: { q31: "1", q32: "0", q33: "2", q34: "3" }, lastQuestionIndex: 3 }, assigned: [] },
     { id: "e4", title: "My class test", type: "mcq", closesAt: iso(now + 2 * 24 * HOUR), maxPeeks: 0,
       createdBy: { id: demoUser.id, name: demoUser.name }, questions: mk(4, "mcq"), mine: true,
-      attempt: null, assigned: ["a@x.com", "b@x.com"], counts: { submitted: 12, inProgress: 3, notStarted: 5, declined: 1 } },
+      attempt: null, assigned: ["aisha@x.com", "ben@x.com", "chen@x.com", "dev@x.com"] },
     { id: "e5", title: "Closing now: Cell division", type: "mcq", closesAt: iso(now - 20_000), maxPeeks: 0,
       createdBy: rao, questions: mk(5, "mcq"), mine: false, closingDemo: true,
       attempt: { status: "in_progress", answers: {}, lastQuestionIndex: 0 }, assigned: [] },
@@ -59,15 +61,16 @@ function seedExams() {
       attempt: { status: "not_started", answers: {}, lastQuestionIndex: 0 }, assigned: [] },
     { id: "e7", title: "Essay: Ecosystems", type: "free", closesAt: iso(now - 24 * HOUR), maxPeeks: 0,
       createdBy: { id: demoUser.id, name: demoUser.name }, questions: mk(7, "free"), mine: true,
-      attempt: { status: "submitted", answers: {}, lastQuestionIndex: 0 }, assigned: ["a@x.com"],
-      counts: { submitted: 1, inProgress: 0, notStarted: 0, declined: 0 } },
+      attempt: { status: "submitted", answers: {}, lastQuestionIndex: 0 }, assigned: ["aisha@x.com"] },
     { id: "e8", title: "Declined: Geography", type: "mcq", closesAt: iso(now + 3 * HOUR), maxPeeks: 0,
       createdBy: rao, questions: mk(8, "mcq"), mine: false,
       attempt: { status: "declined", answers: {}, lastQuestionIndex: 0 }, assigned: [] },
     { id: "e9", title: "Not started, closes in 20 minutes", type: "mcq", closesAt: iso(now + 20 * 60_000), maxPeeks: 0,
       createdBy: { id: demoUser.id, name: demoUser.name }, questions: mk(9, "mcq"), mine: true,
-      attempt: { status: "not_started", answers: {}, lastQuestionIndex: 0 }, assigned: [],
-      counts: { submitted: 0, inProgress: 0, notStarted: 1, declined: 0 } },
+      attempt: { status: "not_started", answers: {}, lastQuestionIndex: 0 }, assigned: [] },
+    { id: "e10", title: "No assignees yet", type: "mcq", closesAt: iso(now + 4 * 24 * HOUR), maxPeeks: 0,
+      createdBy: { id: demoUser.id, name: demoUser.name }, questions: mk(10, "mcq"), mine: true,
+      attempt: null, assigned: [] },
   ];
 }
 seedExams();
@@ -92,14 +95,47 @@ function grade(e: MockExam): { score: number | null; before: number | null } {
   return { before, score: Math.max(0, before - peeks * 0.5) };
 }
 
+const CYCLE: RosterRow["status"][] = ["submitted", "in_progress", "not_started", "declined"];
+const titleCase = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
+
+/**
+ * Status-page rows. Built once from `assigned`, cycling submitted / in progress / not started / declined so a
+ * created exam shows every state; later assignments join as not started. A practice exam (no assignees) lists
+ * the creator's own attempt. Free-text submissions have no score yet ("—").
+ */
+function rosterOf(e: MockExam): RosterRow[] {
+  if (!e.roster) {
+    const marks = totalMarks(e);
+    const rows: RosterRow[] = e.assigned.filter((x) => !x.startsWith("unknown")).map((email, i) => {
+      const status = CYCLE[i % CYCLE.length];
+      const name = titleCase(email.split("@")[0]);
+      const row: RosterRow = { userId: `u_${email}`, name, email, status };
+      if (status === "submitted") {
+        row.submittedAt = iso(Date.now() - (i + 1) * HOUR);
+        if (e.type === "mcq") row.score = Math.max(0, marks - 1.5);
+      }
+      return row;
+    });
+    if (rows.length === 0 && e.attempt) {
+      rows.push({ userId: e.createdBy.id, name: e.createdBy.name, email: state.user.email, status: e.attempt.status as RosterRow["status"] });
+    }
+    e.roster = rows;
+  }
+  return e.roster;
+}
+function rosterCounts(e: MockExam) {
+  const r = rosterOf(e);
+  const n = (s: RosterRow["status"]) => r.filter((x) => x.status === s).length;
+  return { submitted: n("submitted"), inProgress: n("in_progress"), notStarted: n("not_started"), declined: n("declined") };
+}
+
 function listItem(e: MockExam, scope: string): ExamListItem {
   const base: ExamListItem = {
     id: e.id, title: e.title, createdBy: e.createdBy, closesAt: e.closesAt,
     acceptingUntil: acceptingUntil(e), totalMarks: totalMarks(e), type: e.type,
   };
   if (scope === "created") {
-    const n = Math.max(1, e.assigned.length);
-    return { ...base, counts: e.counts ?? { submitted: 0, inProgress: 0, notStarted: n, declined: 0 } };
+    return { ...base, counts: rosterCounts(e) };
   }
   const status = (over(e) && e.attempt?.status !== "submitted" ? "missed" : e.attempt?.status) as AttemptStatus;
   const g = e.attempt?.status === "submitted" ? grade(e) : null;
@@ -418,28 +454,40 @@ export function mockFetch(method: string, rawPath: string, body: unknown, idempo
       return nothing();
     }
     if (method === "GET" && sub === "status") {
-      if (!exam.mine) return err(403, "forbidden", "You don't have access to that.");
-      return json(200, {
-        serverTime: st(),
-        exam: { id: exam.id, title: exam.title, closesAt: exam.closesAt, totalMarks: totalMarks(exam) },
-        counts: { submitted: 1, inProgress: 1, notStarted: 1, declined: 1 },
-        attempts: [
-          { userId: "u1", name: "Aisha K.", email: "aisha@x.com", status: "submitted", score: 34, submittedAt: st() },
-          { userId: "u2", name: "Ben T.", email: "ben@x.com", status: "in_progress" },
-          { userId: "u3", name: "Chen L.", email: "chen@x.com", status: "not_started" },
-          { userId: "u4", name: "Dev P.", email: "dev@x.com", status: "declined" },
-        ],
-      });
+      // Test triggers (mock only): ?mockStatus=403|404|500|slow.
+      const t = typeof window === "undefined" ? null : new URLSearchParams(window.location.search).get("mockStatus");
+      const reply = (): Response => {
+        if (t === "500") return err(500, "internal", "Something went wrong.");
+        if (t === "404") return err(404, "not_found", "That item isn't available.");
+        if (!exam.mine || t === "403") return err(403, "forbidden", "You don't have access to that.");
+        const rows = rosterOf(exam);
+        return json(200, {
+          serverTime: st(),
+          exam: { id: exam.id, title: exam.title, closesAt: exam.closesAt, totalMarks: totalMarks(exam) },
+          counts: rosterCounts(exam),
+          attempts: rows.map((r) => ({ ...r })),
+        });
+      };
+      if (t === "slow") return new Promise((res) => setTimeout(() => res(reply()), 2500));
+      return reply();
     }
     if (method === "POST" && sub === "assign") {
-    const b = as<AssignBody>();
-      if (!exam.mine) return err(403, "forbidden", "You don't have access to that.");
+      const b = as<AssignBody>();
+      // Test trigger (mock only): ?mockAssign=403 | 422.
+      const t = typeof window === "undefined" ? null : new URLSearchParams(window.location.search).get("mockAssign");
+      if (!exam.mine || t === "403") return err(403, "forbidden", "You can't assign exams to that account.");
       if (over(exam)) return err(409, "exam_closed", "This exam is closed.");
-      const emails = b.emails ?? [];
-      const unknown = emails.filter((e) => e.startsWith("unknown"));
-      const known = emails.filter((e) => !unknown.includes(e));
-      const already = known.filter((e) => exam.assigned.includes(e));
-      const assigned = known.filter((e) => !already.includes(e));
+      if (t === "422") return err(422, "validation", "That email address isn't valid.", { emails: "invalid" });
+      const roster = rosterOf(exam);
+      const emails = [...new Set((b.emails ?? []).map((x) => String(x).trim().toLowerCase()))];
+      // Unknown: addresses starting "unknown", and (student creators) addresses starting "teacher" (not a student account).
+      const unknown = emails.filter((x) => x.startsWith("unknown") || (state.user.role === "student" && x.startsWith("teacher")));
+      const known = emails.filter((x) => !unknown.includes(x));
+      const already = known.filter((x) => roster.some((r) => r.email === x));
+      const assigned = known.filter((x) => !already.includes(x));
+      const cap = state.user.role === "student" ? 10 : 50;
+      if (roster.length + assigned.length > cap) return err(422, "validation", `You can assign up to ${cap} people in total.`, { emails: "over cap" });
+      for (const x of assigned) roster.push({ userId: `u_${x}`, name: titleCase(x.split("@")[0]), email: x, status: "not_started" });
       exam.assigned.push(...assigned);
       return json(200, { assigned, alreadyAssigned: already, unknown });
     }
