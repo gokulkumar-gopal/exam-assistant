@@ -195,3 +195,74 @@ func TestListExamsHandler(t *testing.T) {
 		t.Errorf("405: %d %v", r2.Code, r2.Header())
 	}
 }
+
+func postJSON(h http.Handler, path, body string, c *http.Cookie) *httptest.ResponseRecorder {
+	req := jsonReq("POST", path, body)
+	if c != nil {
+		req.AddCookie(c)
+	}
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	return rec
+}
+
+func TestDeclineAndAssignHandlers(t *testing.T) {
+	h, c, _ := newExamEnv(t) // c: student Asha
+	teacher := httptest.NewRecorder()
+	h.ServeHTTP(teacher, jsonReq("POST", "/auth/signup", `{"name":"Tia","email":"tia@example.com","password":"correct horse","role":"teacher"}`))
+	tc := sessionCookie(teacher)
+	body := strings.Replace(examBody, `"questions"`, `"assigneeEmails":["asha@example.com"],"questions"`, 1)
+	rec := postExam(h, body, "assign-key-1", tc, "")
+	if rec.Code != http.StatusCreated {
+		t.Fatal(rec.Body)
+	}
+	// auth, CSRF, methods
+	if rec := postJSON(h, "/exams/assign-key-1/decline", "", nil); rec.Code != http.StatusUnauthorized {
+		t.Errorf("decline no session: %d", rec.Code)
+	}
+	if rec := postJSON(h, "/exams/assign-key-1/assign", `{"emails":["x@y.com"]}`, nil); rec.Code != http.StatusUnauthorized {
+		t.Errorf("assign no session: %d", rec.Code)
+	}
+	req := jsonReq("POST", "/exams/assign-key-1/decline", "")
+	req.AddCookie(c)
+	req.Header.Set("Origin", "https://evil.example")
+	bad := httptest.NewRecorder()
+	h.ServeHTTP(bad, req)
+	if bad.Code != http.StatusForbidden {
+		t.Errorf("bad origin: %d", bad.Code)
+	}
+	for _, p := range []string{"/exams/assign-key-1/decline", "/exams/assign-key-1/assign"} {
+		req := httptest.NewRequest("GET", p, nil)
+		req.AddCookie(c)
+		r := httptest.NewRecorder()
+		h.ServeHTTP(r, req)
+		if r.Code != http.StatusMethodNotAllowed || r.Header().Get("Allow") != "POST" || !strings.Contains(r.Body.String(), "method_not_allowed") {
+			t.Errorf("GET %s: %d allow=%q %s", p, r.Code, r.Header().Get("Allow"), r.Body)
+		}
+	}
+	// assign: creator only (foreign 404), 422, 200 with arrays
+	if rec := postJSON(h, "/exams/assign-key-1/assign", `{"emails":["x@y.com"]}`, c); rec.Code != http.StatusNotFound {
+		t.Errorf("assign by non-creator: %d", rec.Code)
+	}
+	if rec := postJSON(h, "/exams/assign-key-1/assign", `{"emails":[]}`, tc); rec.Code != http.StatusUnprocessableEntity {
+		t.Errorf("assign empty: %d", rec.Code)
+	}
+	rec = postJSON(h, "/exams/assign-key-1/assign", `{"emails":["asha@example.com","ghost@example.com"]}`, tc)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"assigned":[]`) ||
+		!strings.Contains(rec.Body.String(), `"alreadyAssigned":["asha@example.com"]`) ||
+		!strings.Contains(rec.Body.String(), `"unknown":["ghost@example.com"]`) {
+		t.Errorf("assign: %d %s", rec.Code, rec.Body)
+	}
+	// decline: 404 for non-assignee and missing, 204 twice
+	if rec := postJSON(h, "/exams/assign-key-1/decline", "", tc); rec.Code != http.StatusNotFound {
+		t.Errorf("decline by creator: %d", rec.Code)
+	}
+	if rec := postJSON(h, "/exams/missing-exam/decline", "", c); rec.Code != http.StatusNotFound {
+		t.Errorf("decline missing: %d", rec.Code)
+	}
+	for i := 0; i < 2; i++ {
+		if rec := postJSON(h, "/exams/assign-key-1/decline", "", c); rec.Code != http.StatusNoContent || rec.Body.Len() != 0 {
+			t.Errorf("decline %d: %d %s", i, rec.Code, rec.Body)
+		}
+	}
+}

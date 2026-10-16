@@ -50,4 +50,28 @@ func registerExamRoutes(rt *routeTable, deps Deps) {
 			"exams":      items,
 		})
 	})))
+	rt.handle("POST", "/exams/{id}/decline", RequireUser(deps, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		u, _ := UserFrom(r.Context())
+		if err := deps.Exams.Decline(r.Context(), u, r.PathValue("id")); err != nil {
+			WriteError(w, r, err)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})))
+	rt.handle("POST", "/exams/{id}/assign", RequireUser(deps, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var in struct {
+			Emails []string `json:"emails"`
+		}
+		if err := Decode(w, r, &in, examBodyCap); err != nil {
+			WriteError(w, r, err)
+			return
+		}
+		u, _ := UserFrom(r.Context())
+		res, err := deps.Exams.Assign(r.Context(), u, r.PathValue("id"), in.Emails)
+		if err != nil {
+			WriteError(w, r, err)
+			return
+		}
+		WriteJSON(w, http.StatusOK, res)
+	})))
 }
