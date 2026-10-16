@@ -30,6 +30,7 @@ Audience: a coding agent building the frontend. Read this whole file before writ
 | Backend | Separate AWS service, reached through `/api/*` (section 8.1). Do not add Next route handlers or server actions that hold logic or data |
 | Data fetching | `fetch` to relative `/api/*` URLs; SWR optional. Uploads use `XMLHttpRequest` (for progress events) straight to S3 |
 | Forms | native controlled inputs, no form library |
+| Sign in with Google | Google Identity Services script (`https://accounts.google.com/gsi/client`) loaded only on `/login` and `/signup`, using Google's own rendered button |
 
 Set `font-family` once on `body` and in the Tailwind `fontFamily.sans` theme key. Remove any default font imports (for example `next/font/google`).
 
@@ -122,7 +123,7 @@ All roles can use Documents and take assigned exams.
 
 | Route | Screen | Roles |
 |---|---|---|
-| `/login`, `/signup` | Auth (simple, centered card, role picker at signup) | public |
+| `/login`, `/signup` | Auth (Google button plus email and password, role picker) | public |
 | `/` | Home | all |
 | `/documents` | Library | all |
 | `/documents/[id]` | Viewer | owner |
@@ -264,7 +265,38 @@ Focused layout: exam page header only (see section 4). Content centered, max wid
 - If the answer key is hidden by the visibility rule, replace the "Correct answer" lines with "Answer key available after {date or rule}." There must be no empty gap.
 
 ### 6.8 Auth
-Minimal. Centered card (max width 380 px): logo, email, password, primary button. Signup adds a role selector (Student / Parent / Teacher) as three chips and a name field. Errors appear inline under the field in `--bad`.
+
+Two ways in: **Sign in with Google**, or **email and password**. `/login` and `/signup` share one centered card (max width 380 px) with the logo above it. The prototype has no auth screen; build this one from the existing tokens.
+
+**Signup (`/signup`), top to bottom**
+1. h1 "Create your account", subtitle "Choose who you are, then pick how to sign up."
+2. **Role chips**: Student, Parent, Teacher. Same style as the Total marks chips, none pre-selected. A role is required for both methods.
+3. **Google button**: Google's own rendered button, text "Sign up with Google".
+4. A divider with the word "or".
+5. **Email form**: Name, Email, Password (helper "At least 8 characters"), primary **Create account** button.
+6. Footer: "Already have an account? Log in".
+
+**Login (`/login`)**: h1 "Welcome back", the Google button ("Sign in with Google"), a divider "or", Email and Password fields, primary **Log in**, footer "New here? Create an account". There are no role chips on this page unless the Google flow asks for a role (below).
+
+**Google button**
+- Use Google Identity Services. Load `https://accounts.google.com/gsi/client` with `next/script` (`afterInteractive`) on these two routes only. Call `google.accounts.id.initialize({ client_id, callback })` with `client_id` from `NEXT_PUBLIC_GOOGLE_CLIENT_ID`, then `google.accounts.id.renderButton(container, { type: "standard", theme: "outline", size: "large", text: "signup_with" or "signin_with", width: <container width, at most 340> })`. Do not call the One Tap `prompt()` in the MVP.
+- Do not restyle, recolour, or replace Google's button. It is exempt from the palette rules in section 3.
+- The callback receives a `credential` (an ID token). Send it to `POST /api/auth/google` as `{ credential, role }`, where `role` is the chosen chip or omitted. Keep the credential in component memory only. Never store it, log it, or put it in a URL.
+- If the backend replies `422` with code `role_required` (a new account and no role chosen): show the role chips (on `/login` they appear now), highlight them, and show "Choose who you are to finish creating your account." When the user picks one, resend the **same credential** with that role. If the backend answers `401` (the credential expired, which takes about an hour), show the generic Google error below and ask them to press the Google button again.
+- On success (`200` or `201`) go to the return path, or Home.
+- If the script fails to load, or Google blocks it (some in-app browsers and school accounts do), hide the Google button and show "Google sign-in isn't available here. Use email and password." The email form keeps working.
+
+**Email form behaviour**
+- Validate on submit: name 1 to 80 characters (signup only), a valid email, a password of at least 8 characters (signup only). Show errors inline under the field in `--bad`.
+- Signup `409`: "An account with that email already exists. Log in, or sign in with Google."
+- Login `401`: "Email or password is incorrect." plus a quieter line "Signed up with Google? Use the Google button above." Show both after any failed password login, so the message never reveals whether an email exists.
+- Google error: "Google sign-in didn't work. Try again."
+- While a request is in flight, disable the Google area and the form, and show "Signing in…" on the button.
+- On these two pages a `401` is shown inline; it does not redirect to `/login`.
+
+**Logout:** **Log out** in the avatar menu calls `POST /api/auth/logout`, then goes to `/login`.
+
+**Accessibility:** inputs have visible labels, the role chips are a radio group (`role="radiogroup"`, arrow-key selectable), and errors use `aria-live="polite"`.
 
 ## 7. Shared components
 
@@ -331,6 +363,8 @@ interface Attempt {
 | Call | Used by |
 |---|---|
 | `GET /api/me` | shell, role gating |
+| `POST /api/auth/signup` `{name, email, password, role}`, `POST /api/auth/login` `{email, password}`, `POST /api/auth/logout` | auth screens, avatar menu |
+| `POST /api/auth/google` `{credential, role?}` returning `{user}` (`200` existing, `201` new); `422` code `role_required` when a new user sent no role | Google button (section 6.8) |
 | `GET /api/documents`, `DELETE /api/documents/:id` | library |
 | `POST /api/documents/upload-url`, then `PUT` to S3, then `POST /api/documents/:id/complete` | upload (section 6.2) |
 | `GET /api/documents/:id/file` returning `{ url }` (presigned, short-lived) | viewer |
@@ -356,8 +390,9 @@ The frontend runs on Vercel. The backend is a separate AWS service. These rules 
 | Variable | Purpose |
 |---|---|
 | `API_URL` | Base URL of the AWS backend (for the rewrite). Server-side only |
+| `NEXT_PUBLIC_GOOGLE_CLIENT_ID` | Google OAuth client ID for the Google button. Public by design (not a secret). Inlined at build time, so redeploy after changing it |
 
-There is no `NEXT_PUBLIC_API_URL`: the browser never calls AWS directly except for the S3 upload and S3 file view URLs the backend hands out.
+There is no `NEXT_PUBLIC_API_URL`: the browser never calls AWS directly except for the S3 upload and S3 file view URLs the backend hands out. The only public variable is the Google client ID.
 
 **Proxy all API calls through a Vercel rewrite.** In `next.config.js`:
 
@@ -383,7 +418,7 @@ Consequences the frontend relies on:
 
 | Condition | Behaviour |
 |---|---|
-| `401` | Redirect to `/login`, preserving the return path |
+| `401` | Redirect to `/login`, preserving the return path (on `/login` and `/signup` themselves, show the inline error instead) |
 | `403` | Toast "You don't have access to that." and go Home |
 | `404` on an exam or document | Show an `EmptyState` "That item isn't available." with a Home link |
 | `502`, `503`, `504`, or network error on a read | Show "Can't reach the server. Retrying…" and retry up to 3 times with backoff (1s, 2s, 4s), then show Retry |
@@ -392,7 +427,7 @@ Consequences the frontend relies on:
 
 **Cold starts:** the first request after idle can be slow on serverless backends. Never show a blank screen: always render the skeleton or progress state from section 6 while a request is in flight.
 
-**Local development:** run Next.js on `localhost:3000` with `API_URL` pointing at either the deployed AWS dev backend or a local backend. Add a tiny mock layer (a `MOCK_API=true` flag with local JSON fixtures) so the frontend can be built before the backend exists.
+**Local development:** run Next.js on `localhost:3000` with `API_URL` pointing at either the deployed AWS dev backend or a local backend. Add a tiny mock layer (a `MOCK_API=true` flag with local JSON fixtures) so the frontend can be built before the backend exists. Google sign-in needs `NEXT_PUBLIC_GOOGLE_CLIENT_ID` (the dev client) in `.env.local`, and `localhost:3000` must be an authorized origin on that client. With `MOCK_API=true` the Google button is replaced by a "Continue as demo user" button.
 
 ## 9. Behaviour details
 
@@ -421,6 +456,12 @@ A reviewer can confirm each of these by clicking through the app.
 - [ ] No font other than Helvetica renders anywhere (inspect computed styles on buttons, inputs, table, timer).
 - [ ] 375 px width: no horizontal page scroll on any screen.
 - [ ] Student does not see Create in the nav and gets a notice on `/create`.
+- [ ] Signup offers both "Sign up with Google" and an email form, and a role must be chosen for either.
+- [ ] A new Google user who chose no role is asked for one, and ends signed in with the chosen role (the same credential is resent).
+- [ ] An existing Google user signs in directly and sees no role chips.
+- [ ] If the Google script is blocked, the email form still works and a clear message replaces the Google button.
+- [ ] A failed password login shows the generic error and the "Signed up with Google?" hint, and never says which part was wrong.
+- [ ] The Google credential is never written to storage, logs, or a URL.
 - [ ] Upload accepts PDF, JPG, PNG, TXT, rejects others and files over 25 MB with the specified message; camera item opens the camera on a phone.
 - [ ] Selecting documents shows the bottom bar with the correct count; Generate questions opens Create with those sources checked.
 - [ ] Deleting asks for confirmation and removes only the chosen documents.
@@ -444,7 +485,7 @@ A reviewer can confirm each of these by clicking through the app.
 
 ## 12. Out of scope (do not build)
 
-Parent-student linking and the parent progress view, folders and tags, rename, launching generation from anywhere other than the library and viewer buttons, multi-page scan flow, HEIC, custom marks totals, per-attempt durations, dark mode, notifications, profile pages, analytics. See "Deferred" in `goals.md`.
+Password reset, other sign-in providers, Google One Tap, screens for linking or unlinking sign-in methods, parent-student linking and the parent progress view, folders and tags, rename, launching generation from anywhere other than the library and viewer buttons, multi-page scan flow, HEIC, custom marks totals, per-attempt durations, dark mode, notifications, profile pages, analytics. See "Deferred" in `goals.md`.
 
 ## 13. Decisions already made
 
@@ -458,4 +499,7 @@ Parent-student linking and the parent progress view, folders and tags, rename, l
 - Deployment: frontend on Vercel, backend on AWS, joined by a Vercel `/api/*` rewrite (same-origin, cookie auth, no CORS for API calls).
 - Uploads go directly from the browser to S3 with presigned URLs. Files are viewed through short-lived presigned URLs.
 - Question generation is a job with polling (not streaming), so it works regardless of gateway or proxy timeouts and does not depend on which AWS compute is chosen.
+- Two ways to sign in: Google (Identity Services button, ID token verified by the backend) and email and password. The role is chosen at first sign-up.
+- A new Google user with no role is asked for one, and the same token is resent (`role_required`).
+- The only public environment variable is `NEXT_PUBLIC_GOOGLE_CLIENT_ID`, which is not a secret.
 - Assumption to confirm: the frontend stays on Vercel. If it moves to AWS (for example Amplify), only section 8.1 changes.
