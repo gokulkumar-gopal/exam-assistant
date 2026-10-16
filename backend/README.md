@@ -24,7 +24,7 @@ make ai-eval # not available until task B-2.11
 All config is read from environment variables by `internal/config` at startup. The process exits on a missing or invalid value.
 
 - `make run` sets fake local values (`ENV=local`, a fake `JWT_SECRET`, and so on) from the `LOCAL_ENV` block in the `Makefile`. They are not secrets and are not valid for any deployed stage.
-- Deployment values come from `.env.deploy.<stage>` (`STAGE` defaults to `dev`). The file is optional and git-ignored, so `make test` works on a fresh clone.
+- Deployment values come from `.env.deploy.<stage>` (`STAGE` defaults to `dev`). The file is optional, so `make test` works on a fresh clone. These files hold secrets and must never be committed; the root `.gitignore` added with the deployment tooling ignores them.
 
 ## Test-first rule
 

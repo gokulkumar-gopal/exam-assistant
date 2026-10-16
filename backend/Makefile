@@ -13,7 +13,9 @@ LOCAL_ENV = \
 	S3_BUCKET=local-bucket \
 	JWT_SECRET=local-only-fake-jwt-secret-not-for-deploy \
 	GOOGLE_CLIENT_ID=local-fake-client-id.apps.googleusercontent.com \
-	ALLOWED_ORIGINS=http://localhost:5173
+	ALLOWED_ORIGINS=http://localhost:3000
+
+SERVER_BIN ?= $(or $(TMPDIR),/tmp)/exam-assistant-server
 
 .PHONY: build test run smoke ai-eval
 
@@ -24,7 +26,9 @@ test:
 	go test ./...
 
 run:
-	env $(LOCAL_ENV) go run ./cmd/server
+	@# Build then run the binary: `go run` does not forward SIGTERM to the server it starts.
+	go build -o $(SERVER_BIN) ./cmd/server
+	exec env $(LOCAL_ENV) $(SERVER_BIN)
 
 smoke:
 	@sh scripts/smoke.sh
