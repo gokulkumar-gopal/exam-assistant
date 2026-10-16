@@ -20,12 +20,15 @@ export function Stepper({
   value,
   onChange,
   subtotal,
+  max,
 }: {
   label: string;
   marks?: Marks;
   value: number;
   onChange: (value: number) => void;
   subtotal: ReactNode;
+  /** Optional upper bound; the + button disables at it. */
+  max?: number;
 }) {
   const current = Math.max(0, value);
   return (
@@ -57,6 +60,7 @@ export function Stepper({
         type="button"
         className={BTN}
         aria-label={`Increase ${label}`}
+        disabled={max !== undefined && current >= max}
         onClick={() => onChange(current + 1)}
       >
         <Plus className="size-4" aria-hidden />

@@ -38,3 +38,5 @@ Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/bui
 ## Mock mode
 
 `MOCK_API=true npm run dev` serves fixtures and starts signed in as a demo teacher. Add `NEXT_PUBLIC_MOCK_SIGNED_OUT=true` to start signed out (to check route guards).
+
+`next.config.ts` maps `MOCK_API` to `NEXT_PUBLIC_MOCK_API`; setting only `NEXT_PUBLIC_MOCK_API` has no effect.
