@@ -3,10 +3,12 @@ import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "rea
 import { useSearchParams } from "next/navigation";
 import { api } from "@/lib/api";
 import { useMe } from "@/lib/session";
-import type { Doc, DocsResponse, ExamType, Marks, Role } from "@/lib/types";
+import type { AiModel, Doc, DocsResponse, ExamType, Marks, ModelsResponse, Role } from "@/lib/types";
 import {
   footerState, parseSources, questionCount, sourceLimitError, totalMarks, type Counts,
 } from "@/lib/totals";
+import { defaultModelId } from "@/lib/models";
+import { ModelSelect } from "@/components/ModelSelect";
 import { SourcesCard } from "@/components/SourcesCard";
 import { CreateFooter } from "@/components/CreateFooter";
 import { Stepper } from "@/components/Stepper";
@@ -64,6 +66,22 @@ function CreateInner() {
   const [closes, setCloses] = useState("86400");
   const [closesAt, setClosesAt] = useState("");
   const [assign, setAssign] = useState("");
+
+  // Page state only. undefined means "send no model" (models failed, empty, or not loaded).
+  const [models, setModels] = useState<AiModel[]>([]);
+  const [modelId, setModelId] = useState<string | undefined>(undefined);
+
+  useEffect(() => {
+    let live = true;
+    api<ModelsResponse>("GET", "/ai/models")
+      .then((r) => {
+        if (!live || !Array.isArray(r.models) || r.models.length === 0) return;
+        setModels(r.models);
+        setModelId(defaultModelId(r.models) ?? r.models[0].id);
+      })
+      .catch(() => {});
+    return () => { live = false; };
+  }, []);
 
   const load = useCallback(async () => {
     setLoadError(false);
@@ -203,6 +221,11 @@ function CreateInner() {
               </div>
             </div>
           </Card>
+          {models.length > 0 && (
+            <Card id="model-h" title="Model">
+              <ModelSelect models={models} value={modelId} onChange={setModelId} />
+            </Card>
+          )}
         </div>
       </div>
       <CreateFooter
