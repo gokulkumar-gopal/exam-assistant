@@ -319,6 +319,9 @@ export function mockFetch(method: string, rawPath: string, body: unknown, idempo
   // Remember the sticky page-URL flags on every call (the first call of a page carries the query string).
   stickyFlag("mockSubmit"); stickyFlag("mockClose");
   const [path, qs = ""] = rawPath.split("?");
+  // Test trigger (mock only, sticky): ?mockDown=1 makes every request except GET /me fail like a dropped network
+  // (reads show "Can't reach the server. Retrying…" then Retry; writes toast and keep input). ?mockDown= clears it.
+  if (stickyFlag("mockDown") && path !== "/me") throw new TypeError("mock network failure");
   const query = new URLSearchParams(qs);
   const as = <T>() => (body ?? {}) as T;
   const seg = path.split("/").filter(Boolean);
