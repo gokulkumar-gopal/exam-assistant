@@ -22,13 +22,14 @@ import (
 // template and fails if either side drifts, and checks every job item carries them.
 var (
 	ownerIndexAttrs = []string{"status", "createdAt", "updatedAt", "kind"}
-	dayIndexAttrs   = []string{"status", "model", "kind", "costMicros", "calls", "inTok", "outTok", "cacheReadTok", "cacheWriteTok"}
+	dayIndexAttrs   = []string{"status", "updatedAt", "model", "kind", "costMicros", "calls", "inTok", "outTok", "cacheReadTok", "cacheWriteTok"}
 )
 
 const (
 	questionsSuffix = "#questions"
 	quotaPrefix     = "quota#"
 	ownerIndexName  = "owner-index"
+	dayIndexName    = "day-index"
 )
 
 // jobItem is the job item. Only job items carry ownerId and day, so only they appear in the

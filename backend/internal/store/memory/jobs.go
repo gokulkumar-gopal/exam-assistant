@@ -23,9 +23,10 @@ type JobStore struct {
 	clk       clock.Clock
 	jobs      map[string]store.Job
 	questions map[string]jobQuestions
-	userDays  map[string]userDay // "<user>#<yyyymmdd>"
-	global    map[string]int     // yyyymmdd -> jobs
-	spend     map[string]int64   // yyyymm -> micro-dollars
+	userDays  map[string]userDay      // "<user>#<yyyymmdd>"
+	global    map[string]int          // yyyymmdd -> jobs
+	spend     map[string]int64        // yyyymm -> micro-dollars
+	usage     map[string]usageCounter // "<yyyymm|yyyymmdd>#<model>"
 }
 
 type jobQuestions struct {
@@ -38,7 +39,7 @@ var _ store.JobStore = (*JobStore)(nil)
 // NewJobStore returns an empty JobStore reading time from clk.
 func NewJobStore(clk clock.Clock) *JobStore {
 	return &JobStore{clk: clk, jobs: map[string]store.Job{}, questions: map[string]jobQuestions{},
-		userDays: map[string]userDay{}, global: map[string]int{}, spend: map[string]int64{}}
+		userDays: map[string]userDay{}, global: map[string]int{}, spend: map[string]int64{}, usage: map[string]usageCounter{}}
 }
 
 // live returns the job if present and not expired. Caller holds the lock.

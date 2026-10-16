@@ -118,7 +118,7 @@ func buildHandler(cfg config.Config, logger *slog.Logger, baseURL string, fakeLL
 
 	gens := pickFactory(cfg, logger, fakeLLM)
 	runner := &gen.InProcessRunner{Worker: &gen.Worker{
-		Jobs: jobs, Docs: docStore, Blob: blob, Gens: gens, Clock: clk,
+		Jobs: jobs, Counters: jobs, Docs: docStore, Blob: blob, Gens: gens, Clock: clk,
 		Cfg: gen.WorkerConfig{
 			MaxPerCall: cfg.GenMaxPerCall, Effort: cfg.LLMEffort, PromptVersion: prompt.PromptVersion,
 			CallTimeout: time.Duration(cfg.LLMTimeoutSeconds) * time.Second, MaxTotalBytes: cfg.GenMaxTotalBytes,

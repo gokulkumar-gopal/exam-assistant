@@ -87,3 +87,35 @@ func TestExamStoreContract(t *testing.T) {
 func TestAttemptStoreContract(t *testing.T) {
 	storetest.RunAttemptStoreSuite(t, func(t *testing.T) store.AttemptStore { return memory.NewAttemptStore() })
 }
+
+func TestUsageStoreContract(t *testing.T) {
+	storetest.RunUsageStoreSuite(t, func(t *testing.T) storetest.UsageJobStore {
+		return memory.NewJobStore(clock.NewFake(storetest.T0))
+	})
+}
+
+// Like DynamoDB's ttl attribute: the day counter lasts 3 days from its first add, the month
+// counter 40, and later adds do not extend them.
+func TestUsageCountersExpire(t *testing.T) {
+	clk := clock.NewFake(storetest.T0)
+	s := memory.NewJobStore(clk)
+	ctx := context.Background()
+	d := store.UsageDelta{Calls: 1}
+	if err := s.AddUsage(ctx, "202610", "20261016", "m", d); err != nil {
+		t.Fatal(err)
+	}
+	clk.Advance(72*time.Hour - time.Second)
+	if err := s.AddUsage(ctx, "202610", "20261016", "m", d); err != nil {
+		t.Fatal(err)
+	}
+	clk.Advance(time.Second)
+	sn, _ := s.GetUsage(ctx, "202610", "20261016", []string{"m"})
+	if sn.Day["m"].Calls != 0 || sn.Month["m"].Calls != 2 {
+		t.Fatalf("at 3 days: day %+v month %+v", sn.Day["m"], sn.Month["m"])
+	}
+	clk.Advance(37*24*time.Hour + time.Second) // 40 days after the first add
+	sn, _ = s.GetUsage(ctx, "202610", "20261016", []string{"m"})
+	if sn.Month["m"].Calls != 0 {
+		t.Fatalf("at 40 days: month %+v", sn.Month["m"])
+	}
+}

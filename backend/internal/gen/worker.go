@@ -76,8 +76,14 @@ type Worker struct {
 	Gens  GeneratorFactory
 	Clock clock.Clock
 	Cfg   WorkerConfig
-	// Usage records every call's spend. Nil means SpendRecorder over Jobs and Clock.
+	// Counters holds the per-model usage counters (backend-spec 6.2). Nil means none are kept
+	// (the month's spend counter still is). Used only when Usage is nil.
+	Counters store.UsageStore
+	// Usage records every call. Nil means one CountersRecorder over Jobs, Counters and Clock.
 	Usage UsageRecorder
+
+	recOnce sync.Once
+	rec     UsageRecorder // the default recorder, built once because it remembers counted jobs
 
 	heartbeatInterval time.Duration // 0 means DefaultHeartbeatInterval
 	jobDeadline       time.Duration // 0 means DefaultJobDeadline
@@ -354,7 +360,8 @@ func (w *Worker) recorder() UsageRecorder {
 	if w.Usage != nil {
 		return w.Usage
 	}
-	return SpendRecorder{Jobs: w.Jobs, Now: w.Clock.Now}
+	w.recOnce.Do(func() { w.rec = &CountersRecorder{Jobs: w.Jobs, Counters: w.Counters, Now: w.Clock.Now} })
+	return w.rec
 }
 
 // startHeartbeat starts the heartbeat goroutine, the only goroutine that calls

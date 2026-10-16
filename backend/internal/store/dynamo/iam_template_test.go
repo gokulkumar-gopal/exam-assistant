@@ -223,9 +223,7 @@ func TestIAMPoliciesMatchDerivation(t *testing.T) {
 
 // plannedAPIGrants are API grants no store method uses yet. Each needs a spec reference; the
 // test fails when a grant is neither derived from the code nor listed here.
-var plannedAPIGrants = map[string]string{
-	"JobsTable.Arn|dynamodb:BatchGetItem": "GET /ai/usage reads the month and day counter items (backend-spec 6.3, B-5a.2)",
-}
+var plannedAPIGrants = map[string]string{}
 
 // tableResource maps the Stores table fields to the template resources that own them.
 var tableResource = map[string]string{
@@ -510,8 +508,8 @@ func TestStoreCodeIAMDerivation(t *testing.T) {
 }
 
 // workerStoreMethods lists the store methods the worker code path references: every
-// <x>.Jobs.<Method> and <x>.Docs.<Method> in internal/gen (the Worker's JobStore and DocStore
-// fields; the API-side Service uses lowercase fields, so it is not matched). Static analysis,
+// <x>.Jobs.<Method>, <x>.Docs.<Method> and <x>.Counters.<Method> in internal/gen (the Worker's
+// JobStore and DocStore fields and the usage recorder's UsageStore field; the API-side Service uses lowercase fields, so it is not matched). Static analysis,
 // because running the worker over a recording fake would need a generator, blob and documents
 // and would only cover the branches a fixture reaches; the source scan covers every branch.
 func workerStoreMethods(t *testing.T) map[string]string {
@@ -520,7 +518,7 @@ func workerStoreMethods(t *testing.T) map[string]string {
 	if err != nil || len(files) == 0 {
 		t.Fatalf("no go files in internal/gen: %v", err)
 	}
-	re := regexp.MustCompile(`\.(Jobs|Docs)\.(\w+)`)
+	re := regexp.MustCompile(`\.(Jobs|Docs|Counters)\.(\w+)`)
 	out := map[string]string{}
 	for _, f := range files {
 		if strings.HasSuffix(f, "_test.go") {
