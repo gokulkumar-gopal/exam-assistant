@@ -153,10 +153,11 @@ Unauthenticated users redirect to `/login`.
 |---|---|---|
 | Not started, open | none, label "Not started" | **Start** (primary) |
 | In progress, open | `warn`, "In progress" | **Resume** (primary) |
-| Submitted | `ok`, "Submitted · 34/40" | **View result** |
+| Submitted | `ok`, "Best 34/40" (and " · 3 attempts" when more than one) | **View result**; plus a quiet secondary **Retake** while the row's `canRetake` is true |
 | Missed (closed, never submitted) | `bad`, "Missed" | **View result** |
 | Closing (past `closesAt`, within the 60 s grace window) | `warn`, "Closing…" | **Resume** (primary) |
 
+- **Retake:** on a submitted row with `canRetake`, **Retake** calls `POST /api/exams/:id/retake` and goes to `/exams/[id]/take`, which opens the fresh attempt. A failed call shows a toast and stays on Home (`409 exam_closed`: "This exam has closed."; limit: "You have reached the limit of 50 attempts for this exam."). An exam being retaken (latest attempt not yet submitted) appears under **Open exams** with **Resume** or **Start** and keeps the best score from earlier attempts in its meta line.
 - **Decline:** on an open exam that is **Not started** and was assigned by someone else, show a quiet text button **Decline** next to Start. It opens an AlertDialog "Decline this exam?" (body "It will be removed from your list. {creator} will see that you declined.") with Cancel and Decline. It calls `POST /api/exams/:id/decline` and removes the row. There is no undo in the MVP.
 - Deadline text: "closes in 5h", "closes in 2d", "closed Oct 8". Relative format under 7 days, otherwise absolute.
 - **Empty states:** Open: "No open exams. Exams you create or are assigned appear here." Closed: "Nothing closed yet."
@@ -261,6 +262,7 @@ Focused layout: exam page header only (see section 4). Content centered, max wid
 - **Review page** (after the last question): h1 "Review before you submit", a line "2 unanswered: question 3, 7" (or "All questions answered."), the dots row (click to jump), and **Back to questions** and primary **Submit exam**.
 - **Submit exam** shows no extra dialog when everything is answered. If any question is unanswered, show a confirmation AlertDialog "Submit with 2 unanswered questions?" with Cancel and Submit.
 - **Deadline passes mid-exam:** the timer reaches 0 and the app calls `POST /api/exams/:id/submit` **with the current answers in the body** (it does not autosave first), shows a toast "Time's up. Your answers were submitted.", and goes to the result page. If submit answers `409 exam_closed` (the grace window ended first), show the toast "This exam has closed. Your last saved answers were submitted." and go to the result page. Autosave answering `409` (closed or already submitted) does the same.
+- **Retakes:** the take screen always works on the latest attempt. A user who lands on `/take` with a submitted latest attempt is sent to the result page, where **Retake** starts a new one. The header shows "Attempt 2" when `attemptCount` is above 1.
 - **Open after deadline:** redirect to the result page (or Home with a toast "This exam is closed") if never started.
 - **Resume:** reopening restores all answers, the last question the user was on, and any revealed answers.
 - **Peeks (P1; only when the exam's `maxPeeks` is above 0):**
@@ -272,7 +274,7 @@ Focused layout: exam page header only (see section 4). Content centered, max wid
 ### 6.6 Teacher status (`/exams/[id]/status`)
 - Header: **← Back**, h1 exam title.
 - Subtitle: counts, for example "2 submitted, 1 in progress, 1 not started" (plus ", 1 declined" when above 0).
-- Table: **Student**, **Status** (pill: Not started, In progress, Submitted, or `bad`-outline "Declined"), **Score**, **Submitted**. Header cells 12 px uppercase muted on `--bg`. Scores show "—" until graded.
+- Table: **Student**, **Status** (pill: Not started, In progress, Submitted, or `bad`-outline "Declined"), **Score** (the best attempt's score, with "· 3 attempts" when more than one), **Submitted** (that attempt's time). A student with more than one attempt has an **Attempts** disclosure button (labelled "Show attempts for {name}") that expands a row listing every attempt's number, score and time. The creator never sees a student's answers. Header cells 12 px uppercase muted on `--bg`. Scores show "—" until graded.
 - Header action: secondary **Print** (opens `/exams/[id]/print`).
 - Under the table: secondary **Assign to more people** (opens a small dialog with an emails input and the cap text from section 6.4; the response's `unknown` emails are shown in a `Notice`).
 - Empty (no assignees): "Not assigned." with the **Assign** button.
@@ -286,6 +288,7 @@ Focused layout: exam page header only (see section 4). Content centered, max wid
 - **If `keyVisible` is false:** the backend omits all correctness data, so **do not render the ✓ or ✗ pills or any "Correct answer" line**. Each card shows the question and "Your answer: …" only, and a line under the subtitle says "Answers available after {keyAvailableAt}." with no empty gap. Questions the user revealed still show their revealed answer (the backend includes it).
 - Multiple choice is auto-graded. Free text shows "Compare with the model answer" and a self-check pair of buttons **I got it** / **I missed it** (updates the score locally in MVP; a revealed question counts for at most half its marks).
 - Before `acceptingUntil` the result of an unfinished attempt isn't available (`409`); show "Submit the exam to see results." with a link back.
+- **Attempts:** when the response's `attempts` has more than one entry, show an **Attempts** table under the subtitle (columns **Attempt**, **Score**, **Submitted**, with the best attempt marked "Best") where each row's button **View** ("View attempt N") loads `?attempt=N`; the selected attempt is shown with `aria-current`. The page defaults to the latest submitted attempt. Switching attempts clears the local self-check marks. Every attempt's own answers and marks stay viewable. While the exam is still before `acceptingUntil` a primary **Retake** button (shown only while a retake is allowed) calls `POST /api/exams/:id/retake` and goes to `/take`.
 
 ### 6.8 Auth
 
@@ -427,15 +430,16 @@ type AttemptStatus = "not_started" | "in_progress" | "submitted" | "missed" | "d
 | `GET /api/generate/:jobId`, `DELETE /api/generate/:jobId` | create | poll every 1.5 s; the response includes `model`; `error` text is user-ready |
 | `POST /api/generate/regenerate` `{marks, sourceIds, type, avoid[], model?}` | regenerate, add | same polling; separate daily limit; send the model used for the exam |
 | `POST /api/exams` (optional `Idempotency-Key` header) | publish | body has `closesInSeconds` or `closesAt`, `assigneeEmails`, `maxPeeks`, `questions`; no key-visibility field; response `{ id, unknownEmails, serverTime }` |
-| `GET /api/exams?scope=open\|closed\|created` | home | declined exams are never returned; `created` has `counts` including `declined`; each exam has `createdBy`, `attemptStatus`, `score` |
-| `GET /api/exams/:id` | take | `{ exam, attempt, keyVisible, acceptingUntil, serverTime }`; `attempt` carries `answers`, `lastQuestionIndex`, and (P1) `revealed` and `peeksLeft` |
+| `GET /api/exams?scope=open\|closed\|created` | home | declined exams are never returned; `created` has `counts` including `declined`; each exam has `createdBy`, `attemptStatus`, `score` (the best score), `attemptCount`, `canRetake` |
+| `GET /api/exams/:id` | take | `{ exam, attempt, attemptCount, keyVisible, acceptingUntil, serverTime }`; `attempt` is the latest attempt and carries `attemptNo`, `answers`, `lastQuestionIndex`, and (P1) `revealed` and `peeksLeft` |
 | `PUT /api/exams/:id/attempt` (autosave) | take | `409` when closed or submitted |
 | `POST /api/exams/:id/submit` `{answers?, lastQuestionIndex?}` | take, auto-submit at zero | answers in the body; accepted until `acceptingUntil`; idempotent |
 | `POST /api/exams/:id/reveal` `{questionId}` (P1) | take | `{ questionId, correctIndex or modelAnswer, peeksLeft }`; `403` off, `409` none left or key already visible |
 | `POST /api/exams/:id/decline` | home | idempotent; only while not started |
-| `GET /api/exams/:id/status` | status | creator only; rows include `declined` |
+| `POST /api/exams/:id/retake` | home, result | `{ attemptNo, serverTime }`; idempotent while the latest attempt is unfinished; `409 exam_closed` after the deadline, `409` at 50 attempts |
+| `GET /api/exams/:id/status` | status | creator only; one row per student with `attemptCount`, best `score` and `history[]` (no answers); rows include `declined` |
 | `POST /api/exams/:id/assign` `{emails}` | create, status | `{ assigned, alreadyAssigned, unknown }`; role and cap rules apply |
-| `GET /api/exams/:id/result` | result | `keyVisible`, `keyAvailableAt`, `score`, `scoreBeforePeeks`, `peeksUsed`, `maxPeeks`, per-question `revealed`; correctness fields are absent when the key is hidden |
+| `GET /api/exams/:id/result` (optional `?attempt=N`) | result | `attemptNo`, `bestAttemptNo`, `attempts[]`, `keyVisible`, `keyAvailableAt`, `score`, `scoreBeforePeeks`, `peeksUsed`, `maxPeeks`, per-question `revealed`; correctness fields are absent when the key is hidden |
 
 Rules that live on the server but affect the UI:
 - One deadline cutoff: `acceptingUntil` = `closesAt` + 60 seconds. The server uses it for autosave, submit, list classification and key visibility; the frontend only displays it.
@@ -550,6 +554,7 @@ A reviewer can confirm each of these by clicking through the app.
 - [ ] A creator who is also taking their own exam sees no answer key until they submit (or the exam is over).
 - [ ] A near-the-limit answer shows half marks correctly (for example 27.5 / 40).
 - [ ] Teacher status table shows the three statuses with counts in the subtitle.
+- [ ] Retakes: after submitting, **Retake** on the Closed row and on the result page starts a new attempt until the exam closes; the result page lists every attempt with its marks and **View** opens that attempt's own answers; the Home row shows the best score and attempt count; after the deadline there is no Retake; the creator's status table shows the best score, attempt count and an expandable per-attempt list with no answers.
 - [ ] On the deployed Vercel site, `/api/*` requests reach the AWS backend and login persists across refresh (cookie works through the rewrite).
 - [ ] A 20 MB PDF uploads successfully, showing real progress, with no request to the app server carrying the file body.
 - [ ] An uploaded file opens in the viewer; waiting past the URL expiry and scrolling or reloading still works (URL refetched once).

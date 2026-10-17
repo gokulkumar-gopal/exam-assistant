@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { scoreCell, statusPill, statusSubtitle, submittedCell } from "../lib/status";
+import { attemptsToggleLabel, hasAttemptHistory, scoreCell, statusPill, statusSubtitle, submittedCell } from "../lib/status";
 import { parseEmails, assignHelper } from "../lib/publish";
 
 describe("statusSubtitle", () => {
@@ -67,5 +67,27 @@ describe("assignHelper", () => {
     expect(assignHelper(undefined)).toBe("Student emails only · up to 10 people");
     expect(assignHelper("teacher")).toBe("Up to 50 people");
     expect(assignHelper("parent")).toBe("Up to 50 people");
+  });
+});
+
+describe("scoreCell with attempts", () => {
+  it("best score plus the count only above one attempt", () => {
+    expect(scoreCell({ status: "submitted", score: 34, attemptCount: 3 }, 40)).toBe("34/40 · 3 attempts");
+    expect(scoreCell({ status: "submitted", score: 34, attemptCount: 1 }, 40)).toBe("34/40");
+    expect(scoreCell({ status: "in_progress", attemptCount: 2 }, 40)).toBe("—");
+  });
+});
+
+describe("attempt disclosure", () => {
+  it("only for students with more than one attempt and a history", () => {
+    const h = [{ attemptNo: 1, status: "submitted" as const, score: 3 }];
+    expect(hasAttemptHistory({ attemptCount: 2, history: h })).toBe(true);
+    expect(hasAttemptHistory({ attemptCount: 1, history: h })).toBe(false);
+    expect(hasAttemptHistory({ attemptCount: 2, history: [] })).toBe(false);
+    expect(hasAttemptHistory({})).toBe(false);
+  });
+  it("labels the toggle with the student's name", () => {
+    expect(attemptsToggleLabel("Aisha", false)).toBe("Show attempts for Aisha");
+    expect(attemptsToggleLabel("Aisha", true)).toBe("Hide attempts for Aisha");
   });
 });

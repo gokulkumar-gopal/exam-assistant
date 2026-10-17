@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"io"
 	"net/http"
+	"strconv"
 	"time"
 
+	"github.com/gokulkumar/exam-assistant/backend/internal/apperr"
 	"github.com/gokulkumar/exam-assistant/backend/internal/exams"
 )
 
@@ -69,10 +71,11 @@ func registerExamRoutes(rt *routeTable, deps Deps) {
 		}
 		w.Header().Set("Cache-Control", "no-store")
 		WriteJSON(w, http.StatusOK, map[string]any{
-			"serverTime": deps.Clock.Now().UTC().Format(time.RFC3339),
-			"exam":       v.Exam,
-			"attempt":    v.Attempt,
-			"keyVisible": v.KeyVisible,
+			"serverTime":   deps.Clock.Now().UTC().Format(time.RFC3339),
+			"exam":         v.Exam,
+			"attempt":      v.Attempt,
+			"attemptCount": v.AttemptCount,
+			"keyVisible":   v.KeyVisible,
 		})
 	})))
 	rt.handle("POST", "/exams/{id}/decline", RequireUser(deps, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -134,7 +137,16 @@ func registerExamRoutes(rt *routeTable, deps Deps) {
 	})))
 	rt.handle("GET", "/exams/{id}/result", RequireUser(deps, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		u, _ := UserFrom(r.Context())
-		res, err := deps.Exams.Result(r.Context(), u, r.PathValue("id"))
+		attemptNo := 0 // no ?attempt: the latest submitted attempt
+		if q := r.URL.Query().Get("attempt"); q != "" {
+			n, err := strconv.Atoi(q)
+			if err != nil || n < 1 {
+				WriteError(w, r, apperr.Validation("Some fields need attention.", map[string]string{"attempt": "attempt must be a positive whole number."}))
+				return
+			}
+			attemptNo = n
+		}
+		res, err := deps.Exams.Result(r.Context(), u, r.PathValue("id"), attemptNo)
 		if err != nil {
 			WriteError(w, r, err)
 			return
@@ -144,6 +156,19 @@ func registerExamRoutes(rt *routeTable, deps Deps) {
 			ServerTime string `json:"serverTime"`
 			exams.ResultView
 		}{deps.Clock.Now().UTC().Format(time.RFC3339), res})
+	})))
+	rt.handle("POST", "/exams/{id}/retake", RequireUser(deps, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		u, _ := UserFrom(r.Context())
+		res, err := deps.Exams.Retake(r.Context(), u, r.PathValue("id"))
+		if err != nil {
+			WriteError(w, r, err)
+			return
+		}
+		w.Header().Set("Cache-Control", "no-store")
+		WriteJSON(w, http.StatusOK, struct {
+			exams.RetakeView
+			ServerTime string `json:"serverTime"`
+		}{res, deps.Clock.Now().UTC().Format(time.RFC3339)})
 	})))
 	rt.handle("POST", "/exams/{id}/reveal", RequireUser(deps, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var in struct {

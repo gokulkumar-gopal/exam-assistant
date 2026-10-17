@@ -106,7 +106,7 @@ func TestStatusCountsAndRows(t *testing.T) {
 func TestStatusRowsNeverContainAnswers(t *testing.T) {
 	e := newEnv(t)
 	e.seedExam(t, "e1", "t1", "mcq", closes, t0)
-	a := store.Attempt{ExamID: "e1", UserID: "s1", Status: store.AttemptSubmitted, CreatedAt: t0, SubmittedAt: &t0,
+	a := store.Attempt{AttemptNo: 1, ExamID: "e1", UserID: "s1", Status: store.AttemptSubmitted, CreatedAt: t0, SubmittedAt: &t0,
 		Answers: map[string]string{"q1": "SECRET-ANSWER-TEXT"}, LastQuestionIndex: 3, Revealed: []string{"q1"}, ScoreHalves: ip(2)}
 	if _, err := e.attempts.PutAttemptIfAbsent(context.Background(), a); err != nil {
 		t.Fatal(err)

@@ -48,7 +48,7 @@ func TestResultOverHTTP(t *testing.T) {
 		sort.Strings(ks)
 		return strings.Join(ks, ",")
 	}
-	if got := keys(out); got != "exam,keyAvailableAt,keyVisible,maxScore,peeksUsed,questions,score,scoreBeforePeeks,serverTime,status" {
+	if got := keys(out); got != "attemptNo,attempts,bestAttemptNo,exam,keyAvailableAt,keyVisible,maxScore,peeksUsed,questions,score,scoreBeforePeeks,serverTime,status" {
 		t.Fatalf("top keys: %s", got)
 	}
 	if got := keys(out["exam"].(map[string]any)); got != "acceptingUntil,closesAt,id,maxPeeks,title,totalMarks,type" {

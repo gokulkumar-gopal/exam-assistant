@@ -21,7 +21,8 @@ import (
 // "attribute_not_exists(x)", "x = :v" and "x < :v" terms joined by AND, groups of those
 // joined by OR (OR binds loosest, no parentheses); update expressions made of SET (values
 // ":v" or "if_not_exists(a, :v)"), ADD (numbers) and REMOVE clauses; key conditions
-// "pk = :v" on the table or on a GSI (projected per the INCLUDE lists in template.yaml).
+// "pk = :v" on the table or on a GSI (projected per the INCLUDE lists in template.yaml),
+// optionally followed by " AND begins_with(sk, :v)" on the range key.
 // Also: "x <> :v", "size(x) < :v", "size(x) = :v", "NOT contains(x, :v)" and SET list_append(x, :v).
 // Anything else panics,
 // so a new expression shape forces the fake to be extended.
@@ -86,7 +87,7 @@ func keyNames(table string) (pk, sk string) {
 	case strings.HasSuffix(table, "-jobs"), strings.HasSuffix(table, "-exams"):
 		return "id", ""
 	case strings.HasSuffix(table, "-attempts"):
-		return "examId", "userId"
+		return "examId", "sk"
 	}
 	panic("unknown table " + table)
 }
@@ -438,32 +439,61 @@ func (f *fakeDynamo) Query(_ context.Context, in *dynamodb.QueryInput, _ ...func
 		idx = &d
 		pk, sk = d.pk, d.sk
 	}
-	kc := strings.SplitN(aws.ToString(in.KeyConditionExpression), " = ", 2)
+	pkExpr, skExpr, _ := strings.Cut(aws.ToString(in.KeyConditionExpression), " AND ")
+	kc := strings.SplitN(pkExpr, " = ", 2)
 	if len(kc) != 2 || resolve(strings.TrimSpace(kc[0]), in.ExpressionAttributeNames) != pk {
 		panic("unsupported key condition: " + aws.ToString(in.KeyConditionExpression))
 	}
 	pkVal := in.ExpressionAttributeValues[strings.TrimSpace(kc[1])]
+	var prefix *string // begins_with(sk, :v) on the range key of the table or index being queried
+	if skExpr != "" {
+		args, ok := strings.CutPrefix(strings.TrimSpace(skExpr), "begins_with(")
+		parts := strings.Split(strings.TrimSuffix(args, ")"), ",")
+		if !ok || len(parts) != 2 || resolve(strings.TrimSpace(parts[0]), in.ExpressionAttributeNames) != sk {
+			panic("unsupported key condition: " + aws.ToString(in.KeyConditionExpression))
+		}
+		v, bound := in.ExpressionAttributeValues[strings.TrimSpace(parts[1])]
+		if !bound {
+			panic("unbound value " + parts[1])
+		}
+		p := s(v)
+		prefix = &p
+	}
+	// Items order by the queried range key, then by the table's own range key (a GSI may hold
+	// several rows per index key; the real LastEvaluatedKey carries both).
+	_, tsk := keyNames(table)
+	ord := func(it map[string]types.AttributeValue) string {
+		k := s(it[sk])
+		if tsk != "" && tsk != sk {
+			k += "\x00" + s(it[tsk])
+		}
+		return k
+	}
 	var items []map[string]types.AttributeValue
 	for _, it := range f.tbl(table) {
 		if reflect.DeepEqual(it[pk], pkVal) {
+			if prefix != nil && !strings.HasPrefix(s(it[sk]), *prefix) {
+				continue
+			}
 			if idx != nil {
 				it = project(table, it, *idx)
 			}
 			items = append(items, it)
 		}
 	}
-	sort.Slice(items, func(i, j int) bool { return s(items[i][sk]) < s(items[j][sk]) })
-	if in.ScanIndexForward != nil && !*in.ScanIndexForward {
+	sort.Slice(items, func(i, j int) bool { return ord(items[i]) < ord(items[j]) })
+	desc := in.ScanIndexForward != nil && !*in.ScanIndexForward
+	if desc {
 		for i, j := 0, len(items)-1; i < j; i, j = i+1, j-1 {
 			items[i], items[j] = items[j], items[i]
 		}
 	}
 	if len(in.ExclusiveStartKey) > 0 {
-		after := s(in.ExclusiveStartKey[sk])
+		after := ord(in.ExclusiveStartKey)
 		for len(items) > 0 {
-			cur := s(items[0][sk])
+			cur := ord(items[0])
 			skip := cur <= after
-			if in.ScanIndexForward != nil && !*in.ScanIndexForward {
+			if desc {
 				skip = cur >= after
 			}
 			if !skip {
@@ -483,7 +513,7 @@ func (f *fakeDynamo) Query(_ context.Context, in *dynamodb.QueryInput, _ ...func
 			limit = f.queryPageSize
 		}
 		if limit > 0 && evaluated >= limit { // Limit applies before the filter
-			out.LastEvaluatedKey = map[string]types.AttributeValue{pk: it[pk], sk: items[i-1][sk]}
+			out.LastEvaluatedKey = lastKey(table, idx, items[i-1])
 			break
 		}
 		evaluated++
@@ -492,6 +522,22 @@ func (f *fakeDynamo) Query(_ context.Context, in *dynamodb.QueryInput, _ ...func
 		}
 	}
 	return out, nil
+}
+
+// lastKey is the LastEvaluatedKey after item: its table key and, for a GSI query, its index key.
+func lastKey(table string, idx *indexDef, item map[string]types.AttributeValue) map[string]types.AttributeValue {
+	tpk, tsk := keyNames(table)
+	names := []string{tpk, tsk}
+	if idx != nil {
+		names = append(names, idx.pk, idx.sk)
+	}
+	out := map[string]types.AttributeValue{}
+	for _, n := range names {
+		if v, ok := item[n]; ok && n != "" {
+			out[n] = v
+		}
+	}
+	return out
 }
 
 // project returns what a GSI holds for item: the table key, the index keys and the INCLUDE

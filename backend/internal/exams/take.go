@@ -41,8 +41,9 @@ type RevealedKey struct {
 	ModelAnswer  *string `json:"modelAnswer,omitempty"`
 }
 
-// AttemptView is the caller's own attempt row. It never carries scores.
+// AttemptView is the caller's own latest attempt row. It never carries scores.
 type AttemptView struct {
+	AttemptNo         int               `json:"attemptNo"`
 	Status            string            `json:"status"`
 	Answers           map[string]string `json:"answers"`
 	LastQuestionIndex int               `json:"lastQuestionIndex"`
@@ -53,9 +54,10 @@ type AttemptView struct {
 
 // GetView is the response body of GET /exams/{id}, minus serverTime.
 type GetView struct {
-	Exam       ExamView     `json:"exam"`
-	Attempt    *AttemptView `json:"attempt"`
-	KeyVisible bool         `json:"keyVisible"`
+	Exam         ExamView     `json:"exam"`
+	Attempt      *AttemptView `json:"attempt"`
+	AttemptCount int          `json:"attemptCount"`
+	KeyVisible   bool         `json:"keyVisible"`
 }
 
 // questionView is the ONE place a stored question becomes a client question. The key fields are
@@ -87,8 +89,10 @@ func revealedKey(q store.Question) RevealedKey {
 // Get returns the exam to take or view (backend-spec 8.5, 9.4, 9.5). It is read-only: it never
 // creates or updates an attempt row and never charges a peek, so printing an exam is free.
 // Visible to the creator and to a caller with a non-declined attempt row; a missing exam, a
-// stranger and a declined user all get the same 404. The caller's own expired in_progress
-// attempt is lazily finalized first, and the finalized row is what the view shows.
+// stranger and a declined user all get the same 404. The attempt shown is the caller's latest (a
+// retake in progress, or the last submitted one) and attemptCount says how many there are. The
+// caller's own expired in_progress attempt is lazily finalized first, and the finalized row is
+// what the view shows.
 func (s *Service) Get(ctx context.Context, user store.User, examID string) (GetView, error) {
 	exam, err := s.exams.GetExam(ctx, examID)
 	if errors.Is(err, store.ErrNotFound) {
@@ -98,7 +102,7 @@ func (s *Service) Get(ctx context.Context, user store.User, examID string) (GetV
 		return GetView{}, apperr.Internal(err)
 	}
 	var att *store.Attempt
-	row, err := s.attempts.GetAttempt(ctx, examID, user.ID)
+	row, err := s.attempts.GetLatestAttempt(ctx, examID, user.ID)
 	switch {
 	case err == nil:
 		att = &row
@@ -142,12 +146,15 @@ func (s *Service) Get(ctx context.Context, user store.User, examID string) (GetV
 		ClosesAt: exam.ClosesAt.UTC(), AcceptingUntil: AcceptingUntil(exam).UTC(),
 		MaxPeeks: exam.MaxPeeks, CreatedBy: by, Questions: make([]QuestionView, 0, len(exam.Questions)),
 	}}
+	if att != nil {
+		v.AttemptCount = att.AttemptNo // attempt numbers are contiguous from 1
+	}
 	for _, q := range exam.Questions {
 		v.Exam.Questions = append(v.Exam.Questions, questionView(q, keyVisible || revealed[q.ID]))
 	}
 	if att != nil {
 		av := AttemptView{
-			Status: att.Status, Answers: map[string]string{}, LastQuestionIndex: att.LastQuestionIndex,
+			AttemptNo: att.AttemptNo, Status: att.Status, Answers: map[string]string{}, LastQuestionIndex: att.LastQuestionIndex,
 			Revealed: []RevealedKey{}, PeeksLeft: max(0, exam.MaxPeeks-len(att.Revealed)),
 		}
 		for k, a := range att.Answers {

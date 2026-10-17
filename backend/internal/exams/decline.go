@@ -15,7 +15,7 @@ import (
 func (s *Service) Decline(ctx context.Context, user store.User, examID string) error {
 	// The row comes first: the exam is only read once the caller has a row, so a missing exam and
 	// someone else's exam are the same 404.
-	a, err := s.attempts.GetAttempt(ctx, examID, user.ID)
+	a, err := s.attempts.GetLatestAttempt(ctx, examID, user.ID)
 	if errors.Is(err, store.ErrNotFound) {
 		return apperr.NotFound()
 	}
@@ -24,6 +24,10 @@ func (s *Service) Decline(ctx context.Context, user store.User, examID string) e
 	}
 	if a.Status == store.AttemptDeclined {
 		return nil // idempotent, also after the deadline
+	}
+	if a.AttemptNo > 1 {
+		// A retake is not an assignment: declining it would hide the attempts already submitted.
+		return apperr.Conflict("You can only decline an exam you have not started.")
 	}
 	// Declining is a write: after the deadline it would turn a missed attempt into a declined one.
 	exam, err := s.exams.GetExam(ctx, examID)
@@ -36,7 +40,7 @@ func (s *Service) Decline(ctx context.Context, user store.User, examID string) e
 	if over(exam, s.clk.Now()) {
 		return apperr.ExamClosed()
 	}
-	err = s.attempts.Decline(ctx, examID, user.ID)
+	err = s.attempts.Decline(ctx, examID, user.ID, a.AttemptNo)
 	switch {
 	case err == nil:
 		return nil

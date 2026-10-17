@@ -16,7 +16,9 @@ import (
 
 type attemptItem struct {
 	ExamID                 string            `dynamodbav:"examId"`
+	SK                     string            `dynamodbav:"sk"` // <userId>#<attemptNo, 3 digits>
 	UserID                 string            `dynamodbav:"userId"`
+	AttemptNo              int               `dynamodbav:"attemptNo"`
 	Status                 string            `dynamodbav:"status"`
 	Answers                map[string]string `dynamodbav:"answers"`
 	LastIdx                int               `dynamodbav:"lastIdx"`
@@ -35,16 +37,21 @@ type attemptItem struct {
 type attemptSummaryItem struct {
 	ExamID                 string `dynamodbav:"examId"`
 	UserID                 string `dynamodbav:"userId"`
+	AttemptNo              int    `dynamodbav:"attemptNo"`
 	Status                 string `dynamodbav:"status"`
 	ScoreHalves            *int   `dynamodbav:"scoreHalves,omitempty"`
 	ScoreBeforePeeksHalves *int   `dynamodbav:"scoreBeforePeeksHalves,omitempty"`
 	SubmittedAt            string `dynamodbav:"submittedAt,omitempty"`
 }
 
-func attemptKey(examID, userID string) map[string]types.AttributeValue {
+// attemptSK is the range key of an attempt row: the user, then the attempt number zero-padded
+// to 3 digits so a begins_with query on "<userId>#" returns the user's attempts in number order.
+func attemptSK(userID string, attemptNo int) string { return fmt.Sprintf("%s#%03d", userID, attemptNo) }
+
+func attemptKey(examID, userID string, attemptNo int) map[string]types.AttributeValue {
 	return map[string]types.AttributeValue{
 		"examId": &types.AttributeValueMemberS{Value: examID},
-		"userId": &types.AttributeValueMemberS{Value: userID},
+		"sk":     &types.AttributeValueMemberS{Value: attemptSK(userID, attemptNo)},
 	}
 }
 
@@ -72,6 +79,12 @@ func (s *Stores) PutAttemptIfAbsent(ctx context.Context, a store.Attempt) (bool,
 	if a.ExamID == "" || a.UserID == "" {
 		return false, errors.New("dynamo: attempt needs an exam and a user")
 	}
+	if a.AttemptNo == 0 {
+		a.AttemptNo = 1
+	}
+	if a.AttemptNo < 1 || a.AttemptNo > store.MaxAttemptsPerExam {
+		return false, fmt.Errorf("%w: attempt number %d is outside 1..%d", store.ErrConflict, a.AttemptNo, store.MaxAttemptsPerExam)
+	}
 	if a.Status == "" {
 		a.Status = store.AttemptNotStarted
 	}
@@ -81,14 +94,14 @@ func (s *Stores) PutAttemptIfAbsent(ctx context.Context, a store.Attempt) (bool,
 	if a.Revealed == nil {
 		a.Revealed = []string{}
 	}
-	av, err := attributevalue.MarshalMap(attemptItem{ExamID: a.ExamID, UserID: a.UserID, Status: a.Status, Answers: a.Answers,
+	av, err := attributevalue.MarshalMap(attemptItem{ExamID: a.ExamID, SK: attemptSK(a.UserID, a.AttemptNo), UserID: a.UserID, AttemptNo: a.AttemptNo, Status: a.Status, Answers: a.Answers,
 		LastIdx: a.LastQuestionIndex, Revealed: a.Revealed, ScoreHalves: a.ScoreHalves, ScoreBeforePeeksHalves: a.ScoreBeforePeeksHalves,
 		StartedAt: optTime(a.StartedAt), SavedAt: optTime(a.SavedAt), SubmittedAt: optTime(a.SubmittedAt),
 		AutoSubmitted: a.AutoSubmitted, CreatedAt: fmtTime(a.CreatedAt)})
 	if err != nil {
 		return false, err
 	}
-	_, err = s.api.PutItem(ctx, &dynamodb.PutItemInput{TableName: &s.attempts, Item: av, ConditionExpression: ptr("attribute_not_exists(userId)")})
+	_, err = s.api.PutItem(ctx, &dynamodb.PutItemInput{TableName: &s.attempts, Item: av, ConditionExpression: ptr("attribute_not_exists(sk)")})
 	if err == nil {
 		return true, nil
 	}
@@ -98,15 +111,71 @@ func (s *Stores) PutAttemptIfAbsent(ctx context.Context, a store.Attempt) (bool,
 	return false, fmt.Errorf("dynamo: put attempt: %w", err)
 }
 
-func (s *Stores) GetAttempt(ctx context.Context, examID, userID string) (store.Attempt, error) {
+// PutRetake is a conditional put of the not_started row for attemptNo, so two concurrent
+// retakes cannot both create it.
+func (s *Stores) PutRetake(ctx context.Context, examID, userID string, attemptNo int, now time.Time) (bool, error) {
+	if attemptNo < 1 || attemptNo > store.MaxAttemptsPerExam {
+		return false, fmt.Errorf("%w: attempt number %d is outside 1..%d", store.ErrConflict, attemptNo, store.MaxAttemptsPerExam)
+	}
+	return s.PutAttemptIfAbsent(ctx, store.Attempt{ExamID: examID, UserID: userID, AttemptNo: attemptNo,
+		Status: store.AttemptNotStarted, CreatedAt: now})
+}
+
+func (s *Stores) GetAttempt(ctx context.Context, examID, userID string, attemptNo int) (store.Attempt, error) {
 	if examID == "" || userID == "" {
 		return store.Attempt{}, store.ErrNotFound
 	}
-	m, err := s.getItem(ctx, s.attempts, attemptKey(examID, userID))
+	m, err := s.getItem(ctx, s.attempts, attemptKey(examID, userID, attemptNo))
 	if err != nil {
 		return store.Attempt{}, err
 	}
 	return decodeAttempt(m)
+}
+
+// userAttemptsQuery is the consistent base-table query for one user's attempts on one exam.
+func (s *Stores) userAttemptsQuery(examID, userID string) dynamodb.QueryInput {
+	return dynamodb.QueryInput{
+		TableName:                 &s.attempts,
+		KeyConditionExpression:    ptr("examId = :e AND begins_with(sk, :p)"),
+		ExpressionAttributeValues: map[string]types.AttributeValue{":e": sv(examID), ":p": sv(userID + "#")},
+		ConsistentRead:            ptr(true),
+	}
+}
+
+// GetLatestAttempt reads the highest sk of the user's attempts: newest first, one item.
+func (s *Stores) GetLatestAttempt(ctx context.Context, examID, userID string) (store.Attempt, error) {
+	if examID == "" || userID == "" {
+		return store.Attempt{}, store.ErrNotFound
+	}
+	q := s.userAttemptsQuery(examID, userID)
+	q.ScanIndexForward, q.Limit = ptr(false), ptr(int32(1))
+	res, err := s.api.Query(ctx, &q)
+	if err != nil {
+		return store.Attempt{}, fmt.Errorf("dynamo: latest attempt: %w", err)
+	}
+	if len(res.Items) == 0 {
+		return store.Attempt{}, store.ErrNotFound
+	}
+	return decodeAttempt(res.Items[0])
+}
+
+func (s *Stores) ListAttempts(ctx context.Context, examID, userID string) ([]store.Attempt, error) {
+	if examID == "" || userID == "" {
+		return nil, nil
+	}
+	items, err := s.queryAll(ctx, s.userAttemptsQuery(examID, userID))
+	if err != nil {
+		return nil, fmt.Errorf("dynamo: list attempts: %w", err)
+	}
+	var out []store.Attempt
+	for _, m := range items {
+		a, err := decodeAttempt(m)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, a)
+	}
+	return out, nil
 }
 
 func decodeAttempt(m map[string]types.AttributeValue) (store.Attempt, error) {
@@ -114,7 +183,7 @@ func decodeAttempt(m map[string]types.AttributeValue) (store.Attempt, error) {
 	if err := attributevalue.UnmarshalMap(m, &it); err != nil {
 		return store.Attempt{}, fmt.Errorf("dynamo: decode attempt: %w", err)
 	}
-	a := store.Attempt{ExamID: it.ExamID, UserID: it.UserID, Status: it.Status, Answers: it.Answers, LastQuestionIndex: it.LastIdx,
+	a := store.Attempt{ExamID: it.ExamID, UserID: it.UserID, AttemptNo: it.AttemptNo, Status: it.Status, Answers: it.Answers, LastQuestionIndex: it.LastIdx,
 		Revealed: it.Revealed, ScoreHalves: it.ScoreHalves, ScoreBeforePeeksHalves: it.ScoreBeforePeeksHalves, AutoSubmitted: it.AutoSubmitted}
 	if a.Answers == nil {
 		a.Answers = map[string]string{}
@@ -177,7 +246,7 @@ func (s *Stores) ListByUser(ctx context.Context, userID string) ([]store.Attempt
 		if err != nil {
 			return nil, err
 		}
-		out = append(out, store.AttemptSummary{ExamID: it.ExamID, UserID: it.UserID, Status: it.Status,
+		out = append(out, store.AttemptSummary{ExamID: it.ExamID, UserID: it.UserID, AttemptNo: it.AttemptNo, Status: it.Status,
 			ScoreHalves: it.ScoreHalves, ScoreBeforePeeksHalves: it.ScoreBeforePeeksHalves, SubmittedAt: sub})
 	}
 	return out, nil
@@ -209,10 +278,10 @@ func (s *Stores) ListByExam(ctx context.Context, examID string) ([]store.Attempt
 
 // condUpdate runs a conditional UpdateItem on an attempt. ok=false means the condition
 // failed; old is then the item as it was (empty when the row is missing).
-func (s *Stores) condUpdate(ctx context.Context, examID, userID, cond, update string, names map[string]string,
+func (s *Stores) condUpdate(ctx context.Context, examID, userID string, attemptNo int, cond, update string, names map[string]string,
 	vals map[string]types.AttributeValue, returnNew bool) (out map[string]types.AttributeValue, ok bool, old map[string]types.AttributeValue, err error) {
 	in := &dynamodb.UpdateItemInput{
-		TableName: &s.attempts, Key: attemptKey(examID, userID),
+		TableName: &s.attempts, Key: attemptKey(examID, userID, attemptNo),
 		ConditionExpression: &cond, UpdateExpression: &update,
 		ExpressionAttributeNames: names, ExpressionAttributeValues: vals,
 		// ALL_OLD tells a missing row (empty Item) from one in the wrong state.
@@ -255,7 +324,7 @@ var statusName = map[string]string{"#st": "status"}
 // and savedAt only, so it never writes to user-index. The first save of a not_started
 // attempt falls through to the second form, which moves it to in_progress and sets
 // startedAt (the only autosave write that changes the indexed status).
-func (s *Stores) Save(ctx context.Context, examID, userID string, answers map[string]string, lastIdx int, now time.Time) error {
+func (s *Stores) Save(ctx context.Context, examID, userID string, attemptNo int, answers map[string]string, lastIdx int, now time.Time) error {
 	if examID == "" || userID == "" {
 		return store.ErrNotFound
 	}
@@ -272,7 +341,7 @@ func (s *Stores) Save(ctx context.Context, examID, userID string, answers map[st
 	// lose a race to another first save or a Reveal, which leaves the attempt in_progress and
 	// still writable; then the in_progress form is tried again.
 	for attempt := 0; attempt < maxSaveAttempts; attempt++ {
-		_, ok, old, err := s.condUpdate(ctx, examID, userID, "#st = :ip",
+		_, ok, old, err := s.condUpdate(ctx, examID, userID, attemptNo, "#st = :ip",
 			"SET savedAt = :t, answers = :a, lastIdx = :i, startedAt = if_not_exists(startedAt, :t)", statusName,
 			map[string]types.AttributeValue{":ip": sv(store.AttemptInProgress), ":t": ts, ":a": ans, ":i": idx}, false)
 		if err != nil {
@@ -284,7 +353,7 @@ func (s *Stores) Save(ctx context.Context, examID, userID string, answers map[st
 		if len(old) == 0 {
 			return store.ErrNotFound
 		}
-		_, ok, old, err = s.condUpdate(ctx, examID, userID, "#st = :ns",
+		_, ok, old, err = s.condUpdate(ctx, examID, userID, attemptNo, "#st = :ns",
 			"SET #st = :ip, startedAt = :t, savedAt = :t, answers = :a, lastIdx = :i", statusName,
 			map[string]types.AttributeValue{":ns": sv(store.AttemptNotStarted), ":ip": sv(store.AttemptInProgress), ":t": ts, ":a": ans, ":i": idx}, false)
 		if err != nil {
@@ -349,7 +418,7 @@ func (s *Stores) Submit(ctx context.Context, a store.Attempt) error {
 		cond += " AND size(revealed) = :nrev"
 		vals[":nrev"], _ = attributevalue.Marshal(len(a.Revealed))
 	}
-	_, ok, old, err := s.condUpdate(ctx, a.ExamID, a.UserID, cond, "SET "+set, statusName, vals, false)
+	_, ok, old, err := s.condUpdate(ctx, a.ExamID, a.UserID, a.AttemptNo, cond, "SET "+set, statusName, vals, false)
 	if err != nil {
 		return fmt.Errorf("dynamo: submit attempt: %w", err)
 	}
@@ -365,11 +434,11 @@ func (s *Stores) Submit(ctx context.Context, a store.Attempt) error {
 	return fmt.Errorf("%w: revealed changed since it was graded", store.ErrConflict)
 }
 
-func (s *Stores) Decline(ctx context.Context, examID, userID string) error {
+func (s *Stores) Decline(ctx context.Context, examID, userID string, attemptNo int) error {
 	if examID == "" || userID == "" {
 		return store.ErrNotFound
 	}
-	_, ok, old, err := s.condUpdate(ctx, examID, userID, "#st = :ns", "SET #st = :dec", statusName,
+	_, ok, old, err := s.condUpdate(ctx, examID, userID, attemptNo, "#st = :ns", "SET #st = :dec", statusName,
 		map[string]types.AttributeValue{":ns": sv(store.AttemptNotStarted), ":dec": sv(store.AttemptDeclined)}, false)
 	if err != nil {
 		return fmt.Errorf("dynamo: decline attempt: %w", err)
@@ -395,7 +464,7 @@ const (
 // the question not already in it). A not_started attempt is started by the same write. When
 // the condition fails the row is re-read to say why; a lost race with another reveal loops
 // (bounded) and is then judged on fresh state.
-func (s *Stores) Reveal(ctx context.Context, examID, userID, questionID string, max int, now time.Time) (store.RevealResult, error) {
+func (s *Stores) Reveal(ctx context.Context, examID, userID string, attemptNo int, questionID string, max int, now time.Time) (store.RevealResult, error) {
 	if examID == "" || userID == "" || questionID == "" {
 		return store.RevealResult{}, store.ErrNotFound
 	}
@@ -403,7 +472,7 @@ func (s *Stores) Reveal(ctx context.Context, examID, userID, questionID string, 
 	qList := &types.AttributeValueMemberL{Value: []types.AttributeValue{sv(questionID)}}
 	guard := " AND size(revealed) < :max AND NOT contains(revealed, :q)"
 	for attempt := 0; attempt < maxRevealAttempts; attempt++ {
-		out, ok, old, err := s.condUpdate(ctx, examID, userID, "#st = :ip"+guard,
+		out, ok, old, err := s.condUpdate(ctx, examID, userID, attemptNo, "#st = :ip"+guard,
 			"SET revealed = list_append(revealed, :l)", statusName,
 			map[string]types.AttributeValue{":ip": sv(store.AttemptInProgress), ":max": maxAV, ":q": sv(questionID), ":l": qList}, true)
 		if err != nil {
@@ -414,7 +483,7 @@ func (s *Stores) Reveal(ctx context.Context, examID, userID, questionID string, 
 		}
 		if !ok {
 			// Not started: the same write starts the attempt (no answers were saved, so no savedAt).
-			out, ok, _, err = s.condUpdate(ctx, examID, userID, "#st = :ns"+guard,
+			out, ok, _, err = s.condUpdate(ctx, examID, userID, attemptNo, "#st = :ns"+guard,
 				"SET #st = :ip, startedAt = :t, revealed = list_append(revealed, :l)", statusName,
 				map[string]types.AttributeValue{":ns": sv(store.AttemptNotStarted), ":ip": sv(store.AttemptInProgress), ":t": sv(fmtTime(now)),
 					":max": maxAV, ":q": sv(questionID), ":l": qList}, true)
@@ -432,7 +501,7 @@ func (s *Stores) Reveal(ctx context.Context, examID, userID, questionID string, 
 			return store.RevealResult{Revealed: it.Revealed, Charged: true}, nil
 		}
 		// Neither write applied: find out why.
-		a, err := s.GetAttempt(ctx, examID, userID)
+		a, err := s.GetAttempt(ctx, examID, userID, attemptNo)
 		if err != nil {
 			return store.RevealResult{}, err
 		}

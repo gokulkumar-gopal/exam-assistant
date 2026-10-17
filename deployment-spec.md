@@ -300,12 +300,13 @@ Resources:
       BillingMode: PAY_PER_REQUEST
       AttributeDefinitions:
         - { AttributeName: examId, AttributeType: S }
-        - { AttributeName: userId, AttributeType: S }
-      KeySchema: [{ AttributeName: examId, KeyType: HASH }, { AttributeName: userId, KeyType: RANGE }]
+        - { AttributeName: sk, AttributeType: S }        # "<userId>#<attemptNo, 3 digits>": one row per attempt (retakes)
+        - { AttributeName: userId, AttributeType: S }    # also stored on every item; the user-index hash key
+      KeySchema: [{ AttributeName: examId, KeyType: HASH }, { AttributeName: sk, KeyType: RANGE }]
       GlobalSecondaryIndexes:
-        - IndexName: user-index
+        - IndexName: user-index                          # several rows per (userId, examId) are fine in a GSI
           KeySchema: [{ AttributeName: userId, KeyType: HASH }, { AttributeName: examId, KeyType: RANGE }]
-          Projection: { ProjectionType: INCLUDE, NonKeyAttributes: [status, scoreHalves, scoreBeforePeeksHalves, submittedAt] }   # never the answers
+          Projection: { ProjectionType: INCLUDE, NonKeyAttributes: [status, attemptNo, scoreHalves, scoreBeforePeeksHalves, submittedAt] }   # never the answers
 
   JobsTable:                           # also holds quota items (quota#...), usage counters (usage#...) and question items (<jobId>#questions)
     Type: AWS::DynamoDB::Table

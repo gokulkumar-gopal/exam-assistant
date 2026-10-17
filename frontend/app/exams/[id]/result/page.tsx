@@ -1,12 +1,15 @@
 "use client";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
-import { useParams } from "next/navigation";
+import { useParams, useRouter, useSearchParams } from "next/navigation";
+import { toast } from "sonner";
 import { ArrowLeft } from "lucide-react";
 import { api, ApiError } from "@/lib/api";
 import { useForbiddenRedirect } from "@/lib/forbidden";
-import { keyAvailableLine, peekLines, resultCardData, scoreSubtitle, selfCheckScore, setCheck, type Check, type Checks } from "@/lib/key";
+import { canRetakeFrom, checksForAttempt, parseAttemptParam, resultPath, retakeErrorMessage, retakeExam, setScopedCheck, type ScopedChecks } from "@/lib/attempts";
+import { keyAvailableLine, peekLines, resultCardData, scoreSubtitle, selfCheckScore, type Check } from "@/lib/key";
 import type { ResultResponse } from "@/lib/types";
+import { AttemptsTable } from "@/components/AttemptsTable";
 import { EmptyState } from "@/components/EmptyState";
 import { Notice } from "@/components/Notice";
 import { Pill } from "@/components/Pill";
@@ -28,13 +31,25 @@ function Skeleton() {
   );
 }
 
+// useSearchParams needs its own Suspense boundary.
 export default function Page() {
+  return (
+    <Suspense fallback={<main className="page pt-5"><h1>Result</h1></main>}>
+      <ResultPage />
+    </Suspense>
+  );
+}
+
+function ResultPage() {
   const params = useParams<{ id: string }>();
   const id = params.id;
   const encoded = encodeURIComponent(id);
+  const router = useRouter();
+  const attemptParam = parseAttemptParam(useSearchParams().get("attempt"));
   const [view, setView] = useState<View>({ kind: "loading" });
-  // Self-check choices are local only: the spec has no endpoint for them (fs 6.7, bs 9.3).
-  const [checks, setChecks] = useState<Checks>({});
+  // Self-check choices are local only (fs 6.7, bs 9.3) and belong to one attempt: another attempt starts clean.
+  const [scoped, setScoped] = useState<ScopedChecks>({ attemptNo: undefined, checks: {} });
+  const [retaking, setRetaking] = useState(false);
   const onForbidden = useForbiddenRedirect();
   const heading = useRef<HTMLHeadingElement>(null);
   const seqRef = useRef({ n: 0 });
@@ -43,8 +58,9 @@ export default function Page() {
     const seq = seqRef.current;
     const mine = ++seq.n;
     setView({ kind: "loading" });
+    setScoped({ attemptNo: undefined, checks: {} }); // a different attempt (or a retry) starts with no self-check marks
     try {
-      const data = await api<ResultResponse>("GET", `/exams/${encoded}/result`);
+      const data = await api<ResultResponse>("GET", resultPath(encoded, attemptParam));
       if (mine === seq.n) setView({ kind: "ok", data });
     } catch (e) {
       if (mine !== seq.n) return;
@@ -53,7 +69,7 @@ export default function Page() {
       else if (e instanceof ApiError && e.status === 404) setView({ kind: "denied" });
       else setView({ kind: "error" });
     }
-  }, [encoded, onForbidden]);
+  }, [encoded, attemptParam, onForbidden]);
 
   useEffect(() => {
     const seq = seqRef.current;
@@ -68,6 +84,22 @@ export default function Page() {
   }, [view.kind]);
 
   const data = view.kind === "ok" ? view.data : null;
+  const checks = checksForAttempt(scoped, data?.attemptNo);
+  const attempts = data?.attempts ?? [];
+  const canRetake = data ? canRetakeFrom(attempts, data.exam.acceptingUntil, Date.parse(data.serverTime)) : false;
+
+  async function retake() {
+    if (retaking) return;
+    setRetaking(true);
+    try {
+      await retakeExam(id);
+      router.push(`/exams/${encoded}/take`);
+    } catch (e) {
+      if (onForbidden(e)) return;
+      toast(retakeErrorMessage(e));
+      setRetaking(false);
+    }
+  }
   const cards = useMemo(
     () => (data ? data.questions.map((q, i) => {
       const card = resultCardData(q, data.keyVisible, i + 1, data.exam.type);
@@ -109,7 +141,7 @@ export default function Page() {
       <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
           <h1 ref={heading} tabIndex={-1} className="break-words outline-none">
-            {data ? `${data.exam.title}: result` : "Result"}
+            {data ? `${data.exam.title}: result${data.attempts && data.attempts.length > 1 && data.attemptNo ? `, attempt ${data.attemptNo}` : ""}` : "Result"}
           </h1>
           {data && (
             <div className="text-[13px] text-muted" aria-live="polite">
@@ -158,6 +190,16 @@ export default function Page() {
         </div>
       )}
       {data && (
+        <AttemptsTable
+          attempts={attempts}
+          selected={data.attemptNo}
+          bestAttemptNo={data.bestAttemptNo}
+          onSelect={(n) => router.push(`/exams/${encoded}/result?attempt=${n}`)}
+          onRetake={canRetake ? () => void retake() : undefined}
+          retaking={retaking}
+        />
+      )}
+      {data && (
         <div className="space-y-3">
           {cards.map((c) => (
             <ResultCard
@@ -165,7 +207,7 @@ export default function Page() {
               card={c.card}
               marks={c.marks}
               check={checks[c.id]}
-              onCheck={c.card.canSelfCheck ? (v: Check) => setChecks((prev) => setCheck(prev, c.id, v)) : undefined}
+              onCheck={c.card.canSelfCheck ? (v: Check) => setScoped((prev) => setScopedCheck(prev, data.attemptNo, c.id, v)) : undefined}
             />
           ))}
         </div>

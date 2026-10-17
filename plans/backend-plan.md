@@ -446,6 +446,16 @@ Produces `exams.Grade(exam store.Exam, answers map[string]string, revealed []str
 - [ ] Verification: against `make run` with `LLM_PROVIDERS=gemini` (or against the fake generator server flag `-fake-llm`, added to `cmd/server` for offline smoke), the script prints each step and exits 0; with the server stopped exits non-zero naming the first step; breaking one step (invalid cookie) fails at that step.
 - [ ] Commit: "Smoke test".
 
+### Task B-4.7: Retakes (attempt history)
+**Spec:** backend 6.1 (Attempt), 6.2 and 6.3 (attempts key `sk`), 8.5 (List, Take, Autosave, Submit, Decline, Retake, Status, Assign, Result), 9.2, 9.4; deployment-spec 6.2 (AttemptsTable)
+**Needs:** B-4.5
+**Files:** Modify `internal/store/exams.go`, `internal/store/memory/attempts.go`, `internal/store/dynamo/attempts.go`, `backend/template.yaml`, `internal/store/storetest/exams.go`, `internal/store/dynamo/fake_test.go`, `iam_template_test.go`, `internal/exams/*.go` (take, autosave, submit, reveal, decline, result, list, status, assign, keyvisible, finalize), `internal/api/exam_handlers.go`; Create `internal/exams/retake.go`; Test the matching `_test.go` files and `internal/api/retake_http_test.go`
+**Interfaces:** `store.Attempt` and `AttemptSummary` gain `AttemptNo`; `AttemptStore` methods that target one row take the attempt number; new `GetLatestAttempt`, `ListAttempts(exam, user)` and `PutRetake`; `exams.Service.Retake(ctx, user, examID) (RetakeView, error)`; route `POST /exams/{id}/retake`; `GET /exams/{id}/result?attempt=N`; list, take, status and result gain the fields in backend 8.5.
+- [ ] Failing tests first (contract suite, run by memory and DynamoDB): per-attempt isolation (answers, score, status), `PutRetake` creates N+1 once under concurrency, the 50-attempt limit, `ListAttempts` order, `ListByExam` and `ListByUser` return every row; service tests: retake after submit, idempotent while unfinished, `409 exam_closed` after `acceptingUntil`, `404` for decliner and non-holder, fresh peek budget, list `attemptCount`/best `score`/`canRetake`, status grouped by user with `history` and no answers, `counts` per user, result default is the latest submitted attempt and `?attempt=N` returns that attempt, the creator's key hides during a retake of their own exam, an exam with a submitted attempt is never `missed`.
+- [ ] Run; expect FAIL. Implement (the Dynamo key is `sk` = `<userId>#<attemptNo, 3 digits>`; extend the fake for the range key and `begins_with` first, then re-run `iam_template_test.go`). Run; expect PASS.
+- [ ] Update `scripts/smoke.sh`: after the existing submit and result, `POST /retake`, save and submit attempt 2, `GET /result?attempt=1` and `?attempt=2`.
+- [ ] Commit: "Retakes with attempt history".
+
 ### Milestone check M4
 `go test ./...` passes and `make smoke BASE_URL=http://localhost:8080` exits 0. Printing support: `GET /exams/{id}` on a closed exam returns questions to the creator with `keyVisible: true`. Deployed check: D-4 smoke against the dev stack.
 

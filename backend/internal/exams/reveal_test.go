@@ -147,7 +147,7 @@ func TestRevealKeyAlreadyVisible409(t *testing.T) {
 
 func (e *env) rowOf(t *testing.T, uid string) store.Attempt {
 	t.Helper()
-	a, err := e.attempts.GetAttempt(context.Background(), "e1", uid)
+	a, err := e.attempts.GetAttempt(context.Background(), "e1", uid, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -303,7 +303,7 @@ func TestRevealLandingBeforeSubmitWriteIsGradedNotLost(t *testing.T) {
 	e := revEnv(t)
 	race := &raceAttempts{AttemptStore: e.attempts}
 	race.hook = func() {
-		if _, err := e.attempts.Reveal(context.Background(), "e1", "s1", "q3", 3, t0); err != nil {
+		if _, err := e.attempts.Reveal(context.Background(), "e1", "s1", 1, "q3", 3, t0); err != nil {
 			t.Error(err)
 		}
 	}

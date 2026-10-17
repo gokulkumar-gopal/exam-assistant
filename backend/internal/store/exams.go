@@ -44,10 +44,15 @@ var (
 // MaxListByCreator caps ListByCreator results.
 const MaxListByCreator = 50
 
-// Attempt is one (exam, user) row: assignment and attempt in one (backend-spec 6.1).
-// Scores are in half-marks.
+// MaxAttemptsPerExam is the technical safety limit on attempts per user per exam (backend-spec
+// 8.5, Retake). There is no product limit on retakes.
+const MaxAttemptsPerExam = 50
+
+// Attempt is one (exam, user, AttemptNo) row (backend-spec 6.1). Attempt 1 is created at
+// Create/Assign and is also the assignment; a retake adds the next number. Scores are in half-marks.
 type Attempt struct {
 	ExamID, UserID         string
+	AttemptNo              int // 1-based; 0 on a write means 1
 	Status                 string
 	Answers                map[string]string // questionID -> option text or free text; never nil from a store
 	LastQuestionIndex      int
@@ -64,6 +69,7 @@ type Attempt struct {
 // Every field must be a key or an INCLUDE attribute of that index.
 type AttemptSummary struct {
 	ExamID, UserID         string
+	AttemptNo              int
 	Status                 string
 	ScoreHalves            *int
 	ScoreBeforePeeksHalves *int
@@ -91,25 +97,40 @@ type ExamStore interface {
 	ListByCreator(ctx context.Context, creatorID string, limit int) ([]ExamSummary, error)
 }
 
-// AttemptStore persists attempts. Writes never change index-projected attributes except
-// where the status itself changes (start, submit, decline, first reveal).
+// AttemptStore persists attempts, one row per (exam, user, attempt number). Writes never change
+// index-projected attributes except where the status itself changes (start, submit, decline,
+// first reveal).
 type AttemptStore interface {
-	// PutAttemptIfAbsent writes the row unless it exists; created=false (nil error) when it does.
+	// PutAttemptIfAbsent writes the row (a.AttemptNo, 1 when 0) unless it exists; created=false
+	// (nil error) when it does.
 	PutAttemptIfAbsent(ctx context.Context, a Attempt) (created bool, err error)
+	// PutRetake atomically creates attempt attemptNo for the user as a not_started row, unless that
+	// row exists (created=false, nil error), so two concurrent retakes cannot both create N+1.
+	// attemptNo outside 1..MaxAttemptsPerExam is ErrConflict. Whether the previous attempt is
+	// submitted and the exam is open are the caller's checks.
+	PutRetake(ctx context.Context, examID, userID string, attemptNo int, now time.Time) (created bool, err error)
 	// GetAttempt returns ErrNotFound for a missing row. The read is consistent.
-	GetAttempt(ctx context.Context, examID, userID string) (Attempt, error)
-	// ListByUser returns every attempt of the user, projected as the user-index holds it
-	// (GSI reads are eventually consistent), ordered by exam ID.
+	GetAttempt(ctx context.Context, examID, userID string, attemptNo int) (Attempt, error)
+	// GetLatestAttempt returns the user's highest-numbered attempt of the exam, or ErrNotFound
+	// when there is none. The read is consistent.
+	GetLatestAttempt(ctx context.Context, examID, userID string) (Attempt, error)
+	// ListAttempts returns every attempt of the user on the exam, answers included, ordered by
+	// attempt number. The read is consistent. Empty (nil error) when there are none.
+	ListAttempts(ctx context.Context, examID, userID string) ([]Attempt, error)
+	// ListByUser returns every attempt row of the user, projected as the user-index holds it
+	// (GSI reads are eventually consistent), ordered by exam ID then attempt number. Callers group
+	// by exam.
 	ListByUser(ctx context.Context, userID string) ([]AttemptSummary, error)
-	// ListByExam returns every attempt of the exam, ordered by user ID.
+	// ListByExam returns every attempt row of the exam, ordered by user ID then attempt number.
+	// Callers group by user.
 	ListByExam(ctx context.Context, examID string) ([]Attempt, error)
-	// Save stores answers and the last question index. The first save of a not_started attempt
-	// starts it (status in_progress, StartedAt = now); later saves change only answers,
-	// LastQuestionIndex and SavedAt. ErrNotFound if missing; ErrSubmitted or ErrDeclined (both
-	// ErrPrecondition) if the attempt is submitted or declined.
-	Save(ctx context.Context, examID, userID string, answers map[string]string, lastIdx int, now time.Time) error
-	// Submit writes the final state of a (Status, Answers, LastQuestionIndex, scores,
-	// SubmittedAt, SavedAt, AutoSubmitted; StartedAt only if the stored one is unset; never
+	// Save stores answers and the last question index of one attempt. The first save of a
+	// not_started attempt starts it (status in_progress, StartedAt = now); later saves change only
+	// answers, LastQuestionIndex and SavedAt. ErrNotFound if missing; ErrSubmitted or ErrDeclined
+	// (both ErrPrecondition) if the attempt is submitted or declined.
+	Save(ctx context.Context, examID, userID string, attemptNo int, answers map[string]string, lastIdx int, now time.Time) error
+	// Submit writes the final state of attempt a.AttemptNo (Status, Answers, LastQuestionIndex,
+	// scores, SubmittedAt, SavedAt, AutoSubmitted; StartedAt only if the stored one is unset; never
 	// Revealed). ErrNotFound if missing; ErrPrecondition if already submitted or declined.
 	// If a.Revealed is non-nil it is the peeks the score was computed from: when the stored list
 	// has a different length (a Reveal landed after the caller read the row) nothing is written
@@ -117,12 +138,12 @@ type AttemptStore interface {
 	Submit(ctx context.Context, a Attempt) error
 	// Decline moves a not_started attempt to declined; idempotent when already declined.
 	// ErrNotFound if missing; ErrPrecondition from in_progress or submitted.
-	Decline(ctx context.Context, examID, userID string) error
-	// Reveal atomically records questionID as revealed if it is not yet and fewer than max
-	// are revealed, starting a not_started attempt. Already revealed: success, Charged=false,
-	// even at the cap. ErrConflict when the cap is reached; ErrPrecondition when the attempt
-	// is submitted (ErrSubmitted) or declined (ErrDeclined); ErrNotFound if missing. A reveal starts a
-	// not_started attempt (StartedAt = now) but does not set SavedAt. Whether the exam is open, the
-	// question exists and max > 0 are the caller's checks.
-	Reveal(ctx context.Context, examID, userID, questionID string, max int, now time.Time) (RevealResult, error)
+	Decline(ctx context.Context, examID, userID string, attemptNo int) error
+	// Reveal atomically records questionID as revealed on one attempt if it is not yet and fewer
+	// than max are revealed, starting a not_started attempt. Already revealed: success,
+	// Charged=false, even at the cap. ErrConflict when the cap is reached; ErrPrecondition when the
+	// attempt is submitted (ErrSubmitted) or declined (ErrDeclined); ErrNotFound if missing. A
+	// reveal starts a not_started attempt (StartedAt = now) but does not set SavedAt. Whether the
+	// exam is open, the question exists and max > 0 are the caller's checks.
+	Reveal(ctx context.Context, examID, userID string, attemptNo int, questionID string, max int, now time.Time) (RevealResult, error)
 }

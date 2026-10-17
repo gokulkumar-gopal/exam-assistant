@@ -29,7 +29,7 @@ func subEnv(t *testing.T) *env {
 
 func (e *env) save(t *testing.T, user string, answers map[string]string, idx int) {
 	t.Helper()
-	if err := e.attempts.Save(context.Background(), "e1", user, answers, idx, t0); err != nil {
+	if err := e.attempts.Save(context.Background(), "e1", user, 1, answers, idx, t0); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -188,7 +188,7 @@ func TestSubmitWithoutAnswersUsesSaved(t *testing.T) {
 
 func TestSubmitPeekScoring(t *testing.T) {
 	e := subEnv(t)
-	if _, err := e.attempts.Reveal(context.Background(), "e1", "s1", "q1", 3, t0); err != nil {
+	if _, err := e.attempts.Reveal(context.Background(), "e1", "s1", 1, "q1", 3, t0); err != nil {
 		t.Fatal(err)
 	}
 	e.clk.Set(t0.Add(time.Hour))
@@ -274,7 +274,7 @@ func TestSubmitNotFoundShapesAreIdentical(t *testing.T) {
 			t.Fatalf("%s: message differs", name)
 		}
 	}
-	if a, err := e.attempts.GetAttempt(context.Background(), "e1", "s1"); err != nil || a.Status != store.AttemptNotStarted {
+	if a, err := e.attempts.GetAttempt(context.Background(), "e1", "s1", 1); err != nil || a.Status != store.AttemptNotStarted {
 		t.Fatal("a 404 submit changed another attempt")
 	}
 	// declined after the exam is over is still the 404, never exam_closed (which would show a row exists)
@@ -399,9 +399,9 @@ func TestFinalizeLeavesNotStartedAndDeclined(t *testing.T) {
 	x, _ := e.exams.GetExam(context.Background(), "e1")
 	now := closes.Add(time.Hour)
 	for _, uid := range []string{"s1", "p1"} {
-		before, _ := e.attempts.GetAttempt(context.Background(), "e1", uid)
+		before, _ := e.attempts.GetAttempt(context.Background(), "e1", uid, 1)
 		got, err := fin.FinalizeIfExpired(context.Background(), before, x, now)
-		after, _ := e.attempts.GetAttempt(context.Background(), "e1", uid)
+		after, _ := e.attempts.GetAttempt(context.Background(), "e1", uid, 1)
 		if err != nil || !reflect.DeepEqual(got, before) || !reflect.DeepEqual(after, before) {
 			t.Fatalf("%s: %+v %v", uid, got, err)
 		}
@@ -422,7 +422,7 @@ func TestFinalizeFreeTextHasNoScores(t *testing.T) {
 
 func TestFinalizePeekRules(t *testing.T) {
 	e := subEnv(t)
-	if _, err := e.attempts.Reveal(context.Background(), "e1", "s1", "q2", 3, t0); err != nil {
+	if _, err := e.attempts.Reveal(context.Background(), "e1", "s1", 1, "q2", 3, t0); err != nil {
 		t.Fatal(err)
 	}
 	e.save(t, "s1", map[string]string{"q3": "o0", "q2": "o2"}, 0)
@@ -444,7 +444,7 @@ type countingStore struct {
 	mu       sync.Mutex
 }
 
-func (c *countingStore) GetAttempt(ctx context.Context, examID, userID string) (store.Attempt, error) {
+func (c *countingStore) GetAttempt(ctx context.Context, examID, userID string, attemptNo int) (store.Attempt, error) {
 	c.mu.Lock()
 	s := c.staleGet
 	c.staleGet = nil
@@ -452,7 +452,7 @@ func (c *countingStore) GetAttempt(ctx context.Context, examID, userID string) (
 	if s != nil {
 		return *s, nil
 	}
-	return c.AttemptStore.GetAttempt(ctx, examID, userID)
+	return c.AttemptStore.GetAttempt(ctx, examID, userID, attemptNo)
 }
 
 func (c *countingStore) Submit(ctx context.Context, a store.Attempt) error {
@@ -516,7 +516,7 @@ func TestFinalizeLosingRaceReturnsWinnersRow(t *testing.T) {
 	stale := e.row(t)
 	win := 99
 	sub := closes.Add(-time.Minute)
-	if err := e.attempts.Submit(context.Background(), store.Attempt{ExamID: "e1", UserID: "s1", Answers: map[string]string{"q1": "o1"},
+	if err := e.attempts.Submit(context.Background(), store.Attempt{AttemptNo: 1, ExamID: "e1", UserID: "s1", Answers: map[string]string{"q1": "o1"},
 		ScoreHalves: &win, ScoreBeforePeeksHalves: &win, SubmittedAt: &sub}); err != nil {
 		t.Fatal(err)
 	}
@@ -549,12 +549,12 @@ func TestListAndStatusFinalizeExpired(t *testing.T) {
 	for i := 0; i < n; i++ {
 		uid := "u" + string(rune('a'+i))
 		e.seedAttempt(t, "e1", uid, store.AttemptNotStarted, nil)
-		if err := e.attempts.Save(context.Background(), "e1", uid, map[string]string{"q2": "o2"}, 0, t0); err != nil {
+		if err := e.attempts.Save(context.Background(), "e1", uid, 1, map[string]string{"q2": "o2"}, 0, t0); err != nil {
 			t.Fatal(err)
 		}
 	}
 	e.seedAttempt(t, "e1", "s1", store.AttemptInProgress, nil)
-	if err := e.attempts.Save(context.Background(), "e1", "s1", map[string]string{"q1": "o1"}, 0, t0); err != nil {
+	if err := e.attempts.Save(context.Background(), "e1", "s1", 1, map[string]string{"q1": "o1"}, 0, t0); err != nil {
 		t.Fatal(err)
 	}
 	e.seedAttempt(t, "e1", "nn", store.AttemptNotStarted, nil)
@@ -685,7 +685,7 @@ func TestSubmitLosingToDeclineIs404(t *testing.T) {
 	e, h := raceEnv(t)
 	e.clk.Set(t0.Add(time.Hour))
 	h.hook = func() {
-		if err := e.attempts.Decline(context.Background(), "e1", "s1"); err != nil {
+		if err := e.attempts.Decline(context.Background(), "e1", "s1", 1); err != nil {
 			t.Error(err)
 		}
 	}

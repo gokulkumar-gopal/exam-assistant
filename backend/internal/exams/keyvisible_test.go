@@ -12,7 +12,9 @@ func TestKeyVisibleTable(t *testing.T) {
 	x := store.Exam{ID: "e1", CreatorID: "t1", ClosesAt: closes}
 	au := closes.Add(time.Minute) // acceptingUntil
 	before := au.Add(-time.Nanosecond)
-	at := func(s string) *store.Attempt { return &store.Attempt{ExamID: "e1", UserID: "x", Status: s} }
+	at := func(s string) *store.Attempt {
+		return &store.Attempt{AttemptNo: 1, ExamID: "e1", UserID: "x", Status: s}
+	}
 	tests := []struct {
 		name string
 		a    *store.Attempt

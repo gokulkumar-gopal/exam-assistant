@@ -27,11 +27,11 @@ func TestMemoryStoresReturnCopies(t *testing.T) {
 	as := memory.NewAttemptStore()
 	_, _ = as.PutAttemptIfAbsent(ctx, store.Attempt{ExamID: "e", UserID: "u"})
 	answers := map[string]string{"q": "a"}
-	_ = as.Save(ctx, "e", "u", answers, 0, time.Now())
+	_ = as.Save(ctx, "e", "u", 1, answers, 0, time.Now())
 	answers["q"] = "mutated"
-	a, _ := as.GetAttempt(ctx, "e", "u")
+	a, _ := as.GetAttempt(ctx, "e", "u", 1)
 	a.Answers["q"] = "mutated too"
-	b, _ := as.GetAttempt(ctx, "e", "u")
+	b, _ := as.GetAttempt(ctx, "e", "u", 1)
 	if b.Answers["q"] != "a" {
 		t.Fatalf("attempt aliased: %+v", b)
 	}

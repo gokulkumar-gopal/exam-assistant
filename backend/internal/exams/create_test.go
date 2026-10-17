@@ -343,7 +343,7 @@ func TestPracticeExamCreatesCreatorAttemptRow(t *testing.T) {
 	if len(rows) != 1 || rows[0] != "s1" {
 		t.Fatalf("rows %v", rows)
 	}
-	a, _ := e.attempts.GetAttempt(context.Background(), r.ID, "s1")
+	a, _ := e.attempts.GetAttempt(context.Background(), r.ID, "s1", 1)
 	if a.Status != store.AttemptNotStarted || !a.CreatedAt.Equal(t0) {
 		t.Fatalf("%+v", a)
 	}
@@ -520,16 +520,16 @@ func TestReplayBySameCreatorCompletesMissingRowsAnd200(t *testing.T) {
 	if again.ClosesAt != first.ClosesAt || again.Questions[0].ID != first.Questions[0].ID || !again.CreatedAt.Equal(first.CreatedAt) {
 		t.Fatal("exam changed on replay")
 	}
-	a, _ := e.attempts.GetAttempt(context.Background(), "key-12345", "s1")
+	a, _ := e.attempts.GetAttempt(context.Background(), "key-12345", "s1", 1)
 	if !a.CreatedAt.Equal(first.CreatedAt) {
 		t.Fatal("row createdAt")
 	}
 	// a third replay creates nothing new and keeps a started row
-	if err := e.attempts.Save(context.Background(), "key-12345", "s1", map[string]string{"x": "y"}, 0, t0); err != nil {
+	if err := e.attempts.Save(context.Background(), "key-12345", "s1", 1, map[string]string{"x": "y"}, 0, t0); err != nil {
 		t.Fatal(err)
 	}
 	r = e.create(t, e.teacher, in, "key-12345")
-	a, _ = e.attempts.GetAttempt(context.Background(), "key-12345", "s1")
+	a, _ = e.attempts.GetAttempt(context.Background(), "key-12345", "s1", 1)
 	if !r.Replay || a.Status != store.AttemptInProgress || a.Answers["x"] != "y" {
 		t.Fatalf("%+v %+v", r, a)
 	}

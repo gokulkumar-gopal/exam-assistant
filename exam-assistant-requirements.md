@@ -153,6 +153,13 @@ This is a component of Epic E, and it can also be launched standalone from a fil
 
 **G-6 (P1)** As a parent, I can see my linked student's exam status and scores.
 
+**G-7 (P0)** As a student (or anyone taking an exam, including a creator on their own exam), I can retake a submitted exam any number of times until it closes.
+- Each retake is a new attempt with its own answers, marks and times. Earlier attempts are never changed.
+- I can see the marks and my answers for every attempt.
+- The answer key rule is unchanged: per-question correct answers stay hidden until the exam is over (the creator still sees them), while each attempt's total marks are visible right after submitting.
+- Each attempt gets a fresh peek budget. A technical safety limit of 50 attempts per person per exam applies; there is no product limit.
+- The creator sees each student's best score, attempt count and per-attempt marks, but never a student's answers.
+
 ### Epic H: Non-functional Requirements
 
 - **H-1** Responsive layout on phone, tablet, and desktop.
@@ -168,7 +175,7 @@ This is a component of Epic E, and it can also be launched standalone from a fil
 | **1. Foundation** | A-1, A-2, B-1, B-3, B-4, B-6, C-1, C-2 | A user can sign up, upload a PDF or image, see it in their library, open and scroll it, and delete it. |
 | **2. Capture and OCR** | B-2, H-5, rest of H-2/H-3 | Camera photos and scans are stored and become machine-readable text. |
 | **3. Question generation** | D-1 to D-5, H-4 | A user selects files, sets marks 1 to 5 and a total, and gets correctly ordered questions. |
-| **4. Exams** | E-1 to E-4, F-1, F-2, G-1 to G-4 | A user creates a timed exam with a key, takes it with save and resume, and sees open and closed lists. |
+| **4. Exams** | E-1 to E-4, F-1, F-2, G-1 to G-4, G-7 | A user creates a timed exam with a key, takes it with save and resume, and sees open and closed lists. |
 | **5. Multi-user** | E-3 assignment, F-3, G-6, parent linking | A teacher assigns an exam to a class and tracks status. A parent sees a child's progress. |
 | **6. Polish (P1)** | B-5, C-3, D-6, E-5, G-5 | Folders, edit and regenerate questions, manual marking. |
 

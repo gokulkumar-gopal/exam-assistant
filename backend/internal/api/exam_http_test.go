@@ -381,17 +381,17 @@ func TestDeclineConflictsOverHTTP(t *testing.T) {
 	// find Asha's id through the attempt rows
 	rows, _ := e.attempts.ListByExam(ctx, "decl-key-1")
 	uid := rows[0].UserID
-	if err := e.attempts.Save(ctx, "decl-key-1", uid, map[string]string{"a": "b"}, 0, authT0); err != nil {
+	if err := e.attempts.Save(ctx, "decl-key-1", uid, 1, map[string]string{"a": "b"}, 0, authT0); err != nil {
 		t.Fatal(err)
 	}
 	rec := e.post("/exams/decl-key-1/decline", "", e.student)
 	if rec.Code != http.StatusConflict || errCode(t, rec) != "conflict" || !strings.Contains(rec.Body.String(), "You can only decline an exam you have not started.") {
 		t.Errorf("in_progress: %d %s", rec.Code, rec.Body)
 	}
-	if err := e.attempts.Save(ctx, "decl-key-2", uid, map[string]string{}, 0, authT0); err != nil {
+	if err := e.attempts.Save(ctx, "decl-key-2", uid, 1, map[string]string{}, 0, authT0); err != nil {
 		t.Fatal(err)
 	}
-	if err := e.attempts.Submit(ctx, store.Attempt{ExamID: "decl-key-2", UserID: uid, Status: store.AttemptSubmitted, Answers: map[string]string{}, Revealed: []string{}}); err != nil {
+	if err := e.attempts.Submit(ctx, store.Attempt{AttemptNo: 1, ExamID: "decl-key-2", UserID: uid, Status: store.AttemptSubmitted, Answers: map[string]string{}, Revealed: []string{}}); err != nil {
 		t.Fatal(err)
 	}
 	rec = e.post("/exams/decl-key-2/decline", "", e.student)

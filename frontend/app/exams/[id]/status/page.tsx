@@ -1,14 +1,15 @@
 "use client";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { ArrowLeft } from "lucide-react";
 import { api, ApiError } from "@/lib/api";
 import { useForbiddenRedirect } from "@/lib/forbidden";
 import { useMe } from "@/lib/session";
-import { scoreCell, statusPill, statusSubtitle, submittedCell } from "@/lib/status";
+import { attemptsToggleLabel, hasAttemptHistory, scoreCell, statusPill, statusSubtitle, submittedCell } from "@/lib/status";
 import type { StatusResponse } from "@/lib/types";
 import { AssignDialog } from "@/components/AssignDialog";
+import { AttemptHistory } from "@/components/AttemptHistory";
 import { EmptyState } from "@/components/EmptyState";
 import { Notice } from "@/components/Notice";
 import { Pill } from "@/components/Pill";
@@ -37,6 +38,7 @@ export default function Page() {
   const opener = useRef<Element | null>(null);
   const [assignOpen, setAssignOpen] = useState(false);
   const [assignKey, setAssignKey] = useState(0);
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const onForbidden = useForbiddenRedirect();
   const seqRef = useRef({ n: 0 });
 
@@ -140,8 +142,10 @@ export default function Page() {
                   <TableBody>
                     {rows.map((r) => {
                       const pill = statusPill(r.status);
+                      const open = !!expanded[r.userId];
                       return (
-                        <TableRow key={r.userId}>
+                        <Fragment key={r.userId}>
+                        <TableRow>
                           <TableCell className={TD}>
                             <div className="font-semibold">{r.name}</div>
                             <div className="text-[13px] text-muted">{r.email}</div>
@@ -149,9 +153,31 @@ export default function Page() {
                           <TableCell className={TD}>
                             <Pill variant={pill.variant} outline={pill.outline}>{pill.text}</Pill>
                           </TableCell>
-                          <TableCell className={`${TD} tabular`}>{scoreCell(r, data.exam.totalMarks)}</TableCell>
+                          <TableCell className={`${TD} tabular`}>
+                            <div>{scoreCell(r, data.exam.totalMarks)}</div>
+                            {hasAttemptHistory(r) && (
+                              <button
+                                type="button"
+                                className="inline-flex min-h-10 items-center rounded-lg text-[13px] text-muted underline underline-offset-2"
+                                aria-expanded={open}
+                                aria-controls={`attempts-${r.userId}`}
+                                aria-label={attemptsToggleLabel(r.name, open)}
+                                onClick={() => setExpanded((p) => ({ ...p, [r.userId]: !p[r.userId] }))}
+                              >
+                                Attempts
+                              </button>
+                            )}
+                          </TableCell>
                           <TableCell className={`${TD} tabular`}>{submittedCell(r.submittedAt)}</TableCell>
                         </TableRow>
+                        {open && hasAttemptHistory(r) && (
+                          <TableRow className="hover:bg-transparent">
+                            <TableCell colSpan={4} className="bg-bg px-3 py-2" id={`attempts-${r.userId}`}>
+                              <AttemptHistory name={r.name} history={r.history ?? []} totalMarks={data.exam.totalMarks} />
+                            </TableCell>
+                          </TableRow>
+                        )}
+                        </Fragment>
                       );
                     })}
                   </TableBody>

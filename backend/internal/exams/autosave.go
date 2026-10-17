@@ -57,8 +57,8 @@ func (in *AutosaveInput) UnmarshalJSON(b []byte) error {
 	return nil
 }
 
-// Autosave replaces the caller's whole answers map (backend-spec 8.5, 9.2) and returns the
-// server time of the save. Only a non-declined assignee with an attempt row may save: a creator
+// Autosave replaces the whole answers map of the caller's latest attempt (backend-spec 8.5, 9.2) and returns the
+// server time of the save. Only a non-declined holder with an attempt row may save: a creator
 // without a row, a declined user, a stranger and a missing exam are the same 404.
 //
 // At or after acceptingUntil the answer is 409 exam_closed, after the caller's in_progress
@@ -69,7 +69,7 @@ func (in *AutosaveInput) UnmarshalJSON(b []byte) error {
 // Known accepted gap (spec 8.5): the map has no sequence number, so a delayed older PUT that
 // arrives after a newer one overwrites it. TestKnownGapDocumented pins this on purpose.
 func (s *Service) Autosave(ctx context.Context, user store.User, examID string, in AutosaveInput) (time.Time, error) {
-	a, err := s.attempts.GetAttempt(ctx, examID, user.ID)
+	a, err := s.attempts.GetLatestAttempt(ctx, examID, user.ID)
 	if errors.Is(err, store.ErrNotFound) {
 		return time.Time{}, apperr.NotFound()
 	}
@@ -99,7 +99,7 @@ func (s *Service) Autosave(ctx context.Context, user store.User, examID string, 
 	if err := validateAutosave(exam, in); err != nil {
 		return time.Time{}, err
 	}
-	err = s.attempts.Save(ctx, examID, user.ID, in.Answers, *in.LastQuestionIndex, now)
+	err = s.attempts.Save(ctx, examID, user.ID, a.AttemptNo, in.Answers, *in.LastQuestionIndex, now)
 	switch {
 	case err == nil:
 		return now, nil

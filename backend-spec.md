@@ -152,8 +152,9 @@ type Exam struct {
     CreatedAt            time.Time
 }
 
-type Attempt struct {            // one row per (exam, user): assignment AND attempt in one
+type Attempt struct {            // one row per ATTEMPT: (exam, user, AttemptNo). Attempt 1 is created at Create/Assign and is also the assignment; a retake adds the next number (section 8.5, Retake)
     ExamID, UserID   string
+    AttemptNo        int    // 1-based; at most MaxAttemptsPerExam (50) per user per exam
     Status           string // "not_started" | "in_progress" | "submitted" | "declined"
     Answers          map[string]string // questionID -> option text or free text
     LastQuestionIndex int
@@ -197,7 +198,7 @@ Table names are `<STAGE>-<name>`, for example `prod-users`. All keys are strings
 | `users` | `id` | none | none | holds user items (`id` = user ID) email lock items (`id` = `email#<lowercased email>`, attribute `userId`), and Google lock items (`id` = `google#<sub>`, attribute `userId`) |
 | `documents` | `ownerId` | `id` | none | every document access is owner-scoped, which also enforces privacy; `ttl` attribute enabled |
 | `exams` | `id` | none | GSI `creator-index` on `creatorId` (sort `id`), projecting `INCLUDE` title, type, totalMarks, closesAt, createdAt (not the questions) | |
-| `attempts` | `examId` | `userId` | GSI `user-index` on `userId` (sort `examId`), projecting `INCLUDE` status, scoreHalves, scoreBeforePeeksHalves, submittedAt. Autosave changes none of these, so autosaves never write to the index | |
+| `attempts` | `examId` | `sk` = `<userId>#<attemptNo as 3 digits>`, for example `u123#002` (the plain `userId` attribute is stored too) | GSI `user-index` on `userId` (sort `examId`), projecting `INCLUDE` status, attemptNo, scoreHalves, scoreBeforePeeksHalves, submittedAt. A user with several attempts on one exam has several rows in the index, which a GSI allows. Autosave changes none of these, so autosaves never write to the index | One row per attempt, so every attempt keeps its own answers, score and times |
 | `jobs` | `id` | none | GSI `owner-index` on `ownerId` (sort `id`), projecting `INCLUDE` status, createdAt, updatedAt, kind; and GSI `day-index` on `day` (sort `createdAt`), projecting `INCLUDE` status, updatedAt, model, kind, costMicros, calls, inTok, outTok, cacheReadTok, cacheWriteTok. Only job items have `day` | `ttl` attribute enabled. Holds three kinds of item: the job (`id` = job ID, 24 h), its questions (`id` = `<jobId>#questions`, 24 h), quota counters (`id` = `quota#<userId>#<yyyymmdd>` and `quota#global#<yyyymmdd>`, 3 days; `quota#global#<yyyymm>`, 40 days), and usage counters per model (`id` = `usage#<yyyymm>#<modelId>`, 40 days, and `usage#<yyyymmdd>#<modelId>`, 3 days) |
 
 Enable the DynamoDB TTL feature on `documents` and `jobs`. Never project `ALL` into an index: every write to the base item would be paid for again in the index.
@@ -212,8 +213,9 @@ Enable the DynamoDB TTL feature on `documents` and `jobs`. Never project `ALL` i
 | My documents | `documents` Query `ownerId = me` |
 | One document | `documents` GetItem `(ownerId=me, id)` |
 | Exams I created | `exams` GSI `creator-index` (at most 50, newest first) |
-| My open/closed exams | `attempts` GSI `user-index` Query `userId = me`, then BatchGet the `exams`, then filter by `closesAt` and status in memory. Declined attempts are dropped |
-| Status table and `counts` for an exam | `attempts` Query `examId`, then BatchGet `users` for names. The `created` list does this once per exam, 10 at a time |
+| My open/closed exams | `attempts` GSI `user-index` Query `userId = me` (every attempt), group the rows by exam, then BatchGet the `exams`, then filter by `closesAt` and status in memory. Declined attempts are dropped |
+| One user's attempts on one exam | `attempts` Query `examId = :e AND begins_with(sk, "<userId>#")`, consistent read, answers included (at most 50 rows). The latest attempt is the last row |
+| Status table and `counts` for an exam | `attempts` Query `examId` (all attempts), group by user, then BatchGet `users` for names. The `created` list does this once per exam, 10 at a time |
 | Jobs I have running (soft limit) | `jobs` GSI `owner-index` Query, keep `queued` and `running` jobs that are not stale (section 7.2) |
 | Daily generation limits (hard limit) | the quota items in `jobs` (section 7.5), updated atomically when a job is created |
 | Poll a job | `jobs` GetItem on the job; when `done`, GetItem `<jobId>#questions` |
@@ -309,7 +311,7 @@ All requests and responses are JSON (`Content-Type: application/json`) except wh
 | 401 | `unauthenticated` | no or invalid session |
 | 403 | `forbidden` | authenticated but not allowed |
 | 404 | `not_found` | missing, or not visible to this user (use 404, not 403, for other people's documents and exams) |
-| 409 | `conflict` | duplicate email, an email already linked to another Google account, already submitted, no peeks left, idempotency-key clash |
+| 409 | `conflict` | duplicate email, an email already linked to another Google account, already submitted, no peeks left, the 50-attempt retake limit, idempotency-key clash |
 | 409 | `exam_closed` | write after the deadline |
 | 415 | `unsupported_media_type` | a request body is not `application/json` |
 | 422 | `validation` | bad input; `fields` is optional |
@@ -451,7 +453,7 @@ When `status` is `done`, `questions` is the final ordered list. Each question is
   - Student: only registered users whose role is `student`, at most **10** assignees. A known account that is not a student is reported exactly like an unknown email, so the response does not reveal who exists or what role they hold.
   - More than the cap is `422`.
 - Look up each assignee email. Create an attempt row (`not_started`) for each allowed known user. Unknown or not-allowed emails are returned, not an error. If `assigneeEmails` is empty, create the attempt row for the creator.
-- **Idempotency and partial failure.** The `Idempotency-Key` header (8 to 64 characters from `A-Za-z0-9_-`) becomes the exam ID; without it the server mints a ULID. Write the exam item first with `attribute_not_exists(id)`, then the attempt rows with one `PutItem` each (`attribute_not_exists(userId)`; a failed condition means the row exists and is ignored), 10 at a time. A replay by the same creator completes any missing rows and returns `200` with the same body shape. A key that already belongs to another creator is `409 conflict`.
+- **Idempotency and partial failure.** The `Idempotency-Key` header (8 to 64 characters from `A-Za-z0-9_-`) becomes the exam ID; without it the server mints a ULID. Write the exam item first with `attribute_not_exists(id)`, then the attempt rows (attempt number 1, `sk` = `<userId>#001`) with one `PutItem` each (`attribute_not_exists(sk)`; a failed condition means the row exists and is ignored), 10 at a time. A replay by the same creator completes any missing rows and returns `200` with the same body shape. A key that already belongs to another creator is `409 conflict`.
 - Response: `201 { id, unknownEmails: string[], serverTime }`.
 
 **List:** `GET /exams?scope=open|closed|created`
@@ -462,15 +464,17 @@ When `status` is `done`, `questions` is the final ordered list. Each question is
   "closesAt": "…", "acceptingUntil": "…", "totalMarks": 30, "type": "mcq",
   "attemptStatus": "not_started|in_progress|submitted|missed",
   "score": 27.5, "maxScore": 30,
+  "attemptCount": 2, "canRetake": true,
   "counts": { "submitted": 12, "inProgress": 3, "notStarted": 5, "declined": 1 }
 } ] }
 ```
-- `open`: caller has an attempt row, `acceptingUntil > now`, status `not_started` or `in_progress`. An attempt inside the 60-second grace window is still open (the UI shows "closing…").
-- `closed`: caller has an attempt row and (`acceptingUntil <= now` or status `submitted`). Status is `submitted` or `missed`.
+- `open`: caller has an attempt row, `acceptingUntil > now`, and the latest attempt is `not_started` or `in_progress`. A user who has submitted and is not in the middle of a retake sees the exam under `closed`. An attempt inside the 60-second grace window is still open (the UI shows "closing…").
+- `closed`: caller has an attempt row and (`acceptingUntil <= now` or any attempt is `submitted`). Status is `submitted` or `missed`. An exam the caller has submitted stays here, with `canRetake` while it is still before `acceptingUntil`; it is not listed under `open` as well.
+- One item per exam, however many attempts the caller has. `attemptStatus` is `submitted` if any attempt is submitted; otherwise the latest attempt's status (`missed` by derivation once the exam is over). `attemptCount` is the number of attempts. `score` is the **best** score over the submitted attempts. `canRetake` is true when the latest attempt is `submitted`, the caller has not declined, `acceptingUntil > now` and `attemptCount < 50`. For an `open` item the latest attempt is the unfinished one.
 - Declined attempts appear in neither list.
 - `created`: exams where the caller is the creator, at most 50, newest first; `counts` is included only here; `attemptStatus` and `score` are omitted.
 - Each list endpoint runs lazy finalize (section 9.2) on any expired in-progress attempt it touches.
-- `score` is present only for submitted MCQ attempts. It is a number that can end in `.5` (section 9.3); `maxScore` is an integer.
+- `score` is present only when the caller has a submitted MCQ attempt. It is a number that can end in `.5` (section 9.3); `maxScore` is an integer.
 
 **Take / view:** `GET /exams/{id}`
 
@@ -480,19 +484,20 @@ When `status` is `done`, `questions` is the final ordered list. Each question is
   "exam": { "id": "…", "title": "…", "type": "mcq", "totalMarks": 30, "closesAt": "…", "acceptingUntil": "…",
             "maxPeeks": 3, "createdBy": { "id": "…", "name": "…" },
             "questions": [ { "id": "…", "marks": 1, "text": "…", "options": ["…"] } ] },
-  "attempt": { "status": "in_progress", "answers": { "q1": "…" }, "lastQuestionIndex": 4, "savedAt": "…",
+  "attempt": { "attemptNo": 2, "status": "in_progress", "answers": { "q1": "…" }, "lastQuestionIndex": 4, "savedAt": "…",
                "revealed": [ { "questionId": "q2", "correctIndex": 1 } ], "peeksLeft": 2 },
+  "attemptCount": 2,
   "keyVisible": false
 }
 ```
 - Visible to the creator and to users with a non-declined attempt row; everyone else (including a user who declined) gets `404`.
-- `attempt` is `null` for a creator who has no attempt row.
+- `attempt` is the caller's **latest** attempt (a retake in progress, or the last submitted one) and carries its `attemptNo`; `attemptCount` is how many attempts the caller has. `attempt` is `null` for a creator who has no attempt row.
 - Questions are in stored order (ascending by marks, or as the creator arranged them).
 - Keys (`correctIndex`, `modelAnswer`) are included only when section 9.4 allows, or for the questions listed in `attempt.revealed` (section 9.6). Otherwise they are omitted entirely.
 
 **Autosave:** `PUT /exams/{id}/attempt` with `{ answers, lastQuestionIndex }`
-- Replaces the whole answers map (idempotent). Keys must be existing question IDs; values are strings up to 5,000 characters (null or non-string is `422`); the summed UTF-8 size of all values is at most 350 KB and the body at most 400 KB, else `422` (60 answers of 5,000 characters is 300 KB, which a 200 KB cap would have rejected forever; 350 KB keeps the attempt item under the 400 KB DynamoDB limit). `lastQuestionIndex` is required (`422` if missing).
-- The write is conditional on `status <> submitted`; if it fails, `409 conflict`. At or after `acceptingUntil`: `409 exam_closed` (and lazy finalize runs).
+- Acts on the caller's **latest** attempt and replaces its whole answers map (idempotent). Keys must be existing question IDs; values are strings up to 5,000 characters (null or non-string is `422`); the summed UTF-8 size of all values is at most 350 KB and the body at most 400 KB, else `422` (60 answers of 5,000 characters is 300 KB, which a 200 KB cap would have rejected forever; 350 KB keeps the attempt item under the 400 KB DynamoDB limit). `lastQuestionIndex` is required (`422` if missing).
+- The write is conditional on `status <> submitted`; if it fails, `409 conflict` (start a retake first, section 8.5 Retake). At or after `acceptingUntil`: `409 exam_closed` (and lazy finalize runs).
 - First save moves `not_started` to `in_progress` and sets `StartedAt`.
 - Response: `200 { savedAt, serverTime }`.
 - Known accepted gap: the map has no sequence number, so a delayed retry of an older `PUT` can overwrite newer answers.
@@ -501,7 +506,7 @@ When `status` is `done`, `questions` is the final ordered list. Each question is
 - If `answers` is present, store them first. Then finalize (grade, set `submitted`). `SubmittedAt` is the earlier of now and `closesAt`.
 - Accepted until `acceptingUntil` (`closesAt` + 60 seconds). After that: `409 exam_closed`; an expired in-progress attempt is auto-submitted by lazy finalize instead.
 - **The client's auto-submit at zero sends its final answers in this call** (it does not autosave first), so the grace window cannot lose them.
-- Idempotent: an attempt the client already submitted returns its existing result, even after the deadline; an attempt the server auto-finalized (`autoSubmitted`) is `409 exam_closed` instead, because the late request's answers were not graded.
+- Acts on the caller's **latest** attempt. Idempotent: an attempt the client already submitted returns its existing result, even after the deadline; an attempt the server auto-finalized (`autoSubmitted`) is `409 exam_closed` instead, because the late request's answers were not graded.
 - Response: `200 { status: "submitted", score, scoreBeforePeeks, maxScore, submittedAt, autoSubmitted, serverTime }`. `score` and `scoreBeforePeeks` are `null` for free-text exams.
 
 **Reveal an answer (later priority, section 9.6):** `POST /exams/{id}/reveal` with `{ questionId }`
@@ -509,7 +514,15 @@ When `status` is `done`, `questions` is the final ordered list. Each question is
 - Rules in section 9.6. Errors: `403 forbidden` (peeking is off), `409 conflict` (no peeks left, or the key is already visible), `409 exam_closed`, `404`.
 
 **Decline:** `POST /exams/{id}/decline`
-- Assignee only, and only while their attempt is `not_started`; otherwise `409 conflict`. Sets the attempt status to `declined`. Idempotent. Returns `204`. There is no way to undo it in the MVP.
+- Assignee only, and only while their attempt is `not_started`; otherwise `409 conflict`. Sets the attempt status to `declined`. Idempotent. Returns `204`. There is no way to undo it in the MVP. A declined user cannot retake.
+
+**Retake:** `POST /exams/{id}/retake` (no body)
+- Starts a new attempt for a person who has already submitted. Allowed only for the caller who holds the exam (a non-declined attempt row, or the creator who took their own exam), whose **latest** attempt is `submitted`, before `acceptingUntil`, and with fewer than **50** attempts (`MaxAttemptsPerExam`, a technical safety limit; there is no product limit on retakes).
+- Creates attempt N+1 as `not_started` (`sk` = `<userId>#<N+1>`) with a conditional put (`attribute_not_exists(sk)`), so two concurrent calls cannot both create it. The first autosave moves it to `in_progress`. A retake has a fresh peek budget (section 9.6) and its own answers, score and times.
+- Idempotent: if the latest attempt is already `not_started` or `in_progress`, that attempt is returned and nothing is created.
+- Response: `200 { attemptNo, serverTime }`.
+- Errors: `409 exam_closed` at or after `acceptingUntil`; `409 conflict` at the attempt limit ("You have reached the limit of 50 attempts for this exam."); `404` if the caller has no access or declined.
+- Earlier attempts are never changed or removed.
 
 **Status (creator only):** `GET /exams/{id}/status`
 
@@ -518,23 +531,29 @@ When `status` is `done`, `questions` is the final ordered list. Each question is
   "serverTime": "...",
   "exam": { "id": "…", "title": "…", "closesAt": "…", "totalMarks": 30 },
   "counts": { "submitted": 2, "inProgress": 1, "notStarted": 1, "declined": 1 },
-  "attempts": [ { "userId": "…", "name": "Aisha K.", "email": "…", "status": "submitted", "score": 34, "submittedAt": "…" } ]
+  "attempts": [ { "userId": "…", "name": "Aisha K.", "email": "…", "status": "submitted", "score": 34, "submittedAt": "…",
+                  "attemptCount": 3, "history": [ { "attemptNo": 1, "status": "submitted", "score": 28, "submittedAt": "…", "autoSubmitted": false } ] } ]
 }
 ```
-- `status` per row is one of `not_started`, `in_progress`, `submitted`, `declined`. (After the exam is over a never-started attempt is reported as `not_started`; the frontend may label it "Missed".)
+- One row per user. `status` per row is one of `not_started`, `in_progress`, `submitted`, `declined`: `submitted` if any attempt is submitted, otherwise the latest attempt's status. `score` and `submittedAt` are those of the **best** attempt. `history` lists every attempt's number, status, score, submit time and `autoSubmitted`, oldest first. **No answers are returned**, so a creator still cannot read a student's answers. `counts` count users, not attempts. (After the exam is over a never-started attempt is reported as `not_started`; the frontend may label it "Missed".)
 - `403` if the caller is not the creator.
 
 **Assign more:** `POST /exams/{id}/assign` with `{ emails }`
 - Creator only. `409 exam_closed` after `acceptingUntil`.
-- The creator's role rules and cap from the create endpoint apply, and the cap counts all the exam's attempt rows (an exam that is already at its cap rejects more with `422`).
+- The creator's role rules and cap from the create endpoint apply, and the cap counts the users who hold the exam (distinct users with an attempt row, however many attempts each has; an exam that is already at its cap rejects more with `422`).
 - Response: `200 { assigned: [...], alreadyAssigned: [...], unknown: [...] }` (emails in each list; "unknown" includes not-allowed accounts for a student creator).
 
-**Result:** `GET /exams/{id}/result`
+**Result:** `GET /exams/{id}/result` or `GET /exams/{id}/result?attempt=N`
+
+- Without `attempt` it returns the caller's latest **submitted** attempt, so a retake in progress never makes this a `409`. With `attempt=N` it returns that attempt (`404` if there is no such attempt; `409` if attempt N has not been submitted and the exam is not over). Every attempt's answers and marks stay available this way until the data is removed.
 
 ```json
 {
   "serverTime": "...",
   "exam": { "id": "…", "title": "…", "type": "mcq", "totalMarks": 40, "closesAt": "…", "acceptingUntil": "…", "maxPeeks": 3 },
+  "attemptNo": 2, "bestAttemptNo": 2,
+  "attempts": [ { "attemptNo": 1, "status": "submitted", "score": 28, "maxScore": 40, "submittedAt": "…", "autoSubmitted": false },
+                { "attemptNo": 2, "status": "submitted", "score": 34.5, "maxScore": 40, "submittedAt": "…", "autoSubmitted": false } ],
   "status": "submitted",
   "score": 34.5, "scoreBeforePeeks": 35, "maxScore": 40,
   "peeksUsed": 1,
@@ -544,9 +563,10 @@ When `status` is `done`, `questions` is the final ordered list. Each question is
                    "yourAnswer": "…", "correct": true, "correctAnswer": "…", "modelAnswer": null, "revealed": false } ]
 }
 ```
-- Caller must have a non-declined attempt row. The caller must have submitted or the exam must be over (an expired attempt is finalized first); otherwise `409 conflict` "Submit the exam to see results."
+- Caller must have a non-declined attempt row. The caller must have a submitted attempt or the exam must be over (an expired attempt is finalized first); otherwise `409 conflict` "Submit the exam to see results." `attempts` lists every attempt of the caller (oldest first), with its marks, so all marks are visible together; `bestAttemptNo` is the highest-scoring submitted attempt (the earliest on a tie; absent for free text).
 - When `keyVisible` is false, omit `correct`, `correctAnswer`, and `modelAnswer` from every question **except those the caller revealed** (they have already seen the answer), set `keyAvailableAt` to `acceptingUntil`, and still return the scores. The frontend must not render correct or incorrect marks when the key is hidden.
-- A never-started attempt on an exam that is over returns `status: "missed"`, no score, and all `yourAnswer` empty.
+- A caller with no submitted attempt on an exam that is over (a never-started attempt) returns `status: "missed"`, no score, and all `yourAnswer` empty.
+- Key visibility (9.4) is the same for every attempt of one exam: marks for each attempt are always returned, per-question correctness only when `keyVisible`.
 
 ### 8.6 AI models and usage
 
@@ -591,6 +611,7 @@ Both endpoints need a signed-in user of any role. There is no admin role and no 
 | Choose the AI model for a generation, see AI usage | yes | yes | yes |
 | Assign exams | students only, max 10 | anyone, max 50 | anyone, max 50 |
 | Take exams assigned to them, decline them | yes | yes | yes |
+| Retake an exam they have submitted, until it closes (up to 50 attempts) | yes | yes | yes |
 | View status of exams they created | yes | yes | yes |
 
 Documents are never shared in the MVP. Teachers cannot see students' documents.
@@ -599,9 +620,9 @@ Documents are never shared in the MVP. Teachers cannot see students' documents.
 
 An exam accepts work until **`acceptingUntil` = `closesAt` + 60 seconds** (the grace window for the client's auto-submit at zero). The exam is **over** from `acceptingUntil`. Autosave, submit, lazy finalize, the list classification, and answer-key visibility all use that one cutoff, so nothing can finalize an attempt inside the grace window.
 
-There are no background jobs. Instead, `finalizeIfExpired(attempt, exam, now)` runs whenever an attempt is read through any endpoint (list, get, status, result) and on writes:
+There are no background jobs. Instead, `finalizeIfExpired(attempt, exam, now)` runs whenever an attempt is read through any endpoint (list, get, status, result) and on writes. Only the **latest** attempt of a user can be unfinished (a retake starts only after the previous attempt is submitted), so it is the only one that needs finalizing:
 - If `status = in_progress` and `now >= acceptingUntil`, grade the saved answers, set `submitted`, `SubmittedAt = closesAt`, `AutoSubmitted = true`. Use a conditional write (`status <> submitted`) so concurrent calls are safe.
-- `not_started` attempts are left alone and reported as `missed` by derivation once the exam is over. `declined` attempts are never touched.
+- `not_started` attempts are left alone. A user with no submitted attempt is reported as `missed` by derivation once the exam is over; a user with at least one submitted attempt is never `missed`, even if a later retake never started. `declined` attempts are never touched.
 - The status endpoint may finalize many attempts; do the conditional writes concurrently with a small limit (for example 10).
 
 ### 9.3 Grading
@@ -614,10 +635,10 @@ There are no background jobs. Instead, `finalizeIfExpired(attempt, exam, now)` r
 
 There is one fixed rule, with no per-exam setting. `keyVisible(exam, attempt, user, now)`:
 1. **True once the exam is over** (`now >= acceptingUntil`), for the creator and for everyone with access.
-2. Otherwise **true for the creator**, unless the creator is also taking the exam and has not finished: the creator has no attempt row, or their attempt is `submitted`.
+2. Otherwise **true for the creator**, unless the creator is also taking the exam and has not finished: the creator has no attempt row, or their **latest** attempt is `submitted`. (While the creator is in the middle of a retake of their own exam, the key is hidden again; it comes back when they submit.)
 3. Otherwise false. This includes a creator who is in the middle of their own practice exam, who goes through the peek path in 9.6 like any other taker.
 
-The rule is evaluated on the server at read time for `GET /exams/{id}` and `GET /exams/{id}/result`. Never include key fields in a response when it is false, except the questions the caller revealed (9.5).
+The rule is evaluated on the server at read time for `GET /exams/{id}` and `GET /exams/{id}/result`, on the caller's latest attempt, so it is the same for every attempt of one exam. Never include key fields in a response when it is false, except the questions the caller revealed (9.5).
 
 ### 9.5 Printing
 
@@ -723,6 +744,7 @@ Write tests as you build each slice. They must pass with `go test ./...` and nee
 | Documents | MIME and size validation; complete rejects missing, wrong size, wrong magic bytes; delete leaves exams intact |
 | Exam create | totalMarks computed, MCQ and free text shape validation, unknown assignee emails returned, practice-exam attempt row for creator, `maxPeeks` default and bounds, assignee caps, idempotent replay completes missing attempt rows, another creator's key is `409` |
 | Peeks (later priority) | reveal charges once per question, `403` when off, `409` when out of peeks or the key is visible, revealed answers come back on resume |
+| Retakes | `POST /retake` after a submit creates attempt N+1 (`not_started`) with its own answers, score and fresh peeks; earlier attempts are unchanged and still readable through `GET /result?attempt=N`; a second call while the new attempt is unfinished returns it and creates nothing; two concurrent calls create one attempt; `409 exam_closed` at or after `acceptingUntil`; `409 conflict` at 50 attempts; `404` for a decliner and for a non-holder; the list shows `attemptCount`, best `score` and `canRetake`; the status endpoint groups by user (best score, `history`, no answers, `counts` per user); the creator's key hides again during a retake of their own exam; an exam with a submitted attempt is never `missed` |
 | Printing | `GET /exams/{id}` on an exam that is over still returns the questions to the creator and to every non-declined assignee, with keys only when `keyVisible`; reading it starts no attempt |
 | Models and usage | the default is `LLM_MODEL` if set and enabled, else the cheapest enabled model; an unknown or not-enabled `model` is `422`; the job records its model; each call adds tokens and cost to the model's month and day counters and to the job; `GET /ai/usage` returns aggregates with no user or file data, and `recent` is newest first; `GET /ai/models` lists only enabled models |
 | Sessions | linking Google sets `SessionsValidAfter`; an older cookie is `401`; the same email linked to a different Google account is `409` |
@@ -767,7 +789,8 @@ Section 8 of this file is the contract. `frontend-spec.md` section 8 lists the c
 - [ ] A student never receives a key field before section 9.4 allows it (verify the raw JSON).
 - [ ] An attempt can still be autosaved and submitted for 60 seconds after `closesAt`, a submit with answers in the body at zero keeps them, and autosave from `acceptingUntil` on returns `409 exam_closed`.
 - [ ] An in-progress attempt left past `acceptingUntil` appears as submitted (auto-submitted) on the next read and is graded.
-- [ ] Submitting twice returns the same result.
+- [ ] Submitting the same attempt twice returns the same result.
+- [ ] A person can retake a submitted exam any number of times before it closes (up to the 50-attempt safety limit); every attempt keeps its own answers and marks, all readable through the result endpoint; a retake after the deadline is `409 exam_closed`; the creator sees best score, attempt count and per-attempt marks but never a student's answers.
 - [ ] The result endpoint hides all correctness data when the key is hidden (except revealed questions) and still returns the score.
 - [ ] Answer keys follow section 9.4: the creator sees the key, except while taking their own exam; everyone sees it once the exam is over.
 - [ ] `GET /exams/{id}` returns everything the print view needs (questions for the creator and non-declined assignees, also after the exam is over; keys only when `keyVisible`) and has no side effects.

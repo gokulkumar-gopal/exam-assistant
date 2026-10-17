@@ -67,7 +67,7 @@ Resources:
             - Effect: Allow
               Action: dynamodb:Query
               Resource: !Sub "${ExamsTable.Arn}/index/creator-index"
-            - Effect: Allow             # attempts: ListByExam queries the base table
+            - Effect: Allow             # attempts: ListByExam and ListAttempts query the base table
               Action: [dynamodb:GetItem, dynamodb:PutItem, dynamodb:UpdateItem, dynamodb:Query]
               Resource: !GetAtt AttemptsTable.Arn
             - Effect: Allow
@@ -181,12 +181,13 @@ Resources:
       BillingMode: PAY_PER_REQUEST
       AttributeDefinitions:
         - { AttributeName: examId, AttributeType: S }
+        - { AttributeName: sk, AttributeType: S }          # <userId>#<attemptNo, 3 digits>: one row per attempt
         - { AttributeName: userId, AttributeType: S }
-      KeySchema: [{ AttributeName: examId, KeyType: HASH }, { AttributeName: userId, KeyType: RANGE }]
+      KeySchema: [{ AttributeName: examId, KeyType: HASH }, { AttributeName: sk, KeyType: RANGE }]
       GlobalSecondaryIndexes:
         - IndexName: user-index
           KeySchema: [{ AttributeName: userId, KeyType: HASH }, { AttributeName: examId, KeyType: RANGE }]
-          Projection: { ProjectionType: INCLUDE, NonKeyAttributes: [status, scoreHalves, scoreBeforePeeksHalves, submittedAt] }   # never the answers
+          Projection: { ProjectionType: INCLUDE, NonKeyAttributes: [status, attemptNo, scoreHalves, scoreBeforePeeksHalves, submittedAt] }   # never the answers
 
   JobsTable:                           # also holds quota items (quota#...), usage counters (usage#...) and question items (<jobId>#questions)
     Type: AWS::DynamoDB::Table

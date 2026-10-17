@@ -63,7 +63,7 @@ type UserRef struct {
 	Name string `json:"name"`
 }
 
-// Counts are the creator's per-status attempt counts (declined included).
+// Counts are the creator's per-status counts of users (declined included), not of attempt rows.
 type Counts struct {
 	Submitted  int `json:"submitted"`
 	InProgress int `json:"inProgress"`
@@ -71,8 +71,8 @@ type Counts struct {
 	Declined   int `json:"declined"`
 }
 
-// ListItem is one row of GET /exams (backend-spec 8.5). Attempt fields are set only in the open
-// and closed scopes; Counts only in created.
+// ListItem is one row of GET /exams (backend-spec 8.5), one per exam however many attempts the
+// caller has. Attempt fields are set only in the open and closed scopes; Counts only in created.
 type ListItem struct {
 	ID             string    `json:"id"`
 	Title          string    `json:"title"`
@@ -82,8 +82,10 @@ type ListItem struct {
 	TotalMarks     int       `json:"totalMarks"`
 	Type           string    `json:"type"`
 	AttemptStatus  string    `json:"attemptStatus,omitempty"`
-	Score          *float64  `json:"score,omitempty"`
+	Score          *float64  `json:"score,omitempty"` // the best score over the submitted attempts
 	MaxScore       *int      `json:"maxScore,omitempty"`
+	AttemptCount   int       `json:"attemptCount,omitempty"`
+	CanRetake      *bool     `json:"canRetake,omitempty"` // set (true or false) in the open and closed scopes
 	Counts         *Counts   `json:"counts,omitempty"`
 }
 
@@ -158,9 +160,29 @@ func forEach(n int, fn func(i int) error) error {
 	return first
 }
 
+// examRun is the caller's attempts on one exam as the list sees them: the latest attempt (a
+// summary, replaced by the finalized row when it expires) and what the earlier attempts add.
+type examRun struct {
+	a     store.Attempt // the latest attempt
+	count int
+	best  *int // best ScoreHalves over the submitted attempts so far
+	any   bool // some attempt is submitted
+}
+
+func (r *examRun) add(a store.Attempt) {
+	if a.Status != store.AttemptSubmitted {
+		return
+	}
+	r.any = true
+	if a.ScoreHalves != nil && (r.best == nil || *a.ScoreHalves > *r.best) {
+		h := *a.ScoreHalves
+		r.best = &h
+	}
+}
+
 type row struct {
 	exam store.Exam
-	a    store.Attempt
+	run  examRun
 }
 
 func (s *Service) listAttempts(ctx context.Context, user store.User, scope string) ([]ListItem, error) {
@@ -169,28 +191,47 @@ func (s *Service) listAttempts(ctx context.Context, user store.User, scope strin
 	if err != nil {
 		return nil, apperr.Internal(err)
 	}
-	// Decide from the projected status before loading any exam. Declined rows are in neither
-	// list. Submitted rows are never open; for closed they are taken newest first by
-	// submittedAt (projected) and capped, so only that many exams are loaded.
-	var pending, submitted []store.AttemptSummary
+	// Group the rows by exam; the latest attempt (highest number) decides the list. Only the
+	// latest can be unfinished. A declined latest attempt (only the assignment can be declined)
+	// is in neither list. Decide from the projected status before loading any exam: unfinished
+	// latest attempts are candidates for open and closed; submitted ones only for closed, newest
+	// first by submittedAt (projected) and capped, so only that many exams are loaded.
+	runs := map[string]*examRun{}
+	var ids []string
 	for _, a := range sums {
-		switch a.Status {
+		r, ok := runs[a.ExamID]
+		if !ok {
+			r = &examRun{}
+			runs[a.ExamID] = r
+			ids = append(ids, a.ExamID)
+		}
+		at := store.Attempt{ExamID: a.ExamID, UserID: a.UserID, AttemptNo: a.AttemptNo, Status: a.Status, ScoreHalves: a.ScoreHalves,
+			ScoreBeforePeeksHalves: a.ScoreBeforePeeksHalves, SubmittedAt: a.SubmittedAt}
+		r.count++
+		r.add(at)
+		if at.AttemptNo >= r.a.AttemptNo {
+			r.a = at
+		}
+	}
+	var pending, submitted []string
+	for _, id := range ids {
+		switch runs[id].a.Status {
 		case store.AttemptNotStarted, store.AttemptInProgress:
-			pending = append(pending, a)
+			pending = append(pending, id)
 		case store.AttemptSubmitted:
-			submitted = append(submitted, a)
+			submitted = append(submitted, id)
 		}
 	}
 	if len(pending) > s.maxPend {
 		s.log.Warn("exam list: unfinished attempt rows over the safety bound; some are not listed",
 			"user", user.ID, "rows", len(pending), "bound", s.maxPend)
-		sort.Slice(pending, func(i, j int) bool { return pending[i].ExamID < pending[j].ExamID })
+		sort.Strings(pending)
 		pending = pending[:s.maxPend]
 	}
 	cand := pending
 	if scope == ScopeClosed {
 		sort.Slice(submitted, func(i, j int) bool {
-			a, b := submitted[i], submitted[j]
+			a, b := runs[submitted[i]].a, runs[submitted[j]].a
 			switch {
 			case a.SubmittedAt == nil || b.SubmittedAt == nil:
 				if (a.SubmittedAt == nil) != (b.SubmittedAt == nil) {
@@ -204,40 +245,33 @@ func (s *Service) listAttempts(ctx context.Context, user store.User, scope strin
 		if len(submitted) > MaxListItems {
 			submitted = submitted[:MaxListItems]
 		}
-		cand = append(append([]store.AttemptSummary{}, pending...), submitted...)
+		cand = append(append([]string{}, pending...), submitted...)
 	}
 	if len(cand) == 0 {
 		return []ListItem{}, nil
 	}
-	examIDs := make([]string, len(cand))
-	for i, a := range cand {
-		examIDs[i] = a.ExamID
-	}
-	found, err := s.exams.GetExams(ctx, examIDs)
+	found, err := s.exams.GetExams(ctx, cand)
 	if err != nil {
 		return nil, apperr.Internal(err)
 	}
 	rows := make([]row, 0, len(cand))
-	for _, c := range cand {
-		x, ok := found[c.ExamID]
+	for _, id := range cand {
+		x, ok := found[id]
 		if !ok {
 			continue // exam row gone: nothing to show
 		}
-		rows = append(rows, row{exam: x, a: store.Attempt{
-			ExamID: c.ExamID, UserID: c.UserID, Status: c.Status, ScoreHalves: c.ScoreHalves,
-			ScoreBeforePeeksHalves: c.ScoreBeforePeeksHalves, SubmittedAt: c.SubmittedAt,
-		}})
+		rows = append(rows, row{exam: x, run: *runs[id]})
 	}
 	if s.fin != nil {
 		var todo []int
 		for i, r := range rows {
-			if r.a.Status == store.AttemptInProgress && over(r.exam, now) {
+			if r.run.a.Status == store.AttemptInProgress && over(r.exam, now) {
 				todo = append(todo, i)
 			}
 		}
 		err := forEach(len(todo), func(k int) error {
 			r := &rows[todo[k]]
-			full, err := s.attempts.GetAttempt(ctx, r.exam.ID, user.ID)
+			full, err := s.attempts.GetAttempt(ctx, r.exam.ID, user.ID, r.run.a.AttemptNo)
 			if err != nil {
 				return err
 			}
@@ -245,7 +279,8 @@ func (s *Service) listAttempts(ctx context.Context, user store.User, scope strin
 			if err != nil {
 				return err
 			}
-			r.a = fin
+			r.run.a = fin
+			r.run.add(fin) // an auto-submitted attempt counts like any submitted one
 			return nil
 		})
 		if err != nil {
@@ -269,7 +304,7 @@ func (s *Service) listAttempts(ctx context.Context, user store.User, scope strin
 	out := []ListItem{}
 	var picked []row
 	for _, r := range rows {
-		if Classify(r.exam, r.a, now) == scope {
+		if Classify(r.exam, r.run.a, now) == scope {
 			picked = append(picked, r)
 		}
 	}
@@ -289,13 +324,19 @@ func (s *Service) listAttempts(ctx context.Context, user store.User, scope strin
 	}
 	for _, r := range picked {
 		it := baseItem(r.exam, UserRef{ID: r.exam.CreatorID, Name: creators[r.exam.CreatorID].Name})
-		it.AttemptStatus = DerivedStatus(r.exam, r.a, now)
+		it.AttemptStatus = DerivedStatus(r.exam, r.run.a, now)
+		if r.run.any {
+			it.AttemptStatus = store.AttemptSubmitted // an exam with a submitted attempt is never "missed"
+		}
 		mx := r.exam.TotalMarks
 		it.MaxScore = &mx
-		if r.a.Status == store.AttemptSubmitted && r.exam.Type == "mcq" && r.a.ScoreHalves != nil {
-			sc := float64(*r.a.ScoreHalves) / 2
+		if r.run.any && r.exam.Type == "mcq" && r.run.best != nil {
+			sc := float64(*r.run.best) / 2
 			it.Score = &sc
 		}
+		it.AttemptCount = r.run.count
+		can := r.run.a.Status == store.AttemptSubmitted && !over(r.exam, now) && r.run.count < store.MaxAttemptsPerExam
+		it.CanRetake = &can
 		out = append(out, it)
 	}
 	return out, nil
@@ -324,7 +365,8 @@ func (s *Service) listCreated(ctx context.Context, user store.User) ([]ListItem,
 			TotalMarks: sm.TotalMarks, ClosesAt: sm.ClosesAt, CreatedAt: sm.CreatedAt}
 		var c Counts
 		var full *store.Exam // the finalizer needs the questions; loaded at most once, only if needed
-		for _, a := range rows {
+		for _, run := range groupByUser(rows) {
+			a := run.latest() // only the latest attempt of a user can be unfinished
 			if s.fin != nil && a.Status == store.AttemptInProgress && over(x, now) {
 				if full == nil {
 					fx, err := s.exams.GetExam(ctx, sm.ID)
@@ -337,8 +379,9 @@ func (s *Service) listCreated(ctx context.Context, user store.User) ([]ListItem,
 				if a, err = s.fin.FinalizeIfExpired(ctx, a, *full, now); err != nil {
 					return err
 				}
+				run[len(run)-1] = a
 			}
-			switch a.Status {
+			switch run.status() {
 			case store.AttemptSubmitted:
 				c.Submitted++
 			case store.AttemptInProgress:

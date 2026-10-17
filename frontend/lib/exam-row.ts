@@ -1,4 +1,5 @@
 // Home row view model (fs 6.1 table). Pure; time comes from the caller (server-clock now).
+import { attemptsLabel, bestPillText, MAX_ATTEMPTS } from "./attempts";
 import { deadlineText, scoreText } from "./format";
 import type { PillVariant } from "../components/Pill";
 import type { ExamListItem } from "./types";
@@ -8,6 +9,8 @@ export interface RowView {
   pill: { variant: PillVariant; text: string } | null;
   /** Null only for a declined exam, which Home never lists. */
   action: RowAction | null;
+  /** fs 6.1: a quiet secondary Retake, only while the server says `canRetake` (and the exam is still accepting). */
+  retake: boolean;
 }
 
 /**
@@ -16,24 +19,37 @@ export interface RowView {
  */
 export function rowView(exam: ExamListItem, nowMs: number): RowView {
   const status = exam.attemptStatus ?? "not_started";
-  if (status === "declined") return { pill: { variant: "neutral", text: "Declined" }, action: null };
+  if (status === "declined") return { pill: { variant: "neutral", text: "Declined" }, action: null, retake: false };
   if (status === "submitted") {
     const hasScore = typeof exam.score === "number" && typeof exam.maxScore === "number";
-    const text = hasScore ? `Submitted · ${scoreText(exam.score as number)}/${exam.maxScore}` : "Submitted";
-    return { pill: { variant: "ok", text }, action: "View result" };
+    const accepting = nowMs < Date.parse(exam.acceptingUntil);
+    const count = exam.attemptCount;
+    const best = hasScore ? bestPillText(exam.score, exam.maxScore, count) : ["Submitted", attemptsLabel(count)].filter(Boolean).join(" · ");
+    // The list reports "submitted" when any attempt is. A submitted exam that is still accepting, cannot be retaken
+    // and is under the limit has a retake in progress: the way back in is Resume.
+    const retaking = accepting && count !== undefined && count > 1 && exam.canRetake !== true && count < MAX_ATTEMPTS;
+    if (retaking) return { pill: { variant: "warn", text: `Retake in progress · ${best}` }, action: "Resume", retake: false };
+    return { pill: { variant: "ok", text: best }, action: "View result", retake: exam.canRetake === true && accepting };
   }
-  const missed = { pill: { variant: "bad" as const, text: "Missed" }, action: "View result" as const };
+  const missed = { pill: { variant: "bad" as const, text: "Missed" }, action: "View result" as const, retake: false };
   if (status === "missed") return missed;
   if (nowMs >= Date.parse(exam.acceptingUntil)) return missed;
-  if (nowMs >= Date.parse(exam.closesAt)) return { pill: { variant: "warn", text: "Closing…" }, action: "Resume" };
-  if (status === "in_progress") return { pill: { variant: "warn", text: "In progress" }, action: "Resume" };
-  return { pill: { variant: "neutral", text: "Not started" }, action: "Start" };
+  if (nowMs >= Date.parse(exam.closesAt)) return { pill: { variant: "warn", text: "Closing…" }, action: "Resume", retake: false };
+  if (status === "in_progress") return { pill: { variant: "warn", text: "In progress" }, action: "Resume", retake: false };
+  return { pill: { variant: "neutral", text: "Not started" }, action: "Start", retake: false };
 }
 
-/** "Assigned by Ms. Rao · closes in 2d"; "You" when the viewer created it. */
+/**
+ * "Assigned by Ms. Rao · closes in 2d"; "You" when the viewer created it. An exam being retaken keeps the best
+ * score of the earlier attempts: "… · Best 34/40" (fs 6.1).
+ */
 export function examMeta(exam: ExamListItem, userId: string | undefined, nowMs: number): string {
   const who = userId !== undefined && exam.createdBy.id === userId ? "You" : exam.createdBy.name;
-  return `Assigned by ${who} · ${deadlineText(exam.closesAt, nowMs)}`;
+  const base = `Assigned by ${who} · ${deadlineText(exam.closesAt, nowMs)}`;
+  const unfinished = exam.attemptStatus === "in_progress" || exam.attemptStatus === "not_started";
+  const best = unfinished && (exam.attemptCount ?? 0) > 1 && typeof exam.score === "number" && typeof exam.maxScore === "number"
+    ? ` · Best ${scoreText(exam.score)}/${exam.maxScore}` : "";
+  return base + best;
 }
 
 /** "12 submitted, 3 in progress, 5 not started, 1 declined" (declined only above 0). */

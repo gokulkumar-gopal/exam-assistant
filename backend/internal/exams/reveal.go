@@ -19,7 +19,8 @@ type RevealView struct {
 }
 
 // Reveal records a peek at one question's answer (backend-spec 8.5, 9.6) and returns that
-// question's key, and only that one. The first reveal of a question is charged; a repeat returns
+// question's key, and only that one, on the caller's latest attempt (every attempt has its own
+// peek budget). The first reveal of a question is charged; a repeat returns
 // the key again for free, even when no peeks are left.
 //
 // Only a non-declined assignee with an attempt row may peek: a creator without a row, a declined
@@ -29,7 +30,7 @@ type RevealView struct {
 // enforces the peek cap and that the attempt is still open, so concurrent reveals cannot exceed
 // maxPeeks and a reveal can never land on an attempt that has been submitted.
 func (s *Service) Reveal(ctx context.Context, user store.User, examID, questionID string) (RevealView, error) {
-	a, err := s.attempts.GetAttempt(ctx, examID, user.ID)
+	a, err := s.attempts.GetLatestAttempt(ctx, examID, user.ID)
 	if errors.Is(err, store.ErrNotFound) {
 		return RevealView{}, apperr.NotFound()
 	}
@@ -72,7 +73,7 @@ func (s *Service) Reveal(ctx context.Context, user store.User, examID, questionI
 	if q == nil {
 		return RevealView{}, apperr.Validation("That question is not in this exam.", map[string]string{"questionId": "Unknown question"})
 	}
-	res, err := s.attempts.Reveal(ctx, examID, user.ID, questionID, exam.MaxPeeks, now)
+	res, err := s.attempts.Reveal(ctx, examID, user.ID, a.AttemptNo, questionID, exam.MaxPeeks, now)
 	switch {
 	case err == nil:
 	case errors.Is(err, store.ErrSubmitted):

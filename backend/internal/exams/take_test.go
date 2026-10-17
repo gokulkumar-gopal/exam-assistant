@@ -207,7 +207,7 @@ func TestRevealedQuestionKeysIncludedWhileHidden(t *testing.T) {
 	e.seedFull(t, "f1", "t1", "free")
 	for _, id := range []string{"m1", "f1"} {
 		e.seedAttempt(t, id, "s1", store.AttemptInProgress, nil)
-		if _, err := e.attempts.Reveal(context.Background(), id, "s1", "q1", 3, t0); err != nil {
+		if _, err := e.attempts.Reveal(context.Background(), id, "s1", 1, "q1", 3, t0); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -238,7 +238,7 @@ func TestResumeReturnsAnswersLastIndexSavedAt(t *testing.T) {
 	e.seedFull(t, "e1", "t1", "mcq")
 	e.seedAttempt(t, "e1", "s1", store.AttemptNotStarted, nil)
 	saved := t0.Add(5 * time.Minute)
-	if err := e.attempts.Save(context.Background(), "e1", "s1", map[string]string{"q1": "o1", "q2": "o2"}, 2, saved); err != nil {
+	if err := e.attempts.Save(context.Background(), "e1", "s1", 1, map[string]string{"q1": "o1", "q2": "o2"}, 2, saved); err != nil {
 		t.Fatal(err)
 	}
 	a := e.get(t, e.student, "e1").Attempt
@@ -290,8 +290,18 @@ func (r *getRecAttempts) PutAttemptIfAbsent(ctx context.Context, a store.Attempt
 	r.w("PutAttemptIfAbsent")
 	return r.in.PutAttemptIfAbsent(ctx, a)
 }
-func (r *getRecAttempts) GetAttempt(ctx context.Context, e, u string) (store.Attempt, error) {
-	return r.in.GetAttempt(ctx, e, u) // read
+func (r *getRecAttempts) PutRetake(ctx context.Context, e, u string, no int, n time.Time) (bool, error) {
+	r.w("PutRetake")
+	return r.in.PutRetake(ctx, e, u, no, n)
+}
+func (r *getRecAttempts) GetAttempt(ctx context.Context, e, u string, no int) (store.Attempt, error) {
+	return r.in.GetAttempt(ctx, e, u, no) // read
+}
+func (r *getRecAttempts) GetLatestAttempt(ctx context.Context, e, u string) (store.Attempt, error) {
+	return r.in.GetLatestAttempt(ctx, e, u) // read
+}
+func (r *getRecAttempts) ListAttempts(ctx context.Context, e, u string) ([]store.Attempt, error) {
+	return r.in.ListAttempts(ctx, e, u) // read
 }
 func (r *getRecAttempts) ListByUser(ctx context.Context, u string) ([]store.AttemptSummary, error) {
 	return r.in.ListByUser(ctx, u) // read
@@ -299,21 +309,21 @@ func (r *getRecAttempts) ListByUser(ctx context.Context, u string) ([]store.Atte
 func (r *getRecAttempts) ListByExam(ctx context.Context, e string) ([]store.Attempt, error) {
 	return r.in.ListByExam(ctx, e) // read
 }
-func (r *getRecAttempts) Save(ctx context.Context, e, u string, a map[string]string, i int, n time.Time) error {
+func (r *getRecAttempts) Save(ctx context.Context, e, u string, no int, a map[string]string, i int, n time.Time) error {
 	r.w("Save")
-	return r.in.Save(ctx, e, u, a, i, n)
+	return r.in.Save(ctx, e, u, no, a, i, n)
 }
 func (r *getRecAttempts) Submit(ctx context.Context, a store.Attempt) error {
 	r.w("Submit")
 	return r.in.Submit(ctx, a)
 }
-func (r *getRecAttempts) Decline(ctx context.Context, e, u string) error {
+func (r *getRecAttempts) Decline(ctx context.Context, e, u string, no int) error {
 	r.w("Decline")
-	return r.in.Decline(ctx, e, u)
+	return r.in.Decline(ctx, e, u, no)
 }
-func (r *getRecAttempts) Reveal(ctx context.Context, e, u, q string, m int, n time.Time) (store.RevealResult, error) {
+func (r *getRecAttempts) Reveal(ctx context.Context, e, u string, no int, q string, m int, n time.Time) (store.RevealResult, error) {
 	r.w("Reveal")
-	return r.in.Reveal(ctx, e, u, q, m, n)
+	return r.in.Reveal(ctx, e, u, no, q, m, n)
 }
 
 type getRecExams struct {
@@ -373,11 +383,11 @@ func TestGetDoesNotStartAttemptOrChargePeek(t *testing.T) {
 	if ra.writes.Load() != 0 || rx.writes.Load() != 0 {
 		t.Fatalf("post-over writes: attempts %d %v exams %d", ra.writes.Load(), ra.names, rx.writes.Load())
 	}
-	a, err := e.attempts.GetAttempt(ctx, "e1", "s1")
+	a, err := e.attempts.GetAttempt(ctx, "e1", "s1", 1)
 	if err != nil || a.Status != store.AttemptNotStarted || a.StartedAt != nil || len(a.Revealed) != 0 {
 		t.Fatalf("attempt changed: %+v %v", a, err)
 	}
-	if _, err := e.attempts.GetAttempt(ctx, "e1", "t1"); err != store.ErrNotFound {
+	if _, err := e.attempts.GetAttempt(ctx, "e1", "t1", 1); err != store.ErrNotFound {
 		t.Fatalf("creator row created: %v", err)
 	}
 }

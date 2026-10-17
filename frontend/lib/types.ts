@@ -96,7 +96,13 @@ export interface CreateExamResponse { id: string; unknownEmails: string[]; serve
 export interface ExamListItem {
   id: string; title: string; createdBy: UserRef;
   closesAt: string; acceptingUntil: string; totalMarks: number; type: ExamType;
-  attemptStatus?: AttemptStatus; score?: number; maxScore?: number;
+  attemptStatus?: AttemptStatus;
+  /** The best score over submitted attempts. */
+  score?: number; maxScore?: number;
+  /** How many attempts the caller has on this exam (absent on the created list). */
+  attemptCount?: number;
+  /** True while a retake may start: latest attempt submitted, before acceptingUntil, under the 50-attempt limit. */
+  canRetake?: boolean;
   counts?: { submitted: number; inProgress: number; notStarted: number; declined: number };
 }
 export interface ExamListResponse { serverTime: string; exams: ExamListItem[] }
@@ -107,6 +113,8 @@ export interface ExamDetail {
   createdBy: UserRef; questions: Question[];
 }
 export interface Attempt {
+  /** 1-based; a retake adds the next number. */
+  attemptNo: number;
   status: AttemptStatus;
   answers: Record<string, string>;
   lastQuestionIndex: number;
@@ -115,9 +123,12 @@ export interface Attempt {
   peeksLeft?: number;
 }
 export interface ExamResponse {
-  serverTime: string; exam: ExamDetail; attempt: Attempt | null; keyVisible: boolean;
+  serverTime: string; exam: ExamDetail;
+  /** The caller's latest attempt. */
+  attempt: Attempt | null; attemptCount?: number; keyVisible: boolean;
   acceptingUntil?: string;
 }
+export interface RetakeResponse { attemptNo: number; serverTime: string }
 
 export interface AttemptBody { answers: Record<string, string>; lastQuestionIndex: number }
 export interface AttemptSaved { savedAt: string; serverTime: string }
@@ -133,7 +144,17 @@ export interface StatusResponse {
   serverTime: string;
   exam: { id: string; title: string; closesAt: string; totalMarks: number };
   counts: { submitted: number; inProgress: number; notStarted: number; declined: number };
-  attempts: { userId: string; name: string; email: string; status: Exclude<AttemptStatus, "missed">; score?: number; submittedAt?: string }[];
+  attempts: StatusRow[];
+}
+/** One attempt in a student's history: marks and time only, never answers. */
+export interface AttemptHistoryItem {
+  attemptNo: number; status: Exclude<AttemptStatus, "missed">; score?: number; submittedAt?: string; autoSubmitted?: boolean;
+}
+/** One student. `score` and `submittedAt` are those of the best attempt. */
+export interface StatusRow {
+  userId: string; name: string; email: string; status: Exclude<AttemptStatus, "missed">;
+  score?: number; submittedAt?: string;
+  attemptCount?: number; history?: AttemptHistoryItem[];
 }
 export interface AssignBody { emails: string[] }
 export interface AssignResponse { assigned: string[]; alreadyAssigned: string[]; unknown: string[] }
@@ -144,8 +165,14 @@ export interface ResultQuestion {
   correct?: boolean; correctAnswer?: string; modelAnswer?: string | null;
   revealed: boolean;
 }
+/** One entry of the result's `attempts[]`: every attempt of the caller with its marks (oldest first). */
+export interface AttemptSummary {
+  attemptNo: number; status: AttemptStatus; score?: number | null; maxScore: number; submittedAt?: string; autoSubmitted?: boolean;
+}
 export interface ResultResponse {
   serverTime: string;
+  /** The attempt shown, the best submitted one (absent for free text) and every attempt. */
+  attemptNo?: number; bestAttemptNo?: number; attempts?: AttemptSummary[];
   exam: { id: string; title: string; type: ExamType; totalMarks: number; closesAt: string; acceptingUntil: string; maxPeeks: number };
   status: "submitted" | "missed";
   score: number | null; scoreBeforePeeks: number | null; maxScore: number;

@@ -206,4 +206,32 @@ expect 200
 case $resp in *'"status":"submitted"'*'"maxScore":'*) ;; *) fail "result is missing status or maxScore: $resp" ;; esac
 ok
 
+step=retake
+call POST "/exams/$exam/retake"
+expect 200
+case $resp in *'"attemptNo":2'*) ;; *) fail "retake did not start attempt 2: $resp" ;; esac
+ok
+
+step=retake-attempt-2
+call PUT "/exams/$exam/attempt" "{\"answers\":{\"$qid\":\"Option B\"},\"lastQuestionIndex\":0}"
+expect 200
+call POST "/exams/$exam/submit" "{\"answers\":{\"$qid\":\"Option B\"},\"lastQuestionIndex\":0}"
+expect 200
+case $resp in *'"status":"submitted"'*) ;; *) fail "attempt 2 is not submitted: $resp" ;; esac
+ok
+
+step=result-attempt-1
+call GET "/exams/$exam/result?attempt=1"
+expect 200
+case $resp in *'"attemptNo":1,'*'"yourAnswer":"Option A"'*) ;; *) fail "attempt 1 result is missing its attemptNo or its own answer: $resp" ;; esac
+ok
+
+step=result-attempt-2
+call GET "/exams/$exam/result?attempt=2"
+expect 200
+case $resp in *'"attemptNo":2,'*'"yourAnswer":"Option B"'*) ;; *) fail "attempt 2 result is missing its attemptNo or its own answer: $resp" ;; esac
+# attempts[] lists both attempts, oldest first.
+case $resp in *'"attempts":[{"attemptNo":1,'*'{"attemptNo":2,'*) ;; *) fail "result attempts[] does not list both attempts: $resp" ;; esac
+ok
+
 echo "all steps passed"

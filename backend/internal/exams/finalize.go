@@ -31,7 +31,7 @@ func (f *AttemptFinalizer) FinalizeIfExpired(ctx context.Context, a store.Attemp
 		return a, nil
 	}
 	for try := 0; try <= maxSubmitRetries; try++ {
-		cur, err := f.attempts.GetAttempt(ctx, a.ExamID, a.UserID)
+		cur, err := f.attempts.GetAttempt(ctx, a.ExamID, a.UserID, a.AttemptNo)
 		if err != nil {
 			return a, err
 		}
@@ -49,7 +49,7 @@ func (f *AttemptFinalizer) FinalizeIfExpired(ctx context.Context, a store.Attemp
 		case err == nil:
 			return fin, nil
 		case errors.Is(err, store.ErrSubmitted), errors.Is(err, store.ErrDeclined):
-			return f.attempts.GetAttempt(ctx, a.ExamID, a.UserID)
+			return f.attempts.GetAttempt(ctx, a.ExamID, a.UserID, a.AttemptNo)
 		case errors.Is(err, store.ErrConflict):
 			continue // a peek landed after the read; re-read and regrade
 		}

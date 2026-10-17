@@ -11,7 +11,8 @@ import { demoUser, docs as seedDocs, makeQuestion, models, rao, usage } from "./
 interface MockExam {
   id: string; title: string; type: ExamType; closesAt: string; maxPeeks: number;
   createdBy: { id: string; name: string }; questions: Question[]; mine: boolean;
-  attempt: Attempt | null; assigned: string[];
+  /** Oldest first; empty for a creator who has not taken their own exam. The last one is the latest attempt. */
+  attempts: MockAttempt[]; assigned: string[];
   /** Status-page rows, built lazily from `assigned` (see rosterOf). */
   roster?: RosterRow[];
   /** Mock only: closesAt is re-set to 20 s ago on each list call so the "Closing…" row stays visible. */
@@ -19,7 +20,13 @@ interface MockExam {
   /** Mock only: reachable by URL (take-screen fixtures) but never listed on Home. */
   unlisted?: boolean;
 }
-interface RosterRow { userId: string; name: string; email: string; status: "not_started" | "in_progress" | "submitted" | "declined"; score?: number; submittedAt?: string }
+/** An attempt plus the submit time the API reports in `attempts[]` / `history[]` (never sent inside `attempt`). */
+type MockAttempt = Attempt & { submittedAt?: string; autoSubmitted?: boolean };
+interface RosterRow {
+  userId: string; name: string; email: string; status: "not_started" | "in_progress" | "submitted" | "declined";
+  score?: number; submittedAt?: string; attemptCount: number;
+  history: { attemptNo: number; status: "not_started" | "in_progress" | "submitted" | "declined"; score?: number; submittedAt?: string; autoSubmitted: boolean }[];
+}
 interface MockJob { polls: number; marks?: Marks; type: ExamType; counts: Record<string, number>; model: string; trigger: string | null }
 
 const HOUR = 3600_000;
@@ -45,34 +52,34 @@ function seedExams() {
   state.exams = [
     { id: "e1", title: "Biology: Cells quiz", type: "mcq", closesAt: iso(now + 5 * HOUR), maxPeeks: 3,
       createdBy: rao, questions: mk(1, "mcq"), mine: false,
-      attempt: { status: "not_started", answers: {}, lastQuestionIndex: 0, revealed: [], peeksLeft: 3 }, assigned: [] },
+      attempts: [{ attemptNo: 1, status: "not_started", answers: {}, lastQuestionIndex: 0, revealed: [], peeksLeft: 3 }], assigned: [] },
     { id: "e2", title: "Free text: Photosynthesis", type: "free", closesAt: iso(now + 8 * 24 * HOUR), maxPeeks: 0,
       createdBy: rao, questions: mk(2, "free"), mine: false,
-      attempt: { status: "in_progress", answers: { q21: "Light reaction" }, lastQuestionIndex: 0 }, assigned: [] },
+      attempts: [{ attemptNo: 1, status: "in_progress", answers: { q21: "Light reaction" }, lastQuestionIndex: 0 }], assigned: [] },
     { id: "e3", title: "Last week's quiz", type: "mcq", closesAt: iso(now - 3 * 24 * HOUR), maxPeeks: 0,
       createdBy: rao, questions: mk(3, "mcq"), mine: false,
-      attempt: { status: "submitted", answers: { q31: "Option B", q32: "Option A", q33: "Option C", q34: "Option D" }, lastQuestionIndex: 3 }, assigned: [] },
+      attempts: [{ attemptNo: 1, status: "submitted", answers: { q31: "Option B", q32: "Option A", q33: "Option C", q34: "Option D" }, lastQuestionIndex: 3 }], assigned: [] },
     { id: "e4", title: "My class test", type: "mcq", closesAt: iso(now + 2 * 24 * HOUR), maxPeeks: 0,
       createdBy: { id: demoUser.id, name: demoUser.name }, questions: mk(4, "mcq"), mine: true,
-      attempt: null, assigned: ["aisha@x.com", "ben@x.com", "chen@x.com", "dev@x.com"] },
+      attempts: [], assigned: ["aisha@x.com", "ben@x.com", "chen@x.com", "dev@x.com"] },
     { id: "e5", title: "Closing now: Cell division", type: "mcq", closesAt: iso(now - 20_000), maxPeeks: 0,
       createdBy: rao, questions: mk(5, "mcq"), mine: false, closingDemo: true,
-      attempt: { status: "in_progress", answers: {}, lastQuestionIndex: 0 }, assigned: [] },
+      attempts: [{ attemptNo: 1, status: "in_progress", answers: {}, lastQuestionIndex: 0 }], assigned: [] },
     { id: "e6", title: "Missed: Chemistry basics", type: "mcq", closesAt: iso(now - 5 * 24 * HOUR), maxPeeks: 0,
       createdBy: rao, questions: mk(6, "mcq"), mine: false,
-      attempt: { status: "not_started", answers: {}, lastQuestionIndex: 0 }, assigned: [] },
+      attempts: [{ attemptNo: 1, status: "not_started", answers: {}, lastQuestionIndex: 0 }], assigned: [] },
     { id: "e7", title: "Essay: Ecosystems", type: "free", closesAt: iso(now - 24 * HOUR), maxPeeks: 0,
       createdBy: { id: demoUser.id, name: demoUser.name }, questions: mk(7, "free"), mine: true,
-      attempt: { status: "submitted", answers: {}, lastQuestionIndex: 0 }, assigned: ["aisha@x.com"] },
+      attempts: [{ attemptNo: 1, status: "submitted", answers: {}, lastQuestionIndex: 0 }], assigned: ["aisha@x.com"] },
     { id: "e8", title: "Declined: Geography", type: "mcq", closesAt: iso(now + 3 * HOUR), maxPeeks: 0,
       createdBy: rao, questions: mk(8, "mcq"), mine: false,
-      attempt: { status: "declined", answers: {}, lastQuestionIndex: 0 }, assigned: [] },
+      attempts: [{ attemptNo: 1, status: "declined", answers: {}, lastQuestionIndex: 0 }], assigned: [] },
     { id: "e9", title: "Not started, closes in 20 minutes", type: "mcq", closesAt: iso(now + 20 * 60_000), maxPeeks: 0,
       createdBy: { id: demoUser.id, name: demoUser.name }, questions: mk(9, "mcq"), mine: true,
-      attempt: { status: "not_started", answers: {}, lastQuestionIndex: 0 }, assigned: [] },
+      attempts: [{ attemptNo: 1, status: "not_started", answers: {}, lastQuestionIndex: 0 }], assigned: [] },
     { id: "e10", title: "No assignees yet", type: "mcq", closesAt: iso(now + 4 * 24 * HOUR), maxPeeks: 0,
       createdBy: { id: demoUser.id, name: demoUser.name }, questions: mk(10, "mcq"), mine: true,
-      attempt: null, assigned: [] },
+      attempts: [], assigned: [] },
   ];
 }
 
@@ -103,14 +110,14 @@ function seedTakeFixtures() {
   state.exams.push(
     { id: "e11", title: "Take demo: mixed questions", type: "mcq", closesAt: iso(tomorrow.getTime()), maxPeeks: 0,
       createdBy: rao, questions: mixed, mine: false, unlisted: true,
-      attempt: { status: "in_progress", answers: { t1: "Answer 1B", t2: "The light reaction makes ATP.", t4: "Because it is.", t5: "Answer 5D" }, lastQuestionIndex: 4, savedAt: iso(Date.now() - 600_000) },
+      attempts: [{ attemptNo: 1, status: "in_progress", answers: { t1: "Answer 1B", t2: "The light reaction makes ATP.", t4: "Because it is.", t5: "Answer 5D" }, lastQuestionIndex: 4, savedAt: iso(Date.now() - 600_000) }],
       assigned: [] },
     { id: "e12", title: "Take demo: 30 questions", type: "mcq", closesAt: iso(Date.now() + 2 * 24 * HOUR), maxPeeks: 0,
       createdBy: rao, questions: Array.from({ length: 30 }, (_, i) => ({ ...makeQuestion(1200 + i, ((i % 5) + 1) as Marks, "mcq"), id: `m${i + 1}` })), mine: false, unlisted: true,
-      attempt: { status: "not_started", answers: {}, lastQuestionIndex: 0 }, assigned: [] },
+      attempts: [{ attemptNo: 1, status: "not_started", answers: {}, lastQuestionIndex: 0 }], assigned: [] },
     { id: "e13", title: "Take demo: 2 questions", type: "mcq", closesAt: iso(Date.now() + 2 * 24 * HOUR), maxPeeks: 0,
       createdBy: rao, questions: Array.from({ length: 2 }, (_, i) => ({ ...makeQuestion(1300 + i, 1 as Marks, "mcq"), id: `w${i + 1}` })), mine: false, unlisted: true,
-      attempt: { status: "not_started", answers: {}, lastQuestionIndex: 0 }, assigned: [] },
+      attempts: [{ attemptNo: 1, status: "not_started", answers: {}, lastQuestionIndex: 0 }], assigned: [] },
     // Peeks demos (also the mock e1): 2 peeks allowed, markup must stay literal.
     { id: "e19", title: "Peeks demo: multiple choice", type: "mcq", closesAt: iso(Date.now() + 2 * 24 * HOUR), maxPeeks: 2,
       createdBy: rao, questions: [
@@ -118,13 +125,13 @@ function seedTakeFixtures() {
         { id: "k2", marks: 2, text: "Second question", options: ["One", "Two", "Three", "Four"], correctIndex: 2 },
         { id: "k3", marks: 1, text: "Third question", options: ["Red", "Green", "Blue", "Black"], correctIndex: 0 },
       ], mine: false, unlisted: true,
-      attempt: { status: "not_started", answers: {}, lastQuestionIndex: 0, revealed: [], peeksLeft: 2 }, assigned: [] },
+      attempts: [{ attemptNo: 1, status: "not_started", answers: {}, lastQuestionIndex: 0, revealed: [], peeksLeft: 2 }], assigned: [] },
     { id: "e20", title: "Peeks demo: free text", type: "free", closesAt: iso(Date.now() + 2 * 24 * HOUR), maxPeeks: 1,
       createdBy: rao, questions: [
         { id: "k4", marks: 3, text: "Explain photosynthesis.", modelAnswer: "<i>Light</i> energy becomes chemical energy.\nIt happens in chloroplasts." },
         { id: "k5", marks: 2, text: "What is osmosis?", modelAnswer: "Water moves across a membrane." },
       ], mine: false, unlisted: true,
-      attempt: { status: "not_started", answers: {}, lastQuestionIndex: 0, revealed: [], peeksLeft: 1 }, assigned: [] },
+      attempts: [{ attemptNo: 1, status: "not_started", answers: {}, lastQuestionIndex: 0, revealed: [], peeksLeft: 1 }], assigned: [] },
   );
 }
 /**
@@ -162,19 +169,19 @@ function seedResultFixtures() {
   state.exams.push(
     { id: "e21", title: "Result demo: peeks used", type: "mcq", closesAt: iso(Date.now() - 2 * 24 * HOUR), maxPeeks: 3,
       createdBy: rao, questions: used, mine: false, unlisted: true,
-      attempt: { status: "submitted", answers: peekAnswers(used), lastQuestionIndex: 7, revealed: [revealedOf(used[1]), revealedOf(used[3])], peeksLeft: 1 }, assigned: [] },
+      attempts: [{ attemptNo: 1, status: "submitted", answers: peekAnswers(used), lastQuestionIndex: 7, revealed: [revealedOf(used[1]), revealedOf(used[3])], peeksLeft: 1 }], assigned: [] },
     { id: "e22", title: "Result demo: no peeks", type: "mcq", closesAt: iso(Date.now() - 2 * 24 * HOUR), maxPeeks: 3,
       createdBy: rao, questions: none, mine: false, unlisted: true,
-      attempt: { status: "submitted", answers: peekAnswers(none), lastQuestionIndex: 7, revealed: [], peeksLeft: 3 }, assigned: [] },
+      attempts: [{ attemptNo: 1, status: "submitted", answers: peekAnswers(none), lastQuestionIndex: 7, revealed: [], peeksLeft: 3 }], assigned: [] },
     { id: "e23", title: "Result demo: free text with a peek", type: "free", closesAt: iso(Date.now() - 2 * 24 * HOUR), maxPeeks: 1,
       createdBy: rao, questions: free.map((q, i) => ({ ...q, id: `${"y"}${i + 1}` })), mine: false, unlisted: true,
-      attempt: { status: "submitted", answers: { y1: "Plants make food.", y2: "Sunlight makes sugar.", y3: "", y4: "Because of osmosis." }, lastQuestionIndex: 3, revealed: [{ questionId: "y2", modelAnswer: free[1].modelAnswer }], peeksLeft: 0 }, assigned: [] },
+      attempts: [{ attemptNo: 1, status: "submitted", answers: { y1: "Plants make food.", y2: "Sunlight makes sugar.", y3: "", y4: "Because of osmosis." }, lastQuestionIndex: 3, revealed: [{ questionId: "y2", modelAnswer: free[1].modelAnswer }], peeksLeft: 0 }], assigned: [] },
     { id: "e14", title: "Result demo: multiple choice", type: "mcq", closesAt: iso(Date.now() - 2 * 24 * HOUR), maxPeeks: 0,
       createdBy: rao, questions: mcq, mine: false, unlisted: true,
-      attempt: { status: "submitted", answers, lastQuestionIndex: 7 }, assigned: [] },
+      attempts: [{ attemptNo: 1, status: "submitted", answers, lastQuestionIndex: 7 }], assigned: [] },
     { id: "e15", title: "Result demo: free text", type: "free", closesAt: iso(Date.now() - 2 * 24 * HOUR), maxPeeks: 0,
       createdBy: rao, questions: free, mine: false, unlisted: true,
-      attempt: { status: "submitted", answers: freeAnswers, lastQuestionIndex: 3 }, assigned: [] },
+      attempts: [{ attemptNo: 1, status: "submitted", answers: freeAnswers, lastQuestionIndex: 3 }], assigned: [] },
   );
 }
 /**
@@ -196,7 +203,7 @@ function seedPrintFixtures() {
   free[2] = { ...free[2], text: long };
   const make = (id: string, title: string, type: ExamType, questions: Question[]): MockExam => ({
     id, title, type, closesAt: iso(Date.now() + 2 * 24 * HOUR), maxPeeks: 0,
-    createdBy: { id: demoUser.id, name: demoUser.name }, questions, mine: true, unlisted: true, attempt: null, assigned: [],
+    createdBy: { id: demoUser.id, name: demoUser.name }, questions, mine: true, unlisted: true, attempts: [], assigned: [],
   });
   state.exams.push(
     make("e16", "Print demo: 60 questions", "mcq", sixty),
@@ -204,10 +211,29 @@ function seedPrintFixtures() {
     make("e18", "Print demo: small multiple choice", "mcq", Array.from({ length: 5 }, (_, i) => ({ ...makeQuestion(1800 + i, ((i % 3) + 1) as Marks, "mcq"), id: `s${i + 1}` }))),
   );
 }
+/**
+ * Retake fixture, listed under Closed with Retake (the exam is still open, two submitted attempts, the better one first):
+ *   /exams/e24/result                 latest submitted attempt (2) with the Attempts table; View attempt 1 loads ?attempt=1
+ *   ?mockRetake=closed|limit|fail     what the Retake button hits (sticky; clear with ?mockRetake=)
+ * Also e1 on Home once it has been submitted, and a practice exam you create and submit.
+ */
+function seedRetakeFixtures() {
+  const qs = [1, 1, 2, 3].map((m, k) => makeQuestion(2400 + k, m as Marks, "mcq")).map((q, k) => ({ ...q, id: `r${k + 1}` }));
+  const answers = (right: number) => Object.fromEntries(qs.map((q, k) => [q.id, q.options![k < right ? q.correctIndex! : (q.correctIndex! + 1) % 4]]));
+  state.exams.push({
+    id: "e24", title: "Retake demo: Cell biology", type: "mcq", closesAt: iso(Date.now() + 3 * 24 * HOUR), maxPeeks: 0,
+    createdBy: rao, questions: qs, mine: false, assigned: [],
+    attempts: [
+      { attemptNo: 1, status: "submitted", answers: answers(2), lastQuestionIndex: 3, submittedAt: iso(Date.now() - 5 * HOUR) },
+      { attemptNo: 2, status: "submitted", answers: answers(4), lastQuestionIndex: 3, submittedAt: iso(Date.now() - 2 * HOUR) },
+    ],
+  });
+}
 seedExams();
 seedTakeFixtures();
 seedResultFixtures();
 seedPrintFixtures();
+seedRetakeFixtures();
 
 const json = (status: number, body: unknown, headers: Record<string, string> = {}) =>
   new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json", ...headers } });
@@ -232,28 +258,52 @@ function stickyFlag(name: string): string | null {
 
 const acceptingUntil = (e: MockExam) => iso(Date.parse(e.closesAt) + GRACE);
 const over = (e: MockExam) => Date.now() >= Date.parse(e.closesAt) + GRACE;
-/** bs 9.2: an in_progress attempt past the grace window is finalized on read into a submitted one (its answers kept). */
+/** The latest attempt (the one take, autosave, submit, reveal and decline act on); null when the caller has none. */
+const latest = (e: MockExam): MockAttempt | null => e.attempts[e.attempts.length - 1] ?? null;
+const MAX_ATTEMPTS = 50;
+/** bs 9.2: only the latest attempt can be unfinished; past the grace window an in_progress one is finalized on read into a submitted one (its answers kept). */
 function finalizeOnRead(e: MockExam) {
-  if (e.attempt?.status === "in_progress" && over(e)) e.attempt.status = "submitted";
+  const l = latest(e);
+  if (l?.status === "in_progress" && over(e)) { l.status = "submitted"; l.submittedAt ??= acceptingUntil(e); l.autoSubmitted = true; }
 }
-/** bs 9.4: visible once over; else for the creator unless they are mid-way through their own attempt (a row that is not submitted). */
-const keyVisible = (e: MockExam) => over(e) || (e.mine && (!e.attempt || e.attempt.status === "submitted"));
+/** bs 9.4: visible once over; else for the creator unless they are mid-way through their own latest attempt (a row that is not submitted). */
+const keyVisible = (e: MockExam) => over(e) || (e.mine && (latest(e) === null || latest(e)?.status === "submitted"));
+/** Seeds carry no submit time: a submitted attempt reads as submitted an hour per attempt before the deadline. */
+const submittedAtOf = (e: MockExam, a: MockAttempt) => a.submittedAt ?? iso(Date.parse(e.closesAt) - (e.attempts.length - a.attemptNo + 1) * HOUR);
+/** The attempt object the exam GET sends: no mock-only fields. */
+const publicAttempt = (a: MockAttempt | null): Attempt | null => {
+  if (!a) return null;
+  const rest: MockAttempt = { ...a };
+  delete rest.submittedAt;
+  delete rest.autoSubmitted;
+  return rest;
+};
 /** MCQ answers are stored as the option text (bs 9.3: exact match with options[correctIndex]). */
 const isRight = (q: Question, a: string | undefined) =>
   a !== undefined && q.correctIndex !== undefined && a === q.options?.[q.correctIndex];
 const totalMarks = (e: MockExam) => e.questions.reduce((s, q) => s + q.marks, 0);
 
-function grade(e: MockExam): { score: number | null; before: number | null } {
-  if (e.type !== "mcq" || !e.attempt) return { score: null, before: null };
+function grade(e: MockExam, a: MockAttempt | null = latest(e)): { score: number | null; before: number | null } {
+  if (e.type !== "mcq" || !a) return { score: null, before: null };
   let before = 0;
-  for (const q of e.questions) if (isRight(q, e.attempt.answers[q.id])) before += q.marks;
+  for (const q of e.questions) if (isRight(q, a.answers[q.id])) before += q.marks;
   // A correct answer that was revealed earns half its marks (bs 9.3).
   let score = before;
-  for (const r of e.attempt.revealed ?? []) {
+  for (const r of a.revealed ?? []) {
     const q = e.questions.find((x) => x.id === r.questionId);
-    if (q && isRight(q, e.attempt.answers[q.id])) score -= q.marks / 2;
+    if (q && isRight(q, a.answers[q.id])) score -= q.marks / 2;
   }
   return { before, score };
+}
+/** Highest-scoring submitted attempt (the earliest on a tie); undefined for free text. */
+function best(e: MockExam): { attempt: MockAttempt; score: number } | undefined {
+  let out: { attempt: MockAttempt; score: number } | undefined;
+  for (const a of e.attempts) {
+    if (a.status !== "submitted") continue;
+    const sc = grade(e, a).score;
+    if (sc !== null && (!out || sc > out.score)) out = { attempt: a, score: sc };
+  }
+  return out;
 }
 
 const CYCLE: RosterRow["status"][] = ["submitted", "in_progress", "not_started", "declined"];
@@ -270,19 +320,42 @@ function rosterOf(e: MockExam): RosterRow[] {
     const rows: RosterRow[] = e.assigned.filter((x) => !x.startsWith("unknown")).map((email, i) => {
       const status = CYCLE[i % CYCLE.length];
       const name = titleCase(email.split("@")[0]);
-      const row: RosterRow = { userId: `u_${email}`, name, email, status };
+      const row: RosterRow = { userId: `u_${email}`, name, email, status, attemptCount: 1, history: [{ attemptNo: 1, status, autoSubmitted: false }] };
       if (status === "submitted") {
-        row.submittedAt = iso(Date.now() - (i + 1) * HOUR);
-        if (e.type === "mcq") row.score = Math.max(0, marks - 1.5);
+        // The first submitted student retook twice: best is the second attempt, not the latest. Marks and times only.
+        const scores = e.type === "mcq" ? (i === 0 ? [marks - 4, marks - 1.5, marks - 3] : [marks - 1.5]).map((x) => Math.max(0, x)) : [];
+        const n = i === 0 ? 3 : 1;
+        row.attemptCount = n;
+        row.history = Array.from({ length: n }, (_, k) => ({
+          attemptNo: k + 1, status: "submitted" as const, score: scores[k], submittedAt: iso(Date.now() - (i + 1 + (n - k - 1) * 2) * HOUR), autoSubmitted: false,
+        }));
+        if (scores.length > 0) {
+          const top = scores.indexOf(Math.max(...scores));
+          row.score = scores[top];
+          row.submittedAt = row.history[top].submittedAt;
+        } else row.submittedAt = row.history[n - 1].submittedAt;
       }
       return row;
     });
-    if (rows.length === 0 && e.attempt) {
-      rows.push({ userId: e.createdBy.id, name: e.createdBy.name, email: state.user.email, status: e.attempt.status as RosterRow["status"] });
-    }
+    if (rows.length === 0 && latest(e)) return [practiceRow(e)]; // live: follows the creator's own attempts
     e.roster = rows;
   }
   return e.roster;
+}
+/** A practice exam lists the creator's own attempts: best score, count and history, like any other student. */
+function practiceRow(e: MockExam): RosterRow {
+  const l = latest(e) as MockAttempt;
+  const b = best(e);
+  const anySubmitted = e.attempts.some((a) => a.status === "submitted");
+  const status = (anySubmitted ? "submitted" : l.status) as RosterRow["status"];
+  const history = e.attempts.map((a) => {
+    const sc = a.status === "submitted" ? grade(e, a).score : null;
+    return { attemptNo: a.attemptNo, status: a.status as RosterRow["status"], ...(sc !== null ? { score: sc } : {}),
+      ...(a.status === "submitted" ? { submittedAt: submittedAtOf(e, a) } : {}), autoSubmitted: a.autoSubmitted ?? false };
+  });
+  const shown = b?.attempt ?? [...e.attempts].reverse().find((a) => a.status === "submitted");
+  return { userId: e.createdBy.id, name: e.createdBy.name, email: state.user.email, status, attemptCount: e.attempts.length, history,
+    ...(b ? { score: b.score } : {}), ...(shown ? { submittedAt: submittedAtOf(e, shown) } : {}) };
 }
 function rosterCounts(e: MockExam) {
   const r = rosterOf(e);
@@ -299,13 +372,21 @@ function listItem(e: MockExam, scope: string): ExamListItem {
   if (scope === "created") {
     return { ...base, counts: rosterCounts(e) };
   }
-  const status = (over(e) && e.attempt?.status === "not_started" ? "missed" : e.attempt?.status) as AttemptStatus;
-  const g = e.attempt?.status === "submitted" ? grade(e) : null;
-  return { ...base, attemptStatus: status, ...(g?.score != null ? { score: g.score, maxScore: totalMarks(e) } : {}) };
+  const l = latest(e);
+  const anySubmitted = e.attempts.some((a) => a.status === "submitted");
+  // bs 8.5: "submitted" if any attempt is, except an open item mid-retake, which reports its unfinished latest attempt.
+  const derived = (over(e) && l?.status === "not_started" ? "missed" : l?.status) as AttemptStatus;
+  const status = anySubmitted && !(scope === "open" && l?.status !== "submitted") ? "submitted" : derived;
+  const b = best(e);
+  return {
+    ...base, attemptStatus: status, attemptCount: e.attempts.length,
+    canRetake: l?.status === "submitted" && !over(e) && e.attempts.length < MAX_ATTEMPTS,
+    ...(b ? { score: b.score, maxScore: totalMarks(e) } : {}),
+  };
 }
 
 function keyedQuestions(e: MockExam, visible: boolean): Question[] {
-  const revealed = new Map((e.attempt?.revealed ?? []).map((r) => [r.questionId, r]));
+  const revealed = new Map((latest(e)?.revealed ?? []).map((r) => [r.questionId, r]));
   return e.questions.map((q) => {
     if (visible) return q;
     const rest: Question = { ...q };
@@ -557,9 +638,9 @@ export function mockFetch(method: string, rawPath: string, body: unknown, idempo
       maxPeeks: b.maxPeeks ?? (emails.length === 0 ? 3 : 0),
       createdBy: { id: state.user.id, name: state.user.name },
       questions: b.questions.map((qq, i) => ({ ...qq, id: `q${state.seq}-${i}` })),
-      mine: true, attempt: null, assigned: emails,
+      mine: true, attempts: [], assigned: emails,
     };
-    if (emails.length === 0) exam.attempt = { status: "not_started", answers: {}, lastQuestionIndex: 0, revealed: [], peeksLeft: exam.maxPeeks };
+    if (emails.length === 0) exam.attempts = [{ attemptNo: 1, status: "not_started", answers: {}, lastQuestionIndex: 0, revealed: [], peeksLeft: exam.maxPeeks }];
     state.exams.unshift(exam);
     const flagged = (q.get("mockUnknown") ?? "").split(",").map((e) => e.trim().toLowerCase()).filter(Boolean);
     const unknownEmails = emails.filter((e) => e.startsWith("unknown") || flagged.includes(e));
@@ -581,10 +662,12 @@ export function mockFetch(method: string, rawPath: string, body: unknown, idempo
       if (trigger === "declLast") for (const e of state.exams) if (e.id === "e1") e.closesAt = iso(Date.now() + 30 * 24 * HOUR);
       const list = state.exams.filter((e) => {
         if (e.unlisted) return false;
-        if (trigger === "declOnly" && scope === "open") return e.id === "e1" && e.attempt?.status === "not_started";
+        if (trigger === "declOnly" && scope === "open") return e.id === "e1" && latest(e)?.status === "not_started";
         if (scope === "created") return e.mine;
-        if (!e.attempt || e.attempt.status === "declined") return false;
-        const isClosed = over(e) || e.attempt.status === "submitted";
+        const l = latest(e);
+        if (!l || l.status === "declined") return false;
+        // A retake in progress is open again (Resume); a submitted latest attempt stays Closed, with Retake.
+        const isClosed = over(e) || l.status === "submitted";
         return scope === "closed" ? isClosed : !isClosed;
       });
       // created: newest first (the store prepends new exams); others: soonest deadline first.
@@ -619,7 +702,7 @@ export function mockFetch(method: string, rawPath: string, body: unknown, idempo
         exam: { id: exam.id, title: exam.title, type: exam.type, totalMarks: totalMarks(exam), closesAt: exam.closesAt,
           acceptingUntil: acceptingUntil(exam), maxPeeks: exam.maxPeeks, createdBy: exam.createdBy,
           questions: keyedQuestions(exam, vis || keyFlag === "leak").map((q) => { const c = { ...q }; delete c.sourceDocId; delete c.sourceDocName; return c; }) },
-        attempt: exam.attempt, keyVisible: vis, acceptingUntil: acceptingUntil(exam),
+        attempt: publicAttempt(latest(exam)), attemptCount: exam.attempts.length, keyVisible: vis, acceptingUntil: acceptingUntil(exam),
       });
     }
     if (method === "PUT" && sub === "attempt") {
@@ -639,8 +722,9 @@ export function mockFetch(method: string, rawPath: string, body: unknown, idempo
       }
       if (t === "422other") return err(422, "validation", "Unknown question.", { "answers[zz]": "Unknown question" });
       if (over(exam)) return err(409, "exam_closed", "This exam is closed.");
-      if (!exam.attempt || exam.attempt.status === "submitted") return err(409, "conflict", "Already submitted.");
-      exam.attempt = { ...exam.attempt, status: "in_progress", answers: b.answers, lastQuestionIndex: b.lastQuestionIndex, savedAt: st() };
+      const cur = latest(exam);
+      if (!cur || cur.status === "submitted") return err(409, "conflict", "Already submitted.");
+      exam.attempts[exam.attempts.length - 1] = { ...cur, status: "in_progress", answers: b.answers, lastQuestionIndex: b.lastQuestionIndex, savedAt: st() };
       return json(200, { savedAt: st(), serverTime: st() });
     }
     if (method === "POST" && sub === "submit") {
@@ -654,12 +738,14 @@ export function mockFetch(method: string, rawPath: string, body: unknown, idempo
       if (t === "failOnce" && !sg.__mockSubmitFailed) { sg.__mockSubmitFailed = true; throw new TypeError("mock network failure"); }
       if (t === "closed") return err(409, "exam_closed", "This exam is closed.");
       if (t === "slow" && !resumed) return new Promise((res) => setTimeout(() => res(mockFetch(method, rawPath, body, idempotencyKey, true)), 2000));
-      if (!exam.attempt) return err(404, "not_found", "That item isn't available.");
-      if (exam.attempt.status !== "submitted") {
+      const cur = latest(exam);
+      if (!cur) return err(404, "not_found", "That item isn't available.");
+      if (cur.status !== "submitted") {
         if (over(exam)) return err(409, "exam_closed", "This exam is closed.");
-        if (b.answers) exam.attempt.answers = b.answers;
-        if (b.lastQuestionIndex !== undefined) exam.attempt.lastQuestionIndex = b.lastQuestionIndex;
-        exam.attempt.status = "submitted";
+        if (b.answers) cur.answers = b.answers;
+        if (b.lastQuestionIndex !== undefined) cur.lastQuestionIndex = b.lastQuestionIndex;
+        cur.status = "submitted";
+        cur.submittedAt = st();
       }
       const g = grade(exam);
       return json(200, { status: "submitted", score: g.score, scoreBeforePeeks: g.before, maxScore: totalMarks(exam),
@@ -667,6 +753,7 @@ export function mockFetch(method: string, rawPath: string, body: unknown, idempo
     }
     if (method === "POST" && sub === "reveal") {
     const b = as<RevealBody>();
+      const cur = latest(exam);
       // Test triggers (mock only), sticky from the page URL: ?mockReveal=403 (peeking off) | visible (409, key already visible) | 409 (no peeks left,
       // for a question not yet revealed) | closed (409 exam_closed) | fail (network failure) | slow (2 s).
       // Log: globalThis.__mockRevealLog = [{ questionId }] (one entry per request that reached the mock).
@@ -677,37 +764,54 @@ export function mockFetch(method: string, rawPath: string, body: unknown, idempo
       if (t === "403") return err(403, "forbidden", "Peeking is turned off for this exam.");
       if (t === "closed") return err(409, "exam_closed", "This exam is closed.");
       if (t === "visible") return err(409, "conflict", "The answer is already available.");
-      if (t === "409" && !(exam.attempt?.revealed ?? []).some((r) => r.questionId === b.questionId)) return err(409, "conflict", "No peeks left.");
+      if (t === "409" && !(cur?.revealed ?? []).some((r) => r.questionId === b.questionId)) return err(409, "conflict", "No peeks left.");
       if (exam.maxPeeks === 0) return err(403, "forbidden", "Peeking is off for this exam.");
-      if (keyVisible(exam) || !exam.attempt) return err(409, "conflict", "The answer is already available.");
+      if (keyVisible(exam) || !cur) return err(409, "conflict", "The answer is already available.");
       if (over(exam)) return err(409, "exam_closed", "This exam is closed.");
-      const left = exam.attempt.peeksLeft ?? 0;
+      const left = cur.peeksLeft ?? 0;
       const q = exam.questions.find((x) => x.id === b.questionId);
       if (!q) return err(404, "not_found", "That item isn't available.");
       if (left <= 0) return err(409, "conflict", "No peeks left.");
-      const revealed = exam.attempt.revealed ?? [];
+      const revealed = cur.revealed ?? [];
       if (!revealed.some((r) => r.questionId === q.id)) {
-        if (exam.attempt.status === "not_started") exam.attempt.status = "in_progress"; // a reveal starts the attempt (bs 9.6)
+        if (cur.status === "not_started") cur.status = "in_progress"; // a reveal starts the attempt (bs 9.6)
         revealed.push({ questionId: q.id, correctIndex: q.correctIndex, modelAnswer: q.modelAnswer });
-        exam.attempt.revealed = revealed;
-        exam.attempt.peeksLeft = left - 1;
+        cur.revealed = revealed;
+        cur.peeksLeft = left - 1;
       }
       return json(200, { questionId: q.id, correctIndex: q.correctIndex, modelAnswer: q.modelAnswer,
-        peeksLeft: exam.attempt.peeksLeft, serverTime: st() });
+        peeksLeft: cur.peeksLeft, serverTime: st() });
+    }
+    if (method === "POST" && sub === "retake") {
+      // Test trigger (mock only), sticky from the page URL: ?mockRetake=closed (409 exam_closed) | limit (409, the
+      // 50-attempt limit) | fail (network failure). ?mockRetake= clears it. Log: globalThis.__mockRetakeLog = [examId].
+      const t = stickyFlag("mockRetake");
+      ((globalThis as unknown as { __mockRetakeLog?: string[] }).__mockRetakeLog ??= []).push(exam.id);
+      if (t === "fail") throw new TypeError("mock network failure");
+      const cur = latest(exam);
+      if (!cur || cur.status === "declined") return err(404, "not_found", "That item isn't available.");
+      // Idempotent: an unfinished latest attempt is returned and nothing is created.
+      if (cur.status !== "submitted") return json(200, { attemptNo: cur.attemptNo, serverTime: st() });
+      if (t === "closed" || over(exam)) return err(409, "exam_closed", "This exam is closed.");
+      if (t === "limit" || exam.attempts.length >= MAX_ATTEMPTS) return err(409, "conflict", `You have reached the limit of ${MAX_ATTEMPTS} attempts for this exam.`);
+      const attemptNo = cur.attemptNo + 1;
+      exam.attempts.push({ attemptNo, status: "not_started", answers: {}, lastQuestionIndex: 0, revealed: [], peeksLeft: exam.maxPeeks });
+      return json(200, { attemptNo, serverTime: st() });
     }
     if (method === "POST" && sub === "decline") {
       // Test triggers (mock only), from the page URL: ?mockDecline=409 (the exam was started elsewhere)
       // | 404 (the exam is gone) | 403 | fail (500).
+      const cur = latest(exam);
       const t = typeof window === "undefined" ? null : new URLSearchParams(window.location.search).get("mockDecline");
       if (t === "409") {
-        if (exam.attempt) exam.attempt.status = "in_progress";
+        if (cur) cur.status = "in_progress";
         return err(409, "conflict", "You've already started this exam.");
       }
       if (t === "404") { state.exams = state.exams.filter((e) => e.id !== exam.id); return err(404, "not_found", "That item isn't available."); }
       if (t === "403") return err(403, "forbidden", "You don't have access to that.");
       if (t === "fail") return err(500, "internal", "Something went wrong.");
-      if (exam.attempt && exam.attempt.status !== "not_started" && exam.attempt.status !== "declined") return err(409, "conflict", "You've already started this exam.");
-      if (exam.attempt) exam.attempt.status = "declined";
+      if (cur && cur.status !== "not_started" && cur.status !== "declined") return err(409, "conflict", "You've already started this exam.");
+      if (cur) cur.status = "declined";
       return nothing();
     }
     if (method === "GET" && sub === "status") {
@@ -737,7 +841,7 @@ export function mockFetch(method: string, rawPath: string, body: unknown, idempo
       if (!exam.mine || t === "403") return err(403, "forbidden", "You can't assign exams to that account.");
       if (over(exam)) return err(409, "exam_closed", "This exam is closed.");
       if (t === "422") return err(422, "validation", "That email address isn't valid.", { emails: "invalid" });
-      const roster = rosterOf(exam);
+      const roster = (exam.roster ??= [...rosterOf(exam)]);
       const emails = [...new Set((b.emails ?? []).map((x) => String(x).trim().toLowerCase()))];
       // Unknown: addresses starting "unknown", and (student creators) addresses starting "teacher" (not a student account).
       const unknown = emails.filter((x) => x.startsWith("unknown") || (state.user.role === "student" && x.startsWith("teacher")));
@@ -747,27 +851,34 @@ export function mockFetch(method: string, rawPath: string, body: unknown, idempo
       const cap = state.user.role === "student" ? 10 : 50;
       if (roster.length + assigned.length > cap) return err(422, "validation", `You can assign up to ${cap} people in total.`, { emails: "over cap" });
       (globalThis as unknown as { __mockAssigned?: boolean }).__mockAssigned = true;
-      for (const x of assigned) roster.push({ userId: `u_${x}`, name: titleCase(x.split("@")[0]), email: x, status: "not_started" });
+      for (const x of assigned) roster.push({ userId: `u_${x}`, name: titleCase(x.split("@")[0]), email: x, status: "not_started", attemptCount: 1, history: [{ attemptNo: 1, status: "not_started", autoSubmitted: false }] });
       exam.assigned.push(...assigned);
       return json(200, { assigned, alreadyAssigned: already, unknown });
     }
     if (method === "GET" && sub === "result") {
-      if (!exam.attempt) return err(404, "not_found", "That item isn't available.");
+      const l = latest(exam);
+      if (!l || l.status === "declined") return err(404, "not_found", "That item isn't available.");
       finalizeOnRead(exam);
       // Test trigger (mock only): ?mockResult=403 refuses the result GET (toast and Home, fs 8.1); clear with ?mockResult=.
       if (stickyFlag("mockResult") === "403") return err(403, "forbidden", "You don't have access to that.");
       // Mock-only page-URL flag (see seedResultFixtures), honoured for e14 and e15 only: hidden | leak | fractional | unfinished.
       const flag = ["e14", "e15", "e21", "e22", "e23"].includes(exam.id) ? stickyFlag("mockResult") : null;
       const isOver = over(exam);
-      if (flag === "unfinished" || (exam.attempt.status !== "submitted" && !isOver)) return err(409, "conflict", "Submit the exam to see results.");
+      const wanted = query.get("attempt");
+      // bs 8.5: without ?attempt the latest submitted attempt (so a retake in progress is never a 409); ?attempt=N that attempt.
+      const att = wanted !== null
+        ? exam.attempts.find((a) => String(a.attemptNo) === wanted)
+        : [...exam.attempts].reverse().find((a) => a.status === "submitted") ?? (isOver ? exam.attempts[exam.attempts.length - 1] : undefined);
+      if (wanted !== null && !att) return err(404, "not_found", "That item isn't available.");
+      if (!att || flag === "unfinished" || (att.status !== "submitted" && !isOver)) return err(409, "conflict", "Submit the exam to see results.");
       const hide = flag === "hidden" || flag === "leak";
       const vis = hide ? false : keyVisible(exam);
-      const never = exam.attempt.status !== "submitted";
-      const g = never ? { score: null, before: null } : grade(exam);
+      const never = att.status !== "submitted";
+      const g = never ? { score: null, before: null } : grade(exam, att);
       if (flag === "fractional" && g.score !== null) { g.score = 27.5; g.before = 27.5; }
-      const revealed = new Map((exam.attempt.revealed ?? []).map((r) => [r.questionId, r]));
+      const revealed = new Map((att.revealed ?? []).map((r) => [r.questionId, r]));
       const questions: ResultQuestion[] = exam.questions.map((q) => {
-        const yours = never ? "" : exam.attempt!.answers[q.id] ?? "";
+        const yours = never ? "" : att.answers[q.id] ?? "";
         const r: ResultQuestion = { id: q.id, marks: q.marks, text: q.text, options: q.options, yourAnswer: yours, revealed: revealed.has(q.id) };
         const answerText = q.options && q.correctIndex !== undefined ? q.options[q.correctIndex] : undefined;
         if (vis) {
@@ -781,13 +892,21 @@ export function mockFetch(method: string, rawPath: string, body: unknown, idempo
         }
         return r;
       });
+      const bestNo = best(exam)?.attempt.attemptNo;
       return json(200, {
         serverTime: st(),
         exam: { id: exam.id, title: exam.title, type: exam.type, totalMarks: totalMarks(exam), closesAt: exam.closesAt,
           acceptingUntil: acceptingUntil(exam), maxPeeks: exam.maxPeeks },
+        attemptNo: att.attemptNo, ...(bestNo !== undefined ? { bestAttemptNo: bestNo } : {}),
+        // Marks for every attempt are always visible; only per-question correctness follows the key rule.
+        attempts: exam.attempts.map((a) => {
+          const sc = a.status === "submitted" ? grade(exam, a).score : null;
+          return { attemptNo: a.attemptNo, status: a.status, ...(sc !== null ? { score: sc } : {}), maxScore: totalMarks(exam),
+            ...(a.status === "submitted" ? { submittedAt: submittedAtOf(exam, a) } : {}), autoSubmitted: a.autoSubmitted ?? false };
+        }),
         status: never ? "missed" : "submitted",
         score: g.score, scoreBeforePeeks: g.before, maxScore: totalMarks(exam),
-        peeksUsed: exam.attempt.revealed?.length ?? 0,
+        peeksUsed: att.revealed?.length ?? 0,
         keyVisible: vis, keyAvailableAt: vis ? null : acceptingUntil(exam),
         questions,
       });

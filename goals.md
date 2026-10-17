@@ -93,6 +93,7 @@ Rules for coding agents:
 ### 7. Taking an Exam
 - [ ] **P0** Complete the exam in one sitting and submit.
 - [ ] **P0** Save progress and resume later where I left off, within the deadline.
+- [ ] **P0** Retake a submitted exam any number of times until it closes. Every attempt keeps its own answers and marks, and all of them stay visible to the person who took it. The creator sees each student's best score, attempt count and per-attempt marks, but never a student's answers. Each retake gets a fresh peek budget; a technical safety limit of 50 attempts per person per exam applies.
 - [ ] **P0** The answer key is visible to the exam's creator, and to everyone else once the exam is over (the deadline plus a 60-second grace window). A creator who is taking their own exam does not see the key until they submit.
 - [ ] **P0** The deadline has a 60-second grace window so the final auto-submit at zero is never lost.
 - [ ] **P1** Peek at the answer to a single question during the exam for a score penalty: a revealed question earns at most half its marks. The result shows the score with and without the penalty.
@@ -160,6 +161,7 @@ Note: `frontend-spec.md` already describes the viewer's Generate button, per-que
 - Parents see linked students' exams and scores, but not private documents.
 - MVP grading: multiple choice is automatic, and free text is self-checked or manually marked.
 - Timer is a fixed deadline. Saving doesn't pause it, and saved answers are auto-submitted at the deadline.
+- Retakes: unlimited until the exam closes (50-attempt safety limit). The answer key rule does not change: per-question correctness stays hidden from non-creators until the exam is over, while every attempt's total marks are visible straight after submitting.
 - File limit is 20 MB per file, in PDF, TXT, JPG, or PNG. One generation job can use up to 10 files, 20 MB and 100 PDF pages in total. For a long PDF the user can choose a page range (From and To) and only those pages count.
 - **LLM budget: about $20 a month.** The app keeps its own estimate of LLM spend and refuses new generation jobs once it reaches $15 for the month (`LLM_MONTHLY_BUDGET_USD`); the LLM key has a $20 monthly limit at the provider, set before the production deploy. Other limits: 3 generate jobs and 10 regenerates per user a day, 10 jobs a day for the whole app. On the default cheap model that is a few hundred jobs a month; on Sonnet or Opus it is a few dozen.
 - Both sign-in methods are offered. Google is the lower-friction path; email and password stays because many students are minors or use school accounts that may not allow Google sign-in.

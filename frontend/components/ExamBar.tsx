@@ -8,6 +8,8 @@ import { cn } from "@/lib/utils";
 
 export interface ExamBarProps {
   title: string;
+  /** "Attempt 2": shown beside the title once the exam has more than one attempt. */
+  attemptLabel?: string | null;
   save: AutosaveState;
   /** Peeks left, shown as "💡 N left". Undefined hides the counter (peeks off or maxPeeks 0). */
   peeksLeft?: number;
@@ -20,14 +22,17 @@ export interface ExamBarProps {
   onSaveExit: () => void;
 }
 
-export function ExamBar({ title, save, peeksLeft, closesAtIso, offsetMs, exiting, exitDisabled, onSaveExit }: ExamBarProps) {
+export function ExamBar({ title, attemptLabel, save, peeksLeft, closesAtIso, offsetMs, exiting, exitDisabled, onSaveExit }: ExamBarProps) {
   const text = autosaveText(save);
   const failing = save.status === "retrying" || save.status === "rejected";
   return (
     <header className="sticky top-0 z-30 min-h-14 border-b border-line bg-white">
       {/* Up to 480 px the bar wraps: row 1 title + timer, row 2 save state + Save & exit (title never squeezed). */}
       <div className="page flex min-h-14 flex-wrap items-center gap-x-3 gap-y-1 py-1 max-[480px]:py-1.5">
-        <div className="order-1 min-w-[140px] flex-1 truncate font-semibold min-[481px]:order-none min-[481px]:min-w-0">{title}</div>
+        <div className="order-1 min-w-[140px] flex-1 truncate font-semibold min-[481px]:order-none min-[481px]:min-w-0">
+          {title}
+          {attemptLabel && <span className="ml-2 text-[13px] font-normal text-muted">{attemptLabel}</span>}
+        </div>
         <div aria-hidden="true" className="order-3 h-0 basis-full min-[481px]:hidden" />
         {text && (
           <span aria-hidden="true" className={cn("order-4 shrink-0 whitespace-nowrap text-[13px] max-[480px]:mr-auto min-[481px]:order-none", failing ? "text-bad" : "text-muted")}>{text}</span>

@@ -21,7 +21,7 @@ func (e *env) seedRes(t *testing.T, examID, userID, status string, answers map[s
 	if revealed == nil {
 		revealed = []string{}
 	}
-	a := store.Attempt{ExamID: examID, UserID: userID, Status: status, Answers: answers, Revealed: revealed,
+	a := store.Attempt{AttemptNo: 1, ExamID: examID, UserID: userID, Status: status, Answers: answers, Revealed: revealed,
 		ScoreHalves: halves, ScoreBeforePeeksHalves: before, CreatedAt: t0}
 	if status == store.AttemptSubmitted {
 		s := t0.Add(time.Hour)
@@ -34,7 +34,7 @@ func (e *env) seedRes(t *testing.T, examID, userID, status string, answers map[s
 
 func (e *env) result(t *testing.T, u store.User, id string) (exams.ResultView, map[string]any) {
 	t.Helper()
-	v, err := e.svc.Result(context.Background(), u, id)
+	v, err := e.svc.Result(context.Background(), u, id, 0)
 	if err != nil {
 		t.Fatalf("Result: %v", err)
 	}
@@ -71,7 +71,7 @@ func TestResultBeforeSubmitAndNotOver409(t *testing.T) {
 		e := resEnv(t, "mcq")
 		e.seedRes(t, "e1", "s1", st, nil, nil, nil, nil)
 		e.clk.Set(t0.Add(time.Hour))
-		_, err := e.svc.Result(context.Background(), e.student, "e1")
+		_, err := e.svc.Result(context.Background(), e.student, "e1", 0)
 		wantStatus(t, err, 409)
 		if err == nil || !strings.Contains(err.Error(), "Submit the exam to see results.") {
 			t.Fatalf("%s: message: %v", st, err)
@@ -87,7 +87,7 @@ func TestResultAfterOverFinalizesFirst(t *testing.T) {
 	if v.Status != "submitted" || m["score"] != float64(3) || m["scoreBeforePeeks"] != float64(3) {
 		t.Fatalf("%s", marshal(t, v))
 	}
-	row, _ := e.attempts.GetAttempt(context.Background(), "e1", "s1")
+	row, _ := e.attempts.GetAttempt(context.Background(), "e1", "s1", 1)
 	if row.Status != store.AttemptSubmitted || !row.AutoSubmitted || row.ScoreHalves == nil || *row.ScoreHalves != 6 {
 		t.Fatalf("row not finalized: %+v", row)
 	}
@@ -148,7 +148,7 @@ func TestResultMissedStatusNoScoreEmptyAnswers(t *testing.T) {
 			t.Fatalf("%v", q)
 		}
 	}
-	row, _ := e.attempts.GetAttempt(context.Background(), "e1", "s1")
+	row, _ := e.attempts.GetAttempt(context.Background(), "e1", "s1", 1)
 	if row.Status != store.AttemptNotStarted {
 		t.Fatalf("missed is derived, never stored: %s", row.Status)
 	}
@@ -164,7 +164,7 @@ func TestResultDeclined404(t *testing.T) {
 		u  store.User
 		id string
 	}{{e.student, "e1"}, {other, "e1"}, {e.student, "nope"}, {e.teacher, "e1"}} { // declined, stranger, missing, creator without a row
-		_, err := e.svc.Result(context.Background(), c.u, c.id)
+		_, err := e.svc.Result(context.Background(), c.u, c.id, 0)
 		wantStatus(t, err, 404)
 		errs = append(errs, err.Error())
 	}
@@ -271,9 +271,9 @@ func TestResultCreatorCanReadOwnWhenKeyVisible(t *testing.T) {
 	e := resEnv(t, "mcq")
 	e.seedRes(t, "e1", "t1", store.AttemptInProgress, nil, nil, nil, nil)
 	e.clk.Set(t0.Add(time.Hour))
-	_, err := e.svc.Result(context.Background(), e.teacher, "e1")
+	_, err := e.svc.Result(context.Background(), e.teacher, "e1", 0)
 	wantStatus(t, err, 409)
-	if err := e.attempts.Submit(context.Background(), store.Attempt{ExamID: "e1", UserID: "t1", Status: store.AttemptSubmitted,
+	if err := e.attempts.Submit(context.Background(), store.Attempt{AttemptNo: 1, ExamID: "e1", UserID: "t1", Status: store.AttemptSubmitted,
 		Answers: map[string]string{"q3": "o0"}, Revealed: []string{}, ScoreHalves: ip(6), ScoreBeforePeeksHalves: ip(6),
 		SubmittedAt: &t0, CreatedAt: t0}); err != nil {
 		t.Fatal(err)
@@ -345,7 +345,7 @@ func TestResultIsReadOnlyForSubmittedAttempt(t *testing.T) {
 			clk := clock.NewFake(c.at)
 			svc := exams.NewService(e.users, rx, ra, clk)
 			svc.SetFinalizer(fin)
-			_, err := svc.Result(context.Background(), c.user(e), c.examID)
+			_, err := svc.Result(context.Background(), c.user(e), c.examID, 0)
 			if c.wantCode == 200 {
 				if err != nil {
 					t.Fatal(err)

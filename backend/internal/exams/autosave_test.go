@@ -30,7 +30,7 @@ func (e *env) autosave(u store.User, answers map[string]string, idx int) (time.T
 
 func (e *env) row(t *testing.T) store.Attempt {
 	t.Helper()
-	a, err := e.attempts.GetAttempt(context.Background(), "e1", "s1")
+	a, err := e.attempts.GetAttempt(context.Background(), "e1", "s1", 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -90,7 +90,7 @@ func TestAutosaveReplacesWholeMap(t *testing.T) {
 
 func TestAutosaveLeavesRevealedAlone(t *testing.T) {
 	e := asEnv(t)
-	if _, err := e.attempts.Reveal(context.Background(), "e1", "s1", "q1", 3, t0); err != nil {
+	if _, err := e.attempts.Reveal(context.Background(), "e1", "s1", 1, "q1", 3, t0); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := e.autosave(e.student, map[string]string{"q2": "x"}, 1); err != nil {
@@ -223,7 +223,7 @@ func TestAutosaveAfterSubmit409Conflict(t *testing.T) {
 
 func TestAutosaveOnDeclinedOrNoAttempt404(t *testing.T) {
 	e := asEnv(t)
-	if err := e.attempts.Decline(context.Background(), "e1", "s1"); err != nil {
+	if err := e.attempts.Decline(context.Background(), "e1", "s1", 1); err != nil {
 		t.Fatal(err)
 	}
 	_, declined := e.autosave(e.student, map[string]string{}, 0)
@@ -304,7 +304,7 @@ func (e *env) bigExam(t *testing.T) {
 	if err := e.exams.PutExam(context.Background(), x); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := e.attempts.PutAttemptIfAbsent(context.Background(), store.Attempt{ExamID: "e60", UserID: "s1",
+	if _, err := e.attempts.PutAttemptIfAbsent(context.Background(), store.Attempt{AttemptNo: 1, ExamID: "e60", UserID: "s1",
 		Status: store.AttemptNotStarted, Answers: map[string]string{}, Revealed: []string{}, CreatedAt: t0}); err != nil {
 		t.Fatal(err)
 	}
@@ -348,7 +348,7 @@ func TestAutosaveTotalAnswerBytesBoundary(t *testing.T) {
 	}
 	over := answersOfBytes(exams.MaxAutosaveBytes + 1)
 	wantField(t, save(over), "answers")
-	a, _ := e.attempts.GetAttempt(context.Background(), "e60", "s1")
+	a, _ := e.attempts.GetAttempt(context.Background(), "e60", "s1", 1)
 	if len(a.Answers) != len(at) {
 		t.Fatal("the rejected save replaced the stored answers")
 	}
@@ -396,7 +396,7 @@ func TestAutosaveDeclinedAfterDeadlineIs404NotClosed(t *testing.T) {
 	e := asEnv(t)
 	f := &recFin{}
 	e.svc.SetFinalizer(f)
-	if err := e.attempts.Decline(context.Background(), "e1", "s1"); err != nil {
+	if err := e.attempts.Decline(context.Background(), "e1", "s1", 1); err != nil {
 		t.Fatal(err)
 	}
 	e.clk.Set(closes.Add(time.Hour))

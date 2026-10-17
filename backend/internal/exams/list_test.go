@@ -37,7 +37,7 @@ func (e *env) seedExam(t *testing.T, id, creator, typ string, closesAt, createdA
 
 func (e *env) seedAttempt(t *testing.T, examID, userID, status string, halves *int) {
 	t.Helper()
-	a := store.Attempt{ExamID: examID, UserID: userID, Status: status, Answers: map[string]string{}, Revealed: []string{},
+	a := store.Attempt{AttemptNo: 1, ExamID: examID, UserID: userID, Status: status, Answers: map[string]string{}, Revealed: []string{},
 		ScoreHalves: halves, CreatedAt: t0}
 	if status == store.AttemptSubmitted {
 		s := t0
@@ -423,7 +423,7 @@ func TestFinalizerCalledOnlyForExpiredInProgress(t *testing.T) {
 
 func (e *env) seedSubmittedAt(t *testing.T, examID, userID string, at time.Time) {
 	t.Helper()
-	a := store.Attempt{ExamID: examID, UserID: userID, Status: store.AttemptSubmitted, Answers: map[string]string{},
+	a := store.Attempt{AttemptNo: 1, ExamID: examID, UserID: userID, Status: store.AttemptSubmitted, Answers: map[string]string{},
 		Revealed: []string{}, ScoreHalves: ip(2), SubmittedAt: &at, CreatedAt: t0}
 	if _, err := e.attempts.PutAttemptIfAbsent(context.Background(), a); err != nil {
 		t.Fatal(err)

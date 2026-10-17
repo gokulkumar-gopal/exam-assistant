@@ -22,7 +22,7 @@ Source of truth: goals.md, backend-spec.md (its section 8 is the API contract), 
 | M1 | Documents | A user can sign up or log in (password and Google), upload a PDF and a camera photo, see them in the library, view them, and delete them. |
 | M2 | Generation | A real PDF and a real camera photo generate a question set on the default model. The model select works, the budget guard and quotas are enforced, the user can edit and regenerate questions. Gemini is the default if its key is enabled, Claude is the fallback. |
 | M3 | Exams | A user publishes an exam, assigns it (role rules enforced), the assignee sees it under Open and can decline it, the creator sees status. |
-| M4 | Taking and printing | An assignee takes a timed exam with autosave and auto-submit, the grace window and answer-key rule hold, the result screen shows, and the print view prints three clean parts. |
+| M4 | Taking and printing | An assignee takes a timed exam with autosave and auto-submit, the grace window and answer-key rule hold, the result screen shows, and the print view prints three clean parts. Retakes (B-4.7, F-4.6): a submitted exam can be retaken any number of times until it closes, every attempt keeps its answers and marks, and the creator sees best score and attempt count. |
 | M5a | Usage (P1) | Per-model usage counters feed `GET /ai/usage` and the `/usage` page updates live. The monthly spend counter and budget guard are built earlier, in M2, and are not cuttable. |
 | M5b | Peeks (P1) | Reveal, half-mark scoring and the header counter work. |
 | PROD | Production deploy | Spend-limit gates pass, the prod stack is up, the prod Google client and Vercel production are wired, and the device smoke test passes. |

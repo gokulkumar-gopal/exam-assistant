@@ -13,18 +13,18 @@ const before = CLOSES - 3_600_000;
 
 describe("rowView", () => {
   it("not started, open: neutral 'Not started' label and Start", () => {
-    expect(rowView(base, before)).toEqual({ pill: { variant: "neutral", text: "Not started" }, action: "Start" });
+    expect(rowView(base, before)).toEqual({ pill: { variant: "neutral", text: "Not started" }, action: "Start", retake: false });
   });
   it("in progress: warn and Resume", () => {
     expect(rowView({ ...base, attemptStatus: "in_progress" }, before))
-      .toEqual({ pill: { variant: "warn", text: "In progress" }, action: "Resume" });
+      .toEqual({ pill: { variant: "warn", text: "In progress" }, action: "Resume", retake: false });
   });
   it("submitted: ok with score and View result", () => {
     expect(rowView({ ...base, attemptStatus: "submitted", score: 34, maxScore: 40 }, before))
-      .toEqual({ pill: { variant: "ok", text: "Submitted · 34/40" }, action: "View result" });
+      .toEqual({ pill: { variant: "ok", text: "Best 34/40" }, action: "View result", retake: false });
   });
   it("submitted with a .5 score", () => {
-    expect(rowView({ ...base, attemptStatus: "submitted", score: 27.5, maxScore: 30 }, before).pill?.text).toBe("Submitted · 27.5/30");
+    expect(rowView({ ...base, attemptStatus: "submitted", score: 27.5, maxScore: 30 }, before).pill?.text).toBe("Best 27.5/30");
   });
   it("submitted free-text (no score): no suffix", () => {
     expect(rowView({ ...base, type: "free", attemptStatus: "submitted" }, before).pill)
@@ -32,10 +32,10 @@ describe("rowView", () => {
   });
   it("missed: bad and View result", () => {
     expect(rowView({ ...base, attemptStatus: "missed" }, CLOSES + 3_600_000))
-      .toEqual({ pill: { variant: "bad", text: "Missed" }, action: "View result" });
+      .toEqual({ pill: { variant: "bad", text: "Missed" }, action: "View result", retake: false });
   });
   it("past closesAt, before acceptingUntil: Closing… and Resume (even if not started)", () => {
-    const v = { pill: { variant: "warn", text: "Closing…" }, action: "Resume" };
+    const v = { pill: { variant: "warn", text: "Closing…" }, action: "Resume", retake: false };
     expect(rowView({ ...base, attemptStatus: "in_progress" }, CLOSES + 30_000)).toEqual(v);
     expect(rowView(base, CLOSES + 30_000)).toEqual(v);
   });
@@ -43,18 +43,55 @@ describe("rowView", () => {
     expect(rowView(base, CLOSES - 1).pill?.text).toBe("Not started");
     expect(rowView(base, CLOSES).pill?.text).toBe("Closing…");
     expect(rowView(base, UNTIL - 1).pill?.text).toBe("Closing…");
-    expect(rowView(base, UNTIL)).toEqual({ pill: { variant: "bad", text: "Missed" }, action: "View result" });
+    expect(rowView(base, UNTIL)).toEqual({ pill: { variant: "bad", text: "Missed" }, action: "View result", retake: false });
   });
   it("a submitted exam stays submitted after the deadline", () => {
-    expect(rowView({ ...base, attemptStatus: "submitted", score: 1, maxScore: 40 }, UNTIL + 1).pill?.text).toBe("Submitted · 1/40");
+    expect(rowView({ ...base, attemptStatus: "submitted", score: 1, maxScore: 40 }, UNTIL + 1).pill?.text).toBe("Best 1/40");
   });
   it("declined: neutral pill and no action", () => {
-    expect(rowView({ ...base, attemptStatus: "declined" }, before)).toEqual({ pill: { variant: "neutral", text: "Declined" }, action: null });
+    expect(rowView({ ...base, attemptStatus: "declined" }, before)).toEqual({ pill: { variant: "neutral", text: "Declined" }, action: null, retake: false });
+  });
+});
+
+describe("rowView retakes", () => {
+  const sub = { ...base, attemptStatus: "submitted" as const, score: 34, maxScore: 40 };
+  it("best-score pill with the attempt count only above one", () => {
+    expect(rowView({ ...sub, attemptCount: 1 }, before).pill?.text).toBe("Best 34/40");
+    expect(rowView({ ...sub, attemptCount: 3, canRetake: true }, before).pill).toEqual({ variant: "ok", text: "Best 34/40 · 3 attempts" });
+    expect(rowView({ ...sub, attemptCount: 2, score: 27.5, canRetake: true }, before).pill?.text).toBe("Best 27.5/40 · 2 attempts");
+  });
+  it("free text without a score: Submitted plus the count", () => {
+    expect(rowView({ ...base, type: "free", attemptStatus: "submitted", attemptCount: 2, canRetake: true }, before).pill?.text).toBe("Submitted · 2 attempts");
+  });
+  it("Retake only while canRetake is true; View result stays the action", () => {
+    expect(rowView({ ...sub, attemptCount: 3, canRetake: true }, before)).toMatchObject({ action: "View result", retake: true });
+    expect(rowView({ ...sub, attemptCount: 1, canRetake: false }, before).retake).toBe(false);
+    expect(rowView({ ...sub, attemptCount: 1 }, before).retake).toBe(false);
+  });
+  it("no Retake once the exam is no longer accepting, even if the server said so", () => {
+    expect(rowView({ ...sub, attemptCount: 2, canRetake: true }, UNTIL).retake).toBe(false);
+  });
+  it("a retake in progress (submitted before, cannot retake, still accepting) offers Resume, not Retake", () => {
+    const v = rowView({ ...sub, attemptCount: 2, canRetake: false }, before);
+    expect(v.action).toBe("Resume");
+    expect(v.retake).toBe(false);
+    expect(v.pill?.text).toBe("Retake in progress · Best 34/40 · 2 attempts");
+  });
+  it("at the 50-attempt limit the row is plain View result", () => {
+    expect(rowView({ ...sub, attemptCount: 50, canRetake: false }, before)).toMatchObject({ action: "View result", retake: false });
+  });
+  it("after the deadline a multi-attempt row is View result with no Retake", () => {
+    expect(rowView({ ...sub, attemptCount: 3, canRetake: false }, UNTIL + 1)).toMatchObject({ action: "View result", retake: false });
   });
 });
 
 describe("examMeta", () => {
   const now = CLOSES - 2 * 86_400_000 - 1000;
+  it("an exam being retaken keeps the best earlier score in the meta line", () => {
+    const retaking = { ...base, attemptStatus: "in_progress" as const, score: 34, maxScore: 40, attemptCount: 2 };
+    expect(examMeta(retaking, "u_me", now)).toBe("Assigned by Ms. Rao · closes in 2d · Best 34/40");
+    expect(examMeta({ ...retaking, attemptCount: 1 }, "u_me", now)).toBe("Assigned by Ms. Rao · closes in 2d");
+  });
   it("names the creator and the deadline", () => {
     expect(examMeta(base, "u_me", now)).toBe("Assigned by Ms. Rao · closes in 2d");
   });

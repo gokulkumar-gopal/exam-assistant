@@ -85,10 +85,10 @@ func TestAutosaveClosedAndSubmittedOverHTTP(t *testing.T) {
 	if len(rows) != 1 {
 		t.Fatal(rows)
 	}
-	if err := e2.attempts.Save(t.Context(), "as-key-1", rows[0].UserID, map[string]string{}, 0, authT0); err != nil {
+	if err := e2.attempts.Save(t.Context(), "as-key-1", rows[0].UserID, 1, map[string]string{}, 0, authT0); err != nil {
 		t.Fatal(err)
 	}
-	if err := e2.attempts.Submit(t.Context(), store.Attempt{ExamID: "as-key-1", UserID: rows[0].UserID,
+	if err := e2.attempts.Submit(t.Context(), store.Attempt{AttemptNo: 1, ExamID: "as-key-1", UserID: rows[0].UserID,
 		Status: store.AttemptSubmitted, Answers: map[string]string{}, Revealed: []string{}}); err != nil {
 		t.Fatal(err)
 	}

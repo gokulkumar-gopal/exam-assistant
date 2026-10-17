@@ -135,7 +135,7 @@ All paths relative to the repo root `exam-assistant/`. Application code belongs 
 ### Task D-1.1: Five tables and four indexes
 **Spec:** dep 6.2 (data layer), 6.2 notes, 10 (on-demand); backend 12 (DynamoDB), Review Focus 1   **Needs:** D-0.5; backend B-1 store code expects these exact key and attribute names
 **Files:** Modify `backend/template.yaml`
-**Interfaces:** Produces `UsersTable`, `DocumentsTable` (ttl), `ExamsTable` (`creator-index`), `AttemptsTable` (`user-index`), `JobsTable` (ttl, `owner-index`, `day-index`), all `PAY_PER_REQUEST`.
+**Interfaces:** Produces `UsersTable`, `DocumentsTable` (ttl), `ExamsTable` (`creator-index`), `AttemptsTable` (hash `examId`, range `sk` = `<userId>#<attemptNo>` for retakes; `user-index`), `JobsTable` (ttl, `owner-index`, `day-index`), all `PAY_PER_REQUEST`.
 - [ ] Add the five tables exactly as in dep 6.2, **including all four indexes now** (one-index-per-update limit).
 - [ ] Run `sam validate --lint`. Expected: passes.
 - [ ] Run `make deploy STAGE=dev`. Expected: `UPDATE_COMPLETE`.

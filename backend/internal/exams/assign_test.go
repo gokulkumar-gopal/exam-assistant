@@ -16,7 +16,7 @@ import (
 
 func (e *env) status(t *testing.T, examID, uid string) string {
 	t.Helper()
-	a, err := e.attempts.GetAttempt(context.Background(), examID, uid)
+	a, err := e.attempts.GetAttempt(context.Background(), examID, uid, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -47,7 +47,7 @@ func TestDeclineInProgressOrSubmitted409(t *testing.T) {
 	e := newEnv(t)
 	id := e.assigned(t)
 	ctx := context.Background()
-	if err := e.attempts.Save(ctx, id, "s1", map[string]string{"a": "b"}, 0, t0); err != nil {
+	if err := e.attempts.Save(ctx, id, "s1", 1, map[string]string{"a": "b"}, 0, t0); err != nil {
 		t.Fatal(err)
 	}
 	wantStatus(t, e.svc.Decline(ctx, e.student, id), http.StatusConflict)
@@ -58,10 +58,10 @@ func TestDeclineInProgressOrSubmitted409(t *testing.T) {
 	in := input(1)
 	in.AssigneeEmails = []string{"s2@x.com"}
 	id2 := e.create(t, e.teacher, in, "exam-0002").ID
-	if err := e.attempts.Save(ctx, id2, "s2", map[string]string{}, 0, t0); err != nil {
+	if err := e.attempts.Save(ctx, id2, "s2", 1, map[string]string{}, 0, t0); err != nil {
 		t.Fatal(err)
 	}
-	if err := e.attempts.Submit(ctx, store.Attempt{ExamID: id2, UserID: "s2", Status: store.AttemptSubmitted, Answers: map[string]string{}, Revealed: []string{}}); err != nil {
+	if err := e.attempts.Submit(ctx, store.Attempt{AttemptNo: 1, ExamID: id2, UserID: "s2", Status: store.AttemptSubmitted, Answers: map[string]string{}, Revealed: []string{}}); err != nil {
 		t.Fatal(err)
 	}
 	wantStatus(t, e.svc.Decline(ctx, s2, id2), http.StatusConflict)
@@ -224,7 +224,7 @@ func TestAssignAlreadyAssignedListed(t *testing.T) {
 	id := e.assigned(t)
 	e.addUser(t, "s2", "s2@x.com", "student")
 	ctx := context.Background()
-	if err := e.attempts.Save(ctx, id, "s1", map[string]string{"a": "b"}, 0, t0); err != nil {
+	if err := e.attempts.Save(ctx, id, "s1", 1, map[string]string{"a": "b"}, 0, t0); err != nil {
 		t.Fatal(err)
 	}
 	r, err := e.svc.Assign(ctx, e.teacher, id, []string{" S1@X.com ", "s2@x.com", "s2@X.COM", "ghost@x.com"})

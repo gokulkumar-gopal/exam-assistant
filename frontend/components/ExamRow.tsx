@@ -1,5 +1,9 @@
 "use client";
+import { useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
+import { toast } from "sonner";
+import { retakeErrorMessage, retakeExam } from "@/lib/attempts";
 import { Pill } from "@/components/Pill";
 import { canDecline, countsLine, examMeta, rowView } from "@/lib/exam-row";
 import type { ExamListItem } from "@/lib/types";
@@ -23,7 +27,21 @@ export function ExamRow({
   const id = encodeURIComponent(exam.id);
   const view = mode === "attempt" ? rowView(exam, nowMs) : null;
   const href = view?.action === "View result" ? `/exams/${id}/result` : `/exams/${id}/take`;
+  const router = useRouter();
+  const [retaking, setRetaking] = useState(false);
   const showDecline = mode === "attempt" && !!onDecline && canDecline(exam, userId, nowMs);
+
+  async function retake() {
+    if (retaking) return;
+    setRetaking(true);
+    try {
+      await retakeExam(exam.id);
+      router.push(`/exams/${id}/take`);
+    } catch (e) {
+      toast(retakeErrorMessage(e));
+      setRetaking(false);
+    }
+  }
 
   return (
     <li data-exam-id={exam.id} className="card flex flex-col gap-2 px-3.5 py-3 sm:flex-row sm:items-center sm:gap-3">
@@ -40,6 +58,11 @@ export function ExamRow({
       <div className="flex flex-wrap items-center gap-1">
         {showDecline && (
           <button type="button" className={QUIET} onClick={() => onDecline?.(exam)}>Decline</button>
+        )}
+        {view?.retake && (
+          <button type="button" className={QUIET} onClick={() => void retake()} disabled={retaking} aria-label={`Retake ${exam.title}`}>
+            Retake
+          </button>
         )}
         <a
           href={`/exams/${encodeURIComponent(id)}/print`}

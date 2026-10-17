@@ -46,7 +46,7 @@ func validateSubmit(exam store.Exam, in *SubmitInput) error {
 	return nil
 }
 
-// Submit grades and submits the caller's attempt (backend-spec 8.5, 9.2, 9.3).
+// Submit grades and submits the caller's latest attempt (backend-spec 8.5, 9.2, 9.3).
 //
 // A creator without a row, a declined user, a stranger and a missing exam are the same 404. An
 // attempt that the client itself submitted returns its existing result (idempotent), whatever
@@ -61,7 +61,7 @@ func validateSubmit(exam store.Exam, in *SubmitInput) error {
 // Known gap: with no body, a save landing between the read and the write is overwritten and
 // not graded (the frontend always sends a body).
 func (s *Service) Submit(ctx context.Context, user store.User, examID string, in *SubmitInput) (SubmitResult, error) {
-	a, err := s.attempts.GetAttempt(ctx, examID, user.ID)
+	a, err := s.attempts.GetLatestAttempt(ctx, examID, user.ID)
 	if errors.Is(err, store.ErrNotFound) {
 		return SubmitResult{}, apperr.NotFound()
 	}
@@ -125,7 +125,7 @@ func (s *Service) Submit(ctx context.Context, user store.User, examID string, in
 	// A peek that landed after the row was read makes the write lose with ErrConflict. Regrade
 	// against the fresh revealed list and write again (a few times at most).
 	for try := 0; errors.Is(err, store.ErrConflict) && try < maxSubmitRetries; try++ {
-		cur, gerr := s.attempts.GetAttempt(ctx, examID, user.ID)
+		cur, gerr := s.attempts.GetAttempt(ctx, examID, user.ID, a.AttemptNo)
 		if gerr != nil {
 			return SubmitResult{}, apperr.Internal(gerr)
 		}
@@ -137,7 +137,7 @@ func (s *Service) Submit(ctx context.Context, user store.User, examID string, in
 	case err == nil:
 		return submitResult(exam, fin, now), nil
 	case errors.Is(err, store.ErrSubmitted):
-		won, gerr := s.attempts.GetAttempt(ctx, examID, user.ID)
+		won, gerr := s.attempts.GetAttempt(ctx, examID, user.ID, a.AttemptNo)
 		if gerr != nil {
 			return SubmitResult{}, apperr.Internal(gerr)
 		}

@@ -10,6 +10,7 @@ import { useAttempt } from "@/lib/attempt";
 import { autosaveText, createAutosaver, keepaliveOk, shouldFlushOnEvent, type AutosaveState } from "@/lib/autosave";
 import { autoSubmitAtZero, awaitWithTimeout, canSaveAndExit, submitExam, withTimeout, type SubmitPhase } from "@/lib/submit";
 import { scheduleAt } from "@/lib/timer";
+import { attemptHeaderLabel } from "@/lib/attempts";
 import { answersByIndex, clampIndex, takeDecision } from "@/lib/take";
 import { applyReveal, applyRevealError, initReveal, peeksOn, revealControl, revealHint, type RevealedAnswer } from "@/lib/reveal";
 import type { Attempt, ExamResponse, RevealResponse } from "@/lib/types";
@@ -359,6 +360,7 @@ function Attempting({ data, children }: { data: ExamResponse; children: React.Re
     <Ctx.Provider value={value}>
       <ExamBar
         title={exam.title}
+        attemptLabel={attemptHeaderLabel(data.attemptCount, attempt?.attemptNo)}
         save={save}
         peeksLeft={peeksOnNow ? rv.peeksLeft : undefined}
         closesAtIso={exam.closesAt}

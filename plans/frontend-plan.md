@@ -286,6 +286,14 @@ fs 11: publish appears in Open (assignee, and own Open when no assignees) with c
 - [ ] Verify (manual): print a 60-question exam on A4 and Letter to PDF; no clipping, no question split, ruled lines proportional to marks.
 - [ ] Commit "frontend: print view".
 
+### Task F-4.6: Retakes and attempt history
+**Spec:** fs 6.1 (rows), 6.5 (Retakes), 6.6, 6.7 (Attempts), 8 (API table) **Needs:** F-4.4, F-3.4; **Needs:** B-4.7
+**Files:** Modify `lib/types.ts`, `lib/exam-row.ts`, `components/ExamRow.tsx`, `app/exams/[id]/result/page.tsx`, `app/exams/[id]/status/page.tsx`, `lib/status.ts`, `lib/mock/index.ts`, `components/AttemptProvider.tsx` (attempt number in the header); Create `components/AttemptsTable.tsx`, `lib/attempts.ts`; Test `tests/exam-row.test.ts`, `tests/result.test.ts`, `tests/status.test.ts`, `tests/attempts.test.ts`
+**Interfaces:** `Attempt.attemptNo`; `ExamListItem.attemptCount|canRetake`; `ResultResponse.attemptNo|bestAttemptNo|attempts[]`; status rows `attemptCount|history[]`; `retake(examId): Promise<{attemptNo}>` (`POST /api/exams/:id/retake`); `AttemptsTable({attempts, selected, bestAttemptNo, onSelect})`.
+- [ ] Failing tests: `rowView` shows "Best 34/40 · 3 attempts" and a Retake action only while `canRetake`; the result page lists every attempt and `?attempt=N` selects it, clearing local self-check state; Retake calls `POST /retake` and navigates to `/take`; `409 exam_closed` and the limit show their messages; the status table shows best score, attempt count and an expandable per-attempt list, with no answers; the table and buttons are labelled (a11y static test).
+- [ ] Implement; the mock gets `attempts: Attempt[]` per exam and a `?mockRetake=closed|limit|fail` trigger. Run: PASS.
+- [ ] Commit: "Retakes UI".
+
 ### Milestone check M4
 fs 11: taking exam autosave and "Saved hh:mm", Save & exit then Resume restores position, refresh keeps timer, changing the device clock does not change timer or deadline text, review lists unanswered and confirms blanks, deadline passes shows "Closing…" and submits with body answers then opens result, `409 exam_closed` toast, result hidden-key state with no ✓/✗ and the "Answers available after {date}." line, creator taking own exam sees no key until submit, 27.5 / 40 shows half marks, print item (A4 and Letter, 60 questions, key only when visible, no attempt started), unreachable-backend item. Needs: B-4 complete on the dev stack.
 
