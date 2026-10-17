@@ -20,7 +20,7 @@
 - Deadline: `acceptingUntil = closesAt + 60 s`; frontend only displays it. Timer/"closes in" use `serverTime - Date.now()` offset computed from API responses, never the device clock alone (fs 8.1).
 - Key rule is fixed (no visibility setting anywhere in UI); render only what the backend returns (`keyVisible`). Hidden key = no ✓/✗, no "Correct answer" (fs 6.7).
 - Scores may end in .5: show one decimal only when needed; never round (fs 6.7, 8).
-- Upload: types PDF/JPG/PNG/TXT, max 20 MB (20971520), max 3 parallel; `type` sent to `upload-url` is the MIME type. Generation caps shown: 10 files, 20 MB, 40 pages (see Open questions).
+- Upload: types PDF/JPG/PNG/TXT, max 20 MB (20971520), max 3 parallel; `type` sent to `upload-url` is the MIME type. Generation caps shown: 10 files, 20 MB, 100 pages; a checked PDF gets From/To page inputs (see Open questions).
 - Generation: poll every 1.5 s; give up after 3 consecutive poll failures or 6 min (send `DELETE` first); `DELETE` also on Cancel and on leaving the page (fs 6.4, 9).
 - Assign caps: student 10 (students only), teacher/parent 50. Peeks 0..10, default 3 when Assign to is empty, else 0.
 - Dialogs only for: delete documents, submit with unanswered, decline, (P1) reveal. Toasts bottom centre, ink background, ~2.5 s, one at a time.
@@ -162,7 +162,7 @@ fs 11: Upload accepts/rejects item, camera item (on a phone), bottom bar count a
 **Interfaces:** `totalMarks(counts:Record<1|2|3|4|5,number>): number`; `footerState(total,target,count,hasSource): {tone:'accent'|'ok'|'bad', text, generateEnabled}`.
 - [ ] Write tests: counts {1:2,3:2} totals 8; `footerState(28,30,..)` text "2 to go · N questions", tone accent, disabled; `(30,30)` "Ready to generate · N questions", ok, enabled; `(32,30)` "2 over · N questions", bad, disabled; no source forces disabled even at target.
 - [ ] Run: FAIL. Implement; run: PASS.
-- [ ] Implement layout: one column under 720 px, 260 px + flexible above; sources pre-checked from `?sources=`; helper "Up to 10 files, 20 MB and 40 pages in total."; type segmented control; chips 30/40/50 default 30; five coloured steppers with "= N marks"; Shuffle checkbox "Shuffle order (default: low to high marks)"; Title; Closes in select (1 hour, 1 day, 2 days, 1 week, Pick date and time revealing a datetime input); Assign to emails with role-based helper ("Student emails only · up to 10 people" / "Up to 50 people" / "Leave empty for a personal practice exam").
+- [ ] Implement layout: one column under 720 px, 260 px + flexible above; sources pre-checked from `?sources=`; helper "Up to 10 files, 20 MB and 100 pages in total."; per-PDF "Pages [from] to [to] of N" inputs; type segmented control; chips 30/40/50 default 30; five coloured steppers with "= N marks"; Shuffle checkbox "Shuffle order (default: low to high marks)"; Title; Closes in select (1 hour, 1 day, 2 days, 1 week, Pick date and time revealing a datetime input); Assign to emails with role-based helper ("Student emails only · up to 10 people" / "Up to 50 people" / "Leave empty for a personal practice exam").
 - [ ] Commit "frontend: create setup".
 
 ### Task F-2.2: Model select (P0)
@@ -391,7 +391,7 @@ Device smoke from a phone: sign in with Google, camera upload, generate, publish
 | fs 12 out of scope | not built (no task) |
 
 ## Open questions
-1. **Page cap (resolved):** 40 pages in total in frontend-spec 6.4, backend-spec 8.4 and AI-spec (`GEN_MAX_PDF_PAGES` 40). The 100 in an older decision note is superseded.
+1. **Page cap (resolved 2026-10-17):** 100 pages in total in frontend-spec 6.4, backend-spec 8.4 and AI-spec (`GEN_MAX_PDF_PAGES` 100), matching the older decision note. Users can narrow a PDF with a page range (`pageRanges`, backend-spec 8.4).
 2. **Field names (resolved):** `scoreBeforePeeks`, `maxPeeks`, `keyAvailableAt`, `acceptingUntil` match backend-spec 8.5. Still confirm `peeksUsed`, `revealed[]`, `peeksLeft` and the `/ai/usage` shape when writing `types.ts` in F-5a.1 and F-5b.3.
 3. **Generate request body (resolved):** `counts` is a map keyed "1" to "5", per backend-spec 8.4.
 4. **Print "Answer key" for a creator who is also taking the exam:** fs 6.9 says default on only when `keyVisible`; the plan follows `keyVisible` from `GET /exams/:id` and does no extra rule.

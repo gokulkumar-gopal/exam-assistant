@@ -19,7 +19,7 @@ import (
 // withGen adds the generation dependencies (in-memory jobs, the given runner) to deps.
 func withGen(deps Deps, clk clock.Clock, ds store.DocStore, runner gen.JobRunner) Deps {
 	jobs := memory.NewJobStore(clk)
-	lim := gen.Limits{MaxSources: 10, MaxTotalBytes: 20971520, MaxPDFPages: 40, MaxRunning: 2,
+	lim := gen.Limits{MaxSources: 10, MaxTotalBytes: 20971520, MaxPDFPages: 100, MaxRunning: 2,
 		Quota: gen.QuotaLimits{MaxUser: 50, MaxRegen: 10, MaxGlobal: 50, BudgetUSD: 15}}
 	deps.Jobs, deps.Runner = jobs, runner
 	deps.Exams = exams.NewService(deps.Users, memory.NewExamStore(), memory.NewAttemptStore(), clk)
@@ -368,5 +368,48 @@ func TestRegenerateQuotaIs429AndWrongMethodIsJSON405(t *testing.T) {
 	_ = json.Unmarshal(rec.Body.Bytes(), &b)
 	if rec.Code != 429 || b.Error.Code != "rate_limited" || b.Error.Message != gen.QuotaMessage(store.QuotaRegen) {
 		t.Errorf("status %d body %s", rec.Code, rec.Body)
+	}
+}
+
+func TestPageRangesAcceptedAndStored(t *testing.T) {
+	e := newGenEnv(t, &okRunner{})
+	e.doc(t, e.uid, "d1") // 2 pages
+	for path, body := range map[string]string{
+		"/generate":            `{"sourceIds":["d1"],"pageRanges":{"d1":{"from":2,"to":2}},"type":"mcq","counts":{"1":1}}`,
+		"/generate/regenerate": `{"marks":2,"sourceIds":["d1"],"pageRanges":{"d1":{"from":1,"to":2}},"type":"mcq","avoid":[]}`,
+	} {
+		rec := e.call("POST", path, body, e.cookie)
+		if rec.Code != http.StatusAccepted {
+			t.Fatalf("%s: status %d: %s", path, rec.Code, rec.Body)
+		}
+		var out map[string]string
+		_ = json.Unmarshal(rec.Body.Bytes(), &out)
+		j, err := e.jobs.GetJob(context.Background(), out["jobId"])
+		if err != nil || len(j.Request.PageRanges) != 1 || j.Request.PageRanges["d1"].To == 0 {
+			t.Errorf("%s: stored request = %+v, %v", path, j.Request, err)
+		}
+	}
+}
+
+func TestPageRangesInvalidIs422NamingFile(t *testing.T) {
+	e := newGenEnv(t, &okRunner{})
+	e.doc(t, e.uid, "d1") // d1.pdf, 2 pages
+	for _, rng := range []string{`{"d1":{"from":1,"to":3}}`, `{"d1":{"from":0,"to":1}}`, `{"d1":{"from":2,"to":1}}`} {
+		for path, tmpl := range map[string]string{
+			"/generate":            `{"sourceIds":["d1"],"pageRanges":%s,"type":"mcq","counts":{"1":1}}`,
+			"/generate/regenerate": `{"marks":2,"sourceIds":["d1"],"pageRanges":%s,"type":"mcq","avoid":[]}`,
+		} {
+			rec := e.call("POST", path, strings.Replace(tmpl, "%s", rng, 1), e.cookie)
+			var b errBody
+			_ = json.Unmarshal(rec.Body.Bytes(), &b)
+			if rec.Code != 422 || !strings.Contains(b.Error.Fields["pageRanges"], "d1.pdf") {
+				t.Errorf("%s %s: status %d: %s", path, rng, rec.Code, rec.Body)
+			}
+		}
+	}
+	// Unknown fields inside a range are still refused.
+	rec := e.call("POST", "/generate", `{"sourceIds":["d1"],"pageRanges":{"d1":{"from":1,"to":1,"x":1}},"type":"mcq","counts":{"1":1}}`, e.cookie)
+	if rec.Code != 422 && rec.Code != 400 {
+		t.Errorf("unknown range field: status %d", rec.Code)
 	}
 }

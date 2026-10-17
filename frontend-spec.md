@@ -202,7 +202,8 @@ Open to every role. One page, no wizard.
 **Left card: Sources (N)**
 - A checkable list of the user's documents (name only). Pre-checked from `?sources=id,id` if present.
 - At least one source is required.
-- Under the list, a helper line: "Up to 10 files, 20 MB and 40 pages in total." If `POST /api/generate` answers `422` naming a file (a file alone over the page cap, or a set over the caps), show a `bad` notice with the message as written and uncheck nothing.
+- Each checked PDF with more than one page shows "Pages [from] to [to] of N" under its name (two number inputs, labelled "{name} first page" and "{name} last page"), defaulting to the whole file. The running page total uses the range length. A range outside 1 to N, or from greater than to, shows an inline `bad` error. `pageRanges` is sent only for PDFs whose range is not the whole file.
+- Under the list, a helper line: "Up to 10 files, 20 MB and 100 pages in total." If `POST /api/generate` answers `422` naming a file (a file alone over the page cap, or a set over the caps), show a `bad` notice with the message as written and uncheck nothing.
 
 **Right column, in this order:**
 1. **Question type** card: segmented control with **Multiple choice** and **Free text**. Selected segment uses the gradient, white text.

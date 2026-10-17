@@ -65,8 +65,13 @@ export interface GenerateBody {
   sourceIds: string[]; type: ExamType;
   counts: Record<string, number>; // keyed "1".."5"
   shuffle: boolean; model?: string;
+  /** PDFs only, keyed by document id; 1-based inclusive. Omitted means whole files. */
+  pageRanges?: Record<string, { from: number; to: number }>;
 }
-export interface RegenerateBody { marks: Marks; sourceIds: string[]; type: ExamType; avoid: string[]; model?: string }
+export interface RegenerateBody {
+  marks: Marks; sourceIds: string[]; type: ExamType; avoid: string[]; model?: string;
+  pageRanges?: Record<string, { from: number; to: number }>;
+}
 export interface JobStartResponse { jobId: string }
 export type JobStatus = "queued" | "running" | "done" | "failed" | "cancelled";
 export interface FailedSource { docId: string; name: string; reason: string }

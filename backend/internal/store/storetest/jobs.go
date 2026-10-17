@@ -42,6 +42,7 @@ func wantQuota(t *testing.T, err error, kind string) {
 // RunJobStoreSuite runs every JobStore contract test.
 func RunJobStoreSuite(t *testing.T, f JobFactory) {
 	t.Run("CreateAndGet", func(t *testing.T) { CreateAndGet(t, f) })
+	t.Run("PageRangesRoundTripAndAreCloned", func(t *testing.T) { PageRangesRoundTripAndAreCloned(t, f) })
 	t.Run("UserDailyGenerateLimit3", func(t *testing.T) { UserDailyGenerateLimit3(t, f) })
 	t.Run("RegenCounterSeparate10", func(t *testing.T) { RegenCounterSeparate10(t, f) })
 	t.Run("GlobalLimit10", func(t *testing.T) { GlobalLimit10(t, f) })
@@ -78,6 +79,33 @@ func CreateAndGet(t *testing.T, f JobFactory) {
 	_, err = s.GetJob(ctx, "j1#questions")
 	is(t, err, store.ErrNotFound)
 	is(t, s.CreateJobWithQuota(ctx, j, quota("u1")), store.ErrConflict)
+}
+
+// PageRangesRoundTripAndAreCloned checks the request's page ranges survive storage, a job
+// without ranges reads back with none, and the caller's map is not shared with the store.
+func PageRangesRoundTripAndAreCloned(t *testing.T, f JobFactory) {
+	s := f(t)
+	j := job("jr", "u1")
+	j.Request.PageRanges = map[string]store.PageRange{"d1": {From: 41, To: 80}}
+	mustCreate(t, s, j, quota("u1"))
+	j.Request.PageRanges["d1"] = store.PageRange{From: 1, To: 2} // mutate the caller's copy
+	got, err := s.GetJob(ctx, "jr")
+	noErr(t, err)
+	if len(got.Request.PageRanges) != 1 || got.Request.PageRanges["d1"] != (store.PageRange{From: 41, To: 80}) {
+		t.Fatalf("page ranges = %v", got.Request.PageRanges)
+	}
+	got.Request.PageRanges["d1"] = store.PageRange{From: 9, To: 9} // and the returned copy
+	again, err := s.GetJob(ctx, "jr")
+	noErr(t, err)
+	if again.Request.PageRanges["d1"] != (store.PageRange{From: 41, To: 80}) {
+		t.Fatalf("stored ranges changed through a returned copy: %v", again.Request.PageRanges)
+	}
+	mustCreate(t, s, job("jn", "u1"), quota("u1"))
+	plain, err := s.GetJob(ctx, "jn")
+	noErr(t, err)
+	if len(plain.Request.PageRanges) != 0 {
+		t.Fatalf("page ranges on a job without any: %v", plain.Request.PageRanges)
+	}
 }
 
 func UserDailyGenerateLimit3(t *testing.T, f JobFactory) {

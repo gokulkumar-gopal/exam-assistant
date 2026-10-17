@@ -1074,3 +1074,139 @@ func TestFactoryErrorIsLoggedAndNeverPutInJobError(t *testing.T) {
 		t.Errorf("factory error not logged: %q", l)
 	}
 }
+
+// ---- page ranges ----
+
+// testPDF returns a valid PDF with n empty pages.
+func testPDF(n int) []byte {
+	var b bytes.Buffer
+	var offs []int
+	obj := func(s string) {
+		offs = append(offs, b.Len())
+		fmt.Fprintf(&b, "%d 0 obj\n%s\nendobj\n", len(offs), s)
+	}
+	b.WriteString("%PDF-1.4\n")
+	obj("<< /Type /Catalog /Pages 2 0 R >>")
+	kids := ""
+	for i := 0; i < n; i++ {
+		kids += fmt.Sprintf("%d 0 R ", 3+i)
+	}
+	obj(fmt.Sprintf("<< /Type /Pages /Kids [%s] /Count %d >>", kids, n))
+	for i := 0; i < n; i++ {
+		obj("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] >>")
+	}
+	x := b.Len()
+	fmt.Fprintf(&b, "xref\n0 %d\n0000000000 65535 f \n", len(offs)+1)
+	for _, o := range offs {
+		fmt.Fprintf(&b, "%010d 00000 n \n", o)
+	}
+	fmt.Fprintf(&b, "trailer\n<< /Size %d /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n", len(offs)+1, x)
+	return b.Bytes()
+}
+
+// setPDF replaces document id with a ready PDF of the given bytes and page count.
+func (e *wEnv) setPDF(t *testing.T, id, name string, data []byte, pages int) {
+	t.Helper()
+	key := "users/u1/" + id + "/" + name
+	e.blob.Put(key, data)
+	if err := e.docs.PutDoc(context.Background(), store.Document{
+		ID: id, OwnerID: "u1", Name: name, Type: "PDF", ContentType: "application/pdf", SizeBytes: int64(len(data)),
+		Pages: pages, S3Key: key, Status: store.DocReady, CreatedAt: t0,
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// withRanges replaces the queued job with one that carries the page ranges.
+func (e *wEnv) withRanges(t *testing.T, ranges map[string]store.PageRange) {
+	t.Helper()
+	j := e.job(t)
+	j.ID = "job-ranged"
+	j.Request.PageRanges = ranges
+	q := store.QuotaCheck{UserID: "u1", Day: "20261016", Month: "202610", MaxUser: 100, MaxRegen: 100, MaxGlobal: 100, BudgetMicros: 1 << 40}
+	if err := e.raw.CreateJobWithQuota(context.Background(), j, q); err != nil {
+		t.Fatal(err)
+	}
+	e.jobID = j.ID
+}
+
+func TestWorkerSendsTrimmedPDFForRange(t *testing.T) {
+	e := newWEnv(t, map[string]int{"1": 1})
+	whole := testPDF(120)
+	e.setPDF(t, "d2", "book.pdf", whole, 120)
+	e.withRanges(t, map[string]store.PageRange{"d2": {From: 41, To: 80}})
+	e.run(t)
+	if j := e.job(t); j.Status != store.JobDone {
+		t.Fatalf("job = %s %q", j.Status, j.Error)
+	}
+	var pdf []byte
+	for _, s := range e.gen.calls[0].Sources {
+		if s.ContentType == "application/pdf" {
+			pdf = s.Bytes
+		}
+	}
+	if pdf == nil || bytes.Equal(pdf, whole) {
+		t.Fatalf("the generator got the whole PDF (%d bytes) or none", len(pdf))
+	}
+	if n, err := docs.CountPages("application/pdf", pdf); err != nil || n != 40 {
+		t.Errorf("sent PDF has %d pages, %v; want 40", n, err)
+	}
+}
+
+func TestWorkerRangeLengthIsWhatTheCapsSee(t *testing.T) {
+	// Whole file: 120 pages, over the cap of 100.
+	e := newWEnv(t, map[string]int{"1": 1})
+	e.setPDF(t, "d2", "book.pdf", testPDF(120), 120)
+	e.run(t)
+	e.wantFailed(t, TooLargeMessage)
+
+	// Same file with a 100-page range passes the page cap, and with 101 pages it does not.
+	e = newWEnv(t, map[string]int{"1": 1})
+	e.setPDF(t, "d2", "book.pdf", testPDF(120), 120)
+	e.withRanges(t, map[string]store.PageRange{"d2": {From: 11, To: 110}})
+	e.run(t)
+	if j := e.job(t); j.Status != store.JobDone {
+		t.Errorf("100-page range: job = %s %q", j.Status, j.Error)
+	}
+	e = newWEnv(t, map[string]int{"1": 1})
+	e.setPDF(t, "d2", "book.pdf", testPDF(120), 120)
+	e.withRanges(t, map[string]store.PageRange{"d2": {From: 11, To: 111}})
+	e.run(t)
+	e.wantFailed(t, TooLargeMessage)
+}
+
+func TestWorkerByteCapSeesTrimmedSize(t *testing.T) {
+	e := newWEnv(t, map[string]int{"1": 1})
+	whole := testPDF(60)
+	e.setPDF(t, "d2", "book.pdf", whole, 60)
+	trimmed, err := docs.TrimPDF(whole, 1, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The cap sits between the trimmed size and the original (plus the text source).
+	e.w.Cfg.MaxTotalBytes = int64(len(trimmed)) + 100
+	e.withRanges(t, map[string]store.PageRange{"d2": {From: 1, To: 2}})
+	e.run(t)
+	if j := e.job(t); j.Status != store.JobDone {
+		t.Fatalf("job = %s %q", j.Status, j.Error)
+	}
+}
+
+func TestWorkerTrimFailureIsAFailedSource(t *testing.T) {
+	e := newWEnv(t, map[string]int{"1": 1})
+	// The file is a valid PDF of 3 pages but the job asks for pages it does not have.
+	e.setPDF(t, "d2", "short.pdf", testPDF(3), 10)
+	e.withRanges(t, map[string]store.PageRange{"d2": {From: 5, To: 8}})
+	e.run(t)
+	j := e.job(t)
+	if j.Status != store.JobDone {
+		t.Fatalf("job = %s %q", j.Status, j.Error)
+	}
+	if len(j.FailedSources) != 1 || j.FailedSources[0].DocID != "d2" || j.FailedSources[0].Name != "short.pdf" ||
+		j.FailedSources[0].Reason != unreadableFileReason || !j.Usage.AnySourceFailed {
+		t.Errorf("failedSources = %+v", j.FailedSources)
+	}
+	if got := e.gen.calls[0].Sources; len(got) != 1 || string(got[0].Bytes) != "content of notes.txt" {
+		t.Errorf("sources = %+v", got)
+	}
+}

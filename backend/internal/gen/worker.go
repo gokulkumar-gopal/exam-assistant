@@ -41,8 +41,8 @@ const (
 	maxConcurrentCalls       = 3  // backend-spec 7.2 step 4
 	defaultCallTimeout       = 120 * time.Second
 	defaultMaxTotalBytes     = 20 << 20
-	defaultMaxPDFPages       = 40
-	defaultMaxInputTokens    = 80_000
+	defaultMaxPDFPages       = 100
+	defaultMaxInputTokens    = 200_000
 	// finishTimeout bounds the writes that end a job. They run on a context detached from
 	// the job's, which may already be past its deadline.
 	finishTimeout = 15 * time.Second
@@ -55,9 +55,9 @@ type WorkerConfig struct {
 	PromptVersion string        // recorded on the job's usage (prompt.PromptVersion; gen cannot import prompt)
 	CallTimeout   time.Duration // per Generate call (LLM_TIMEOUT_SECONDS); 0 means 120 s
 	MaxTotalBytes int64         // raw bytes of the sources (GEN_MAX_TOTAL_BYTES); 0 means 20 MiB
-	MaxPDFPages   int           // pages of the sources (GEN_MAX_PDF_PAGES); 0 means 40
+	MaxPDFPages   int           // pages of the sources (GEN_MAX_PDF_PAGES); 0 means 100
 	// MaxInputTokens caps the counted input of the shared prefix (GEN_MAX_INPUT_TOKENS, AI-spec
-	// 10.2); 0 means 80,000. It applies only to generators that implement TokenCounter.
+	// 10.2); 0 means 200,000. It applies only to generators that implement TokenCounter.
 	MaxInputTokens int
 	// BudgetMicros is the monthly budget (LLM_MONTHLY_BUDGET_USD) in micro-dollars. Unlike the
 	// other limits zero does not mean a default: a budget of zero or less refuses every call,
@@ -552,7 +552,8 @@ type sourceUsage struct {
 // with PrepareSources (AI-spec 5.1: PDF as it is, images downscaled, text cleaned; labels
 // doc-1, doc-2, ... in document id order) and records every document that is missing,
 // unreadable or fails preparation in the job's failed sources. With none left the job fails
-// with NoSourcesMessage (RequireSources). It also returns the raw bytes and the pages of the
+// with NoSourcesMessage (RequireSources). A PDF with a page range in the request is trimmed to it first (the bytes and pages
+// are then those of the trimmed file). It also returns the bytes and the pages of the
 // documents that were read.
 func (w *Worker) loadSources(ctx context.Context, job store.Job, st *runState) ([]SourceFile, map[string]store.Document, sourceUsage, error) {
 	var usage sourceUsage
@@ -581,10 +582,20 @@ func (w *Worker) loadSources(ctx context.Context, job store.Job, st *runState) (
 			st.addFailed(store.FailedSource{DocID: id, Name: d.Name, Reason: unreadableFileReason})
 			continue
 		}
+		pages := d.Pages
+		if r, ok := job.Request.PageRanges[id]; ok && d.Type == "PDF" {
+			trimmed, err := docs.TrimPDF(data, r.From, r.To)
+			if err != nil {
+				slog.Warn("worker: pdf page range unusable", "job_id", job.ID, "doc_id", id, "err", err)
+				st.addFailed(store.FailedSource{DocID: id, Name: d.Name, Reason: unreadableFileReason})
+				continue
+			}
+			data, pages = trimmed, r.To-r.From+1
+		}
 		ready = append(ready, d)
 		blobs[id] = data
 		usage.bytes += int64(len(data))
-		usage.pages += d.Pages
+		usage.pages += pages
 	}
 	sources, byLabel, failed := PrepareSources(ready, blobs)
 	for _, f := range failed {

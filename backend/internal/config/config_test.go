@@ -64,14 +64,14 @@ func TestLoadConfigDefaults(t *testing.T) {
 	if cfg.GenMaxTotalBytes != 20971520 {
 		t.Errorf("GenMaxTotalBytes = %d, want 20971520", cfg.GenMaxTotalBytes)
 	}
-	if cfg.GenMaxPDFPages != 40 {
-		t.Errorf("GenMaxPDFPages = %d, want 40", cfg.GenMaxPDFPages)
+	if cfg.GenMaxPDFPages != 100 {
+		t.Errorf("GenMaxPDFPages = %d, want 100", cfg.GenMaxPDFPages)
 	}
 	if cfg.GenMaxFiles != 10 {
 		t.Errorf("GenMaxFiles = %d, want 10", cfg.GenMaxFiles)
 	}
-	if cfg.GenMaxInputTokens != 80000 {
-		t.Errorf("GenMaxInputTokens = %d, want 80000", cfg.GenMaxInputTokens)
+	if cfg.GenMaxInputTokens != 200000 {
+		t.Errorf("GenMaxInputTokens = %d, want 200000", cfg.GenMaxInputTokens)
 	}
 	if cfg.GenMaxPerCall != 15 {
 		t.Errorf("GenMaxPerCall = %d, want 15", cfg.GenMaxPerCall)
@@ -250,7 +250,7 @@ func TestGenLimitsFromDefaults(t *testing.T) {
 		t.Fatal(err)
 	}
 	l := c.GenLimits()
-	if l.MaxSources != 10 || l.MaxTotalBytes != 20971520 || l.MaxPDFPages != 40 || l.MaxRunning != 2 ||
+	if l.MaxSources != 10 || l.MaxTotalBytes != 20971520 || l.MaxPDFPages != 100 || l.MaxRunning != 2 ||
 		l.Quota.MaxUser != 3 || l.Quota.MaxRegen != 10 || l.Quota.MaxGlobal != 10 || l.Quota.BudgetUSD != 15 {
 		t.Errorf("limits = %+v", l)
 	}

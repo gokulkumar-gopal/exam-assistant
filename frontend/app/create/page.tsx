@@ -7,7 +7,8 @@ import { clearGenerated, setGenerated, type GeneratedResult } from "@/lib/genera
 import { useMe } from "@/lib/session";
 import type { AiModel, Doc, DocsResponse, ExamType, Marks, ModelsResponse } from "@/lib/types";
 import {
-  footerState, parseSources, questionCount, sourceLimitError, totalMarks, type Counts,
+  footerState, pageRangesBody, parseSources, questionCount, sourceLimitError, totalMarks, validateRange,
+  type Counts, type PageRange,
 } from "@/lib/totals";
 import { defaultModelId } from "@/lib/models";
 import { PEEKS_UI } from "@/lib/features";
@@ -64,6 +65,8 @@ function CreateInner() {
   const [docs, setDocs] = useState<Doc[] | null>(null);
   const [loadError, setLoadError] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  // Chosen page range per PDF id; an id without an entry means the whole file.
+  const [ranges, setRanges] = useState<Record<string, PageRange>>({});
   const seeded = useRef(false);
   const [type, setType] = useState<ExamType>("mcq");
   const [target, setTarget] = useState<number>(30);
@@ -130,7 +133,9 @@ function CreateInner() {
   }, []);
 
   const chosen = useMemo(() => (docs ?? []).filter((d) => selected.has(d.id)), [docs, selected]);
-  const limitError = sourceLimitError(chosen);
+  const limitError = sourceLimitError(chosen, ranges);
+  const rangeInvalid = chosen.some((d) => d.type === "PDF" && d.pages > 1 && ranges[d.id] !== undefined && validateRange(ranges[d.id], d.pages) !== null);
+  const setRange = useCallback((id: string, r: PageRange) => setRanges((m) => ({ ...m, [id]: r })), []);
   const total = totalMarks(counts);
   const fs = footerState(total, target, questionCount(counts), chosen.length > 0);
 
@@ -182,6 +187,7 @@ function CreateInner() {
     const req = {
       sourceIds: again ? again.params.sourceIds : chosen.map((d) => d.id),
       type: gType, counts: countsBody, shuffle, model: again ? again.model : modelId,
+      pageRanges: again ? again.params.pageRanges : pageRangesBody(chosen, ranges),
     };
     const current = () => runId.current === me;
     const finish = (n: { text: string; bad: boolean }[], canRetry: boolean) => {
@@ -211,7 +217,10 @@ function CreateInner() {
         const out: GeneratedResult = {
           questions: r.questions,
           model: r.model,
-          params: { sourceIds: req.sourceIds, type: gType, counts: countsBody, shuffle, target: gTarget },
+          params: {
+            sourceIds: req.sourceIds, type: gType, counts: countsBody, shuffle, target: gTarget,
+            ...(req.pageRanges ? { pageRanges: req.pageRanges } : {}),
+          },
         };
         setGenerated(out);
         setResult(out);
@@ -231,7 +240,7 @@ function CreateInner() {
         ctrl.current = null;
       }
     }
-  }, [applyModels, chosen, counts, modelId, shuffle, target, type]);
+  }, [applyModels, chosen, counts, modelId, ranges, shuffle, target, type]);
 
   const assignees = useMemo(() => parseEmails(assign, user?.role), [assign, user?.role]);
   // Peeks default to 3 for a personal practice exam and 0 when people are assigned, until the user edits it.
@@ -247,7 +256,7 @@ function CreateInner() {
     title, deadline, assigneeEmails: assignees.emails, assignError: assignees.error, maxPeeks,
   };
 
-  const generateEnabled = fs.generateEnabled && !limitError && !running && !publishLocked;
+  const generateEnabled = fs.generateEnabled && !limitError && !rangeInvalid && !running && !publishLocked;
 
   const onCancel = useCallback(() => {
     runId.current++; // ignore anything the in-flight run still reports
@@ -270,6 +279,8 @@ function CreateInner() {
           docs={docs}
           selected={selected}
           onToggle={toggle}
+          ranges={ranges}
+          onRange={setRange}
           error={limitError}
           loadError={loadError}
           onRetry={() => void load()}

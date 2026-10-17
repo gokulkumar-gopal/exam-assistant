@@ -312,3 +312,26 @@ func slicesContains(s []string, v string) bool {
 	}
 	return false
 }
+
+func TestRegenerateCarriesPageRanges(t *testing.T) {
+	e := newEnv(t)
+	ctx := context.Background()
+	e.putDoc(t, "u1", "big", "Book.pdf", "PDF", 50<<20, 300, store.DocReady)
+	r := regenReq("big")
+	if _, err := e.svc.Regenerate(ctx, e.user, r); err == nil {
+		t.Fatal("whole 300-page file accepted")
+	}
+	r.PageRanges = map[string]PageRange{"big": {From: 41, To: 80}}
+	id, err := e.svc.Regenerate(ctx, e.user, r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	j, _ := e.jobs.GetJob(ctx, id)
+	if j.Request.PageRanges["big"] != (PageRange{From: 41, To: 80}) {
+		t.Errorf("stored ranges = %v", j.Request.PageRanges)
+	}
+	r.PageRanges = map[string]PageRange{"big": {From: 41, To: 301}}
+	if ae := appErr(t, regenErr(t, e, r), 422); !strings.Contains(ae.Fields["pageRanges"], "Book.pdf") {
+		t.Errorf("fields = %v", ae.Fields)
+	}
+}

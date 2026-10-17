@@ -542,3 +542,78 @@ func TestCancelSetsFlagIdempotent204(t *testing.T) {
 	appErr(t, e.svc.Cancel(ctx, store.User{ID: "u2"}, "j"), 404)
 	appErr(t, e.svc.Cancel(ctx, e.user, "missing"), 404)
 }
+
+func withRanges(r GenerateRequest, ranges map[string]PageRange) GenerateRequest {
+	r.PageRanges = ranges
+	return r
+}
+
+func TestPageRangeCountsRangeLengthForCaps(t *testing.T) {
+	e := newEnv(t)
+	ctx := context.Background()
+	e.putDoc(t, "u1", "big", "Book.pdf", "PDF", 50<<20, 300, store.DocReady) // over the byte cap, over the page cap
+	if _, err := e.svc.Create(ctx, e.user, req("big")); err == nil {
+		t.Fatal("whole 300-page file accepted")
+	}
+	// Range of 40 pages: accepted even though the raw size is over the byte cap (the worker measures the trimmed size).
+	id, err := e.svc.Create(ctx, e.user, withRanges(req("big"), map[string]PageRange{"big": {From: 41, To: 80}}))
+	if err != nil {
+		t.Fatalf("40-page range rejected: %v", err)
+	}
+	if j, _ := e.jobs.GetJob(ctx, id); j.Request.PageRanges["big"] != (PageRange{From: 41, To: 80}) {
+		t.Errorf("stored ranges = %v", j.Request.PageRanges)
+	}
+	// A single ranged file over the cap gets the "Choose at most" message naming the file.
+	_, err = e.svc.Create(ctx, e.user, withRanges(req("big"), map[string]PageRange{"big": {From: 1, To: 41}}))
+	ae := appErr(t, err, 422)
+	if ae.Message != "Book.pdf has too many pages. Choose at most 40 pages." || !strings.Contains(ae.Fields["sourceIds"], "Book.pdf") {
+		t.Errorf("err = %+v", ae)
+	}
+}
+
+func TestPageRangeSumOverCap(t *testing.T) {
+	e := newEnv(t)
+	ctx := context.Background()
+	e.putDoc(t, "u1", "a", "a.pdf", "PDF", 1000, 200, store.DocReady)
+	e.putDoc(t, "u1", "b", "b.pdf", "PDF", 1000, 200, store.DocReady)
+	over := map[string]PageRange{"a": {From: 1, To: 20}, "b": {From: 10, To: 30}} // 20 + 21
+	_, err := e.svc.Create(ctx, e.user, withRanges(req("a", "b"), over))
+	if ae := appErr(t, err, 422); ae.Message != TooLargeMessage || len(ae.Fields) != 0 {
+		t.Errorf("err = %+v", ae)
+	}
+	ok := map[string]PageRange{"a": {From: 1, To: 20}, "b": {From: 10, To: 29}} // 20 + 20
+	if _, err := e.svc.Create(ctx, e.user, withRanges(req("a", "b"), ok)); err != nil {
+		t.Errorf("exactly 40 ranged pages rejected: %v", err)
+	}
+}
+
+func TestPageRangeInvalid422NamesFile(t *testing.T) {
+	e := newEnv(t)
+	e.putDoc(t, "u1", "p", "Notes.pdf", "PDF", 1000, 10, store.DocReady)
+	e.putDoc(t, "u1", "t", "notes.txt", "TXT", 1000, 3, store.DocReady)
+	e.putDoc(t, "u1", "other", "other.pdf", "PDF", 1000, 10, store.DocReady)
+	for name, c := range map[string]struct {
+		ids    []string
+		ranges map[string]PageRange
+		file   string
+	}{
+		"from zero":   {[]string{"p"}, map[string]PageRange{"p": {From: 0, To: 3}}, "Notes.pdf"},
+		"to past end": {[]string{"p"}, map[string]PageRange{"p": {From: 5, To: 11}}, "Notes.pdf"},
+		"reversed":    {[]string{"p"}, map[string]PageRange{"p": {From: 6, To: 5}}, "Notes.pdf"},
+		"not a pdf":   {[]string{"t"}, map[string]PageRange{"t": {From: 1, To: 1}}, "notes.txt"},
+		"not in ids":  {[]string{"p"}, map[string]PageRange{"other": {From: 1, To: 2}}, ""},
+		"unknown id":  {[]string{"p"}, map[string]PageRange{"nope": {From: 1, To: 2}}, ""},
+	} {
+		_, err := e.svc.Create(context.Background(), e.user, withRanges(req(c.ids...), c.ranges))
+		ae := appErr(t, err, 422)
+		if f := ae.Fields["pageRanges"]; f == "" || !strings.Contains(f, c.file) {
+			t.Errorf("%s: fields = %v", name, ae.Fields)
+		}
+	}
+	if len(e.runner.started) != 0 {
+		t.Errorf("a job started: %v", e.runner.started)
+	}
+	if _, err := e.svc.Create(context.Background(), e.user, withRanges(req("p"), map[string]PageRange{"p": {From: 1, To: 10}})); err != nil {
+		t.Errorf("full-file range rejected: %v", err)
+	}
+}

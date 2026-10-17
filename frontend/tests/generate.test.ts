@@ -123,6 +123,16 @@ describe("startGeneration", () => {
     expect(bodies[0]).toMatchObject({ model: "m2" });
     expect("model" in bodies[1]).toBe(false);
   });
+  it("sends pageRanges only when there is at least one", async () => {
+    const bodies: Record<string, unknown>[] = [];
+    const post = async (b: Record<string, unknown>) => { bodies.push(b); return { jobId: "j9" }; };
+    await startGeneration({ ...base, pageRanges: { d1: { from: 41, to: 80 } } }, post as never);
+    await startGeneration({ ...base, pageRanges: {} }, post as never);
+    await startGeneration(base, post as never);
+    expect(bodies[0]).toMatchObject({ pageRanges: { d1: { from: 41, to: 80 } } });
+    expect("pageRanges" in bodies[1]).toBe(false);
+    expect("pageRanges" in bodies[2]).toBe(false);
+  });
 });
 
 describe("generateErrorNotice", () => {

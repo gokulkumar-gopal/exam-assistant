@@ -1,12 +1,12 @@
 // Pure helpers for the Create page (fs 6.4).
-import type { Marks } from "./types";
+import type { Doc, Marks } from "./types";
 
 export type Counts = Record<Marks, number>;
 export type FooterTone = "accent" | "ok" | "bad";
 
 export const MAX_SOURCES = 10;
 export const MAX_BYTES = 20 * 1024 * 1024; // 20971520
-export const MAX_PAGES = 40;
+export const MAX_PDF_PAGES = 100;
 
 const KEYS: Marks[] = [1, 2, 3, 4, 5];
 
@@ -47,10 +47,53 @@ export function parseSources(param: string | null, readyIds: string[]): string[]
   return out;
 }
 
-/** Local mirror of the backend caps (fs 6.4). Returns an inline error or null. */
-export function sourceLimitError(sel: { sizeBytes: number; pages: number }[]): string | null {
+export interface PageRange { from: number; to: number }
+export type PageRanges = Record<string, PageRange>;
+
+/** The range in force for a document: the chosen one, else the whole file. */
+export function effectiveRange(pages: number, r?: PageRange): PageRange {
+  return r ?? { from: 1, to: pages };
+}
+
+/** Number of pages a range covers (0 for a malformed one). */
+export function rangeLength(r: PageRange): number {
+  return Number.isInteger(r.from) && Number.isInteger(r.to) && r.to >= r.from ? r.to - r.from + 1 : 0;
+}
+
+/** Valid means integers with 1 <= from <= to <= pages (backend-spec 8.4). Returns an inline error or null. */
+export function validateRange(r: PageRange, pages: number): string | null {
+  const ok = Number.isInteger(r.from) && Number.isInteger(r.to) && r.from >= 1 && r.from <= r.to && r.to <= pages;
+  return ok ? null : `Enter whole page numbers from 1 to ${pages}, with the first page not after the last.`;
+}
+
+export function isWholeFile(r: PageRange, pages: number): boolean {
+  return r.from === 1 && r.to === pages;
+}
+
+/** Local mirror of the backend caps (fs 6.4). PDFs count their selected range, other files no pages.
+ *  Returns an inline error or null. */
+export function sourceLimitError(
+  sel: Pick<Doc, "id" | "type" | "sizeBytes" | "pages">[],
+  ranges: PageRanges = {},
+): string | null {
   if (sel.length > MAX_SOURCES) return "Pick at most 10 files.";
   if (sel.reduce((s, d) => s + d.sizeBytes, 0) > MAX_BYTES) return "The selected files are over 20 MB in total.";
-  if (sel.reduce((s, d) => s + d.pages, 0) > MAX_PAGES) return "The selected files are over 40 pages in total.";
+  const pdfPages = sel.reduce(
+    (sum, d) => sum + (d.type === "PDF" ? rangeLength(effectiveRange(d.pages, ranges[d.id])) : 0), 0);
+  if (pdfPages > MAX_PDF_PAGES) {
+    return `The selected PDFs contain ${pdfPages} pages. The limit is ${MAX_PDF_PAGES} pages per question set. Select fewer PDFs or narrow a page range.`;
+  }
   return null;
+}
+
+/** Body field: only PDFs whose range is not the whole file, or undefined when there are none. */
+export function pageRangesBody(
+  sel: Pick<Doc, "id" | "type" | "pages">[], ranges: PageRanges,
+): PageRanges | undefined {
+  const out: PageRanges = {};
+  for (const d of sel) {
+    const r = ranges[d.id];
+    if (d.type === "PDF" && r && !isWholeFile(r, d.pages)) out[d.id] = { from: r.from, to: r.to };
+  }
+  return Object.keys(out).length ? out : undefined;
 }

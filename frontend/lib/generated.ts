@@ -3,6 +3,7 @@ import type { ExamType, Question } from "./types";
 
 export interface GeneratedParams {
   sourceIds: string[]; type: ExamType; counts: Record<string, number>; shuffle: boolean; target: number;
+  pageRanges?: Record<string, { from: number; to: number }>;
 }
 export interface GeneratedResult { questions: Question[]; model: string; params: GeneratedParams }
 

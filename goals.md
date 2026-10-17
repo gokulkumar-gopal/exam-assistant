@@ -160,7 +160,7 @@ Note: `frontend-spec.md` already describes the viewer's Generate button, per-que
 - Parents see linked students' exams and scores, but not private documents.
 - MVP grading: multiple choice is automatic, and free text is self-checked or manually marked.
 - Timer is a fixed deadline. Saving doesn't pause it, and saved answers are auto-submitted at the deadline.
-- File limit is 20 MB per file, in PDF, TXT, JPG, or PNG. One generation job can use up to 10 files, 20 MB and 40 PDF pages in total.
+- File limit is 20 MB per file, in PDF, TXT, JPG, or PNG. One generation job can use up to 10 files, 20 MB and 100 PDF pages in total. For a long PDF the user can choose a page range (From and To) and only those pages count.
 - **LLM budget: about $20 a month.** The app keeps its own estimate of LLM spend and refuses new generation jobs once it reaches $15 for the month (`LLM_MONTHLY_BUDGET_USD`); the LLM key has a $20 monthly limit at the provider, set before the production deploy. Other limits: 3 generate jobs and 10 regenerates per user a day, 10 jobs a day for the whole app. On the default cheap model that is a few hundred jobs a month; on Sonnet or Opus it is a few dozen.
 - Both sign-in methods are offered. Google is the lower-friction path; email and password stays because many students are minors or use school accounts that may not allow Google sign-in.
 - A new Google user without a chosen role is asked for one before the account is created.

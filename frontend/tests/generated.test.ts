@@ -10,6 +10,11 @@ const r: GeneratedResult = {
 afterEach(() => { clearGenerated(); vi.unstubAllGlobals(); });
 
 describe("generated store", () => {
+  it("keeps pageRanges in the saved params so Regenerate all can reuse them", () => {
+    const withRanges: GeneratedResult = { ...r, params: { ...r.params, pageRanges: { d1: { from: 41, to: 80 } } } };
+    setGenerated(withRanges);
+    expect(getGenerated()?.params.pageRanges).toEqual({ d1: { from: 41, to: 80 } });
+  });
   it("round-trips in memory when sessionStorage is unavailable", () => {
     expect(getGenerated()).toBeNull();
     setGenerated(r);

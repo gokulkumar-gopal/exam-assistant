@@ -4,6 +4,7 @@ import type { ExamType, FailedSource, JobResponse, Marks, Question, RegenerateBo
 
 export interface GenerateRequest {
   sourceIds: string[]; type: ExamType; counts: Record<string, number>; shuffle: boolean; model?: string;
+  pageRanges?: Record<string, { from: number; to: number }>;
 }
 export type JobResult =
   | { status: "done"; questions: Question[]; model: string; failedSources?: FailedSource[] }
@@ -39,8 +40,12 @@ export async function startGeneration(
   req: GenerateRequest,
   post: (body: Record<string, unknown>) => Promise<{ jobId: string }> = (b) => api("POST", "/generate", b),
 ): Promise<{ jobId: string }> {
-  const { model, ...rest } = req;
-  return post(model === undefined ? { ...rest } : { ...rest, model });
+  const { model, pageRanges, ...rest } = req;
+  return post({
+    ...rest,
+    ...(model === undefined ? {} : { model }),
+    ...(pageRanges && Object.keys(pageRanges).length ? { pageRanges } : {}),
+  });
 }
 
 const AVOID_MAX = 60;
@@ -49,12 +54,14 @@ const AVOID_LEN = 600;
 /** Body for POST /generate/regenerate: `avoid` is the text of every question now in the list
  *  (clamped to the backend caps), `model` the one the original job used. */
 export function buildRegenerateBody(
-  current: Question[], marks: Marks, p: { sourceIds: string[]; type: ExamType }, model?: string,
+  current: Question[], marks: Marks, p: { sourceIds: string[]; type: ExamType; pageRanges?: Record<string, { from: number; to: number }> },
+  model?: string,
 ): RegenerateBody {
   const body: RegenerateBody = {
     marks, sourceIds: p.sourceIds, type: p.type,
     avoid: current.slice(0, AVOID_MAX).map((q) => q.text.slice(0, AVOID_LEN)),
   };
+  if (p.pageRanges && Object.keys(p.pageRanges).length) body.pageRanges = p.pageRanges;
   if (model) body.model = model;
   return body;
 }

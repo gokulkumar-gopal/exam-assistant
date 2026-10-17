@@ -26,7 +26,7 @@
 - Secrets scoped per function: API gets `JWT_SECRET`, `GOOGLE_CLIENT_ID`, `ALLOWED_ORIGINS`; worker gets `LLM_API_KEY`, `GEMINI_API_KEY`; `LLM_PROVIDERS` and `LLM_MODEL` (empty = cheapest enabled) on both (dep 6.2).
 - Secrets never in Git, never on the sam command line; flow is `.env.deploy.<stage>` -> `write-samconfig.sh` -> `.samconfig.<stage>.toml` (mode 600) (dep 5, 8.2).
 - Hard gate: provider-side monthly spend limit of $20 on the key of every provider in `LLM_PROVIDERS` before prod deploy; Gemini key on its own billing-enabled paid-tier project, never free tier (dep 3, 8.4).
-- App-side budget `LLM_MONTHLY_BUDGET_USD` default 15; backend defaults: `GEN_MAX_PER_DAY` 3, `GEN_MAX_REGEN_PER_DAY` 10, `GEN_MAX_GLOBAL_PER_DAY` 10, `GEN_MAX_PDF_PAGES` 40, `GEN_MAX_TOTAL_BYTES` 20971520 (backend 11, AI 12). These are code defaults, not set in the template (dep 6.4).
+- App-side budget `LLM_MONTHLY_BUDGET_USD` default 15; backend defaults: `GEN_MAX_PER_DAY` 3, `GEN_MAX_REGEN_PER_DAY` 10, `GEN_MAX_GLOBAL_PER_DAY` 10, `GEN_MAX_PDF_PAGES` 100, `GEN_MAX_INPUT_TOKENS` 200000, `GEN_MAX_TOTAL_BYTES` 20971520 (backend 11, AI 12). These are code defaults, not set in the template (dep 6.4).
 - Presigned URLs last 10 minutes; S3 CORS methods GET, PUT, HEAD, headers `*`, expose `ETag`, origins from `FrontendOrigins` (backend 12).
 - Session cookie: `HttpOnly`, `Secure`, `SameSite=Lax`, no `Domain` (dep 8.3).
 - Logs: JSON to CloudWatch, 14-day retention (dep 6.2, 10).
@@ -358,7 +358,7 @@ All paths relative to the repo root `exam-assistant/`. Application code belongs 
 ## Open questions
 
 - Region, free-tier program and account end date, custom domain, preview support, production branch name, Google consent-screen mode, one vs two Google clients, whether to keep `dev` (dep 14). The plan assumes `us-east-1`, the default `vercel.app` domain, `main`, two clients, a dev stack kept, previews visual-only.
-- **Defaults conflict.** backend-spec 11 and AI-spec 12 say `GEN_MAX_PER_DAY` 3, `GEN_MAX_REGEN_PER_DAY` 10, `GEN_MAX_GLOBAL_PER_DAY` 10, `GEN_MAX_PDF_PAGES` 40; the earlier decision record said 10 / 30 / 200 / 100. The plan follows the specs as written; confirm which is intended.
+- **Defaults conflict.** backend-spec 11 and AI-spec 12 say `GEN_MAX_PER_DAY` 3, `GEN_MAX_REGEN_PER_DAY` 10, `GEN_MAX_GLOBAL_PER_DAY` 10, `GEN_MAX_PDF_PAGES` 100 (restored to the earlier decision on 2026-10-17); the earlier decision record said 10 / 30 / 200 / 100 for the daily limits. The plan follows the specs as written for those; confirm which is intended.
 - deployment-spec 6.4 lists `GEN_MAX_PER_DAY` etc. as "API" only; the worker may also need `GEN_MAX_*` caps and `LLM_MONTHLY_BUDGET_USD` (listed as api and worker). Not set in the template either way; fine while defaults apply, but any override must go on both functions.
 - `write-samconfig.sh` writes `LlmProviders` and the origin lists with escaped quotes; the exact TOML escaping is unproven (D-0.4 settles it).
 - Gemini cannot hard-cap spend (alert only): the plan relies on the app budget; decide whether that is acceptable for prod.

@@ -448,7 +448,8 @@ export function mockFetch(method: string, rawPath: string, body: unknown, idempo
 
   // Generation
   // Test triggers (mock only), read from the page URL: ?mockGen=
-  //   failed | failedSources | rate | budget | file422 | model422 | network
+  //   failed | failedSources | rate | budget | file422 | range422 | model422 | network
+  //   (range422: always answers 422 with fields.pageRanges, like an out-of-range request)
   //   html (first generated question is the literal text <b>x</b>)
   //   regenFail (POST /generate/regenerate jobs end in failed)
   // model422 only answers 422 when a non-default model is sent, so the reset-to-default retry succeeds.
@@ -458,6 +459,17 @@ export function mockFetch(method: string, rawPath: string, body: unknown, idempo
     if (trigger === "rate") return err(429, "rate_limited", "You've reached today's limit for generating exams. Try again tomorrow.");
     if (trigger === "budget") return err(429, "rate_limited", "The monthly AI budget has been used. Try again next month.");
     if (trigger === "file422") return err(422, "validation", "Biology.pdf has too many pages to use. Remove it or pick a smaller file.", { sourceIds: "Biology.pdf" });
+    if (trigger === "range422") {
+      return err(422, "validation", "Textbook.pdf has a page range outside the file. Choose pages from 1 to 300.", { pageRanges: "Textbook.pdf" });
+    }
+    // Like the real backend (backend-spec 8.4): keys in sourceIds, PDFs only, 1 <= from <= to <= pages.
+    for (const [rid, r] of Object.entries(b.pageRanges ?? {})) {
+      const doc = state.docs.find((d) => d.id === rid);
+      const name = doc?.name ?? "A file";
+      const ok = doc !== undefined && doc.type === "PDF" && b.sourceIds.includes(rid) && r !== null && typeof r === "object"
+        && Number.isInteger(r.from) && Number.isInteger(r.to) && r.from >= 1 && r.from <= r.to && r.to <= doc.pages;
+      if (!ok) return err(422, "validation", `${name} has a page range that can't be used. Choose pages within the file.`, { pageRanges: name });
+    }
     if (trigger === "model422" && b.model !== undefined && b.model !== models[0].id) {
       return err(422, "validation", "That model isn't available.", { model: "unknown or not enabled" });
     }

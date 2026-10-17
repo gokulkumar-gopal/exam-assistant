@@ -61,7 +61,7 @@ This revision intentionally replaces obsolete expectations; these are traceable 
 | Students cannot create | All roles create; assignment target/caps depend on creator role |
 | Creator always sees keys / three visibility modes | Fixed visibility including creator-taking exception and acceptingUntil |
 | Finalize at closesAt with a separate submit grace | All acceptance/finalization/key timing uses acceptingUntil |
-| 25 MB upload / 100 PDF pages / 200k tokens | 20 MB upload/aggregate, 40 PDF pages, 80k input prefix tokens |
+| 25 MB upload / 100 PDF pages / 200k tokens | 20 MB upload/aggregate; 100 PDF pages and 200k input prefix tokens per job (restored 2026-10-17), with optional per-PDF page ranges that count only the range |
 | Sequential provider calls | Cache-warm first call then <=3 concurrent with shared dedup/accounting |
 | Five-minute stale rule / old retry defaults | 20s heartbeat, >6min stale, 120s attempts +1 SDK retry, 8min job |
 | Single Anthropic adapter and deployment-only model choice | Two official adapters and signed-in per-job catalog selection |
@@ -136,7 +136,7 @@ These are current product defaults, not proposed overrides:
 | Concern | Expected contract |
 |---|---|
 | Upload | 1–20,971,520 bytes (20 MB) per file, PDF/TXT/JPG/PNG |
-| Generation sources | At most 10 files, 20,971,520 bytes total, 40 PDF pages; metadata validation before creating job/quota increments; 80,000-token prefix cap per AI spec |
+| Generation sources | At most 10 files, 20,971,520 bytes total, 100 PDF pages (a PDF with a `pageRanges` entry counts its range length and is excluded from the API byte total); metadata validation before creating job/quota increments, including `pageRanges` (key in `sourceIds`, PDF only, `1 <= from <= to <= pages`); 200,000-token prefix cap per AI spec |
 | Generation timing | Usually about 2 minutes (measured target); UI cancels at 6 minutes or 3 consecutive poll failures; stale after >6 minutes without heartbeat; 8-minute worker context; 10-minute Lambda |
 | Scheduling | First provider call alone; remaining work at most 3 concurrent calls; one shared final count/dedup validation |
 | Daily quotas | Generate 3/user, regenerate 10/user, all jobs 10 globally, keyed by UTC date; atomic transaction with job creation |
@@ -358,7 +358,7 @@ Still block regressions in normal saving/resume, lost current answers on the zer
 |---|---|
 | AI-INPUT-01 | API validates ready owned source metadata, model, aggregate bytes/pages before job/quota writes without S3 access; source too many pages gives 422 naming that file, aggregate overflow gives specified set message. Worker rechecks owned sources, stable order, opaque label-to-ID/name mapping; unknown/unreadable labels and no source substitution. |
 | AI-PREP-01 | PDF page counting; corrupt/encrypted/unreadable input handled safely; UTF-8/control handling; EXIF before downscale; downscale when longest side >2000px even if file <4 MB; JPEG re-encode when >4 MB or downscaled. No upscaling; rotated non-square images and alpha/format conversion; actual encoded output meets provider limits. |
-| AI-CAP-01 | Source count 10, raw bytes 20,971,520, PDF pages 40, input tokens 80,000, question totals/counts/marks and call cap; boundary−1/boundary/boundary+1. Invalid metadata creates no job/counters/provider requests. Token cap may require counting; Gemini fallback only if DEC-09 approved. No generation when over cap. |
+| AI-CAP-01 | Source count 10, raw bytes 20,971,520, PDF pages 100, input tokens 200,000, question totals/counts/marks and call cap; boundary−1/boundary/boundary+1. Page ranges: a 300-page PDF with range 1-100 passes and 1-101 fails; invalid ranges (from>to, to>pages, from<1, non-PDF, key not in `sourceIds`) return 422 `fields.pageRanges`; the bytes sent to the provider are the trimmed PDF. Invalid metadata creates no job/counters/provider requests. Token cap may require counting; Gemini fallback only if DEC-09 approved. No generation when over cap. |
 | AI-VALID-01 | Every check in AI section 7.1 accepts valid boundary input and rejects invalid input: type/schema/marks, empty/length text, HTML/fences, controls, source, options, index, model answer. Include Unicode character-count semantics and extra/missing fields. |
 | AI-DUP-01 | Normalized duplicates, case/punctuation/whitespace variants, similarity below/at/above 0.8, duplicates across batches/mark values and against `Avoid`. Define/token-test normalization deterministically; include short questions where a heuristic may over-reject. |
 | AI-CHUNK-01 | Counts 1/15/16/30 per mark and mixed distributions under total limits. At most 10 initial logical calls/20 including content retries; each requested count <=15. First call alone, then maximum 3 concurrent; concurrent batches may not yet know each other's texts, so final shared dedup/count validation must catch cross-batch overlap. Replenishment obeys existing retry budget or job fails; never accept short/duplicate output. |
@@ -613,7 +613,7 @@ Compare fixture/model-by-fixture/model results, drop/shortfall/refusal rate, rev
 |---|---|
 | DEPLOY-01 | `/api/health` through Vercel works; real auth cookie survives refresh with intended production flags; correct rewrite/path handling; no business/data logic migrated into frontend to bypass backend bugs. |
 | DEPLOY-02 | Actual 20 MB PDF uploads direct to S3 with real progress; private bucket and anonymous object fetch denied; presigned expiry checked using a new request after expiry, not a cached loaded viewer. |
-| DEPLOY-03 | >20 MB single upload rejected; two individually valid sources totaling >20 MB, or a valid uploaded PDF >40 pages, fail generation metadata validation before job/quota writes or provider calls. Do not retain the obsolete 25 MB accepted-upload case. |
+| DEPLOY-03 | >20 MB single upload rejected; two individually valid sources totaling >20 MB, or a valid uploaded PDF >100 pages with no page range (or a range longer than 100 pages), fail generation metadata validation before job/quota writes or provider calls. Do not retain the obsolete 25 MB accepted-upload case. |
 | DEPLOY-04 | Exact production/dev origins and Google client separation; real Google flow; no permissive wildcard introduced to make previews pass. Direct Function URL still enforces auth/authorization and mutation-origin policy. |
 | DEPLOY-05 | Effective API/worker IAM separation supports operations without broad access: missing S3 key maps correctly with intended ListBucket permission; worker reads documents/objects and updates jobs/counters, not exam/user data. Job deadline/heartbeat/SDK retry and optional concurrency reservations match actual config; low account quota does not make optional reservations mandatory. |
 | DEPLOY-06 | Private encrypted storage, no secrets in bundles/Git/config/history/reports/process arguments, safe logs/retention, stage-separated secrets; provider keys worker-only, JWT API-only, no public bypasses. Generated untracked deployment configuration must be ignored and kept private per deployment spec; scan with redacted findings. |

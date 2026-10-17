@@ -336,3 +336,34 @@ func TestCompleteOtherUsersDoc404(t *testing.T) {
 		t.Error("foreign complete changed the row")
 	}
 }
+
+func TestTrimPDFValidRange(t *testing.T) {
+	for _, c := range []struct{ from, to, want int }{{1, 1, 1}, {3, 7, 5}, {1, 10, 10}, {10, 10, 1}} {
+		out, err := TrimPDF(buildPDF(10), c.from, c.to)
+		if err != nil {
+			t.Fatalf("%d-%d: %v", c.from, c.to, err)
+		}
+		if n, err := CountPages("application/pdf", out); err != nil || n != c.want {
+			t.Errorf("%d-%d: pages = %d, %v, want %d", c.from, c.to, n, err, c.want)
+		}
+	}
+}
+
+func TestTrimPDFOutOfRange(t *testing.T) {
+	for name, r := range map[string][2]int{"past the end": {5, 11}, "from zero": {0, 3}, "reversed": {4, 2}, "negative": {-1, 2}, "all past": {11, 12}} {
+		out, err := TrimPDF(buildPDF(10), r[0], r[1])
+		if err == nil || !errors.Is(err, ErrUnreadable) {
+			t.Errorf("%s: out=%d bytes err=%v, want ErrUnreadable", name, len(out), err)
+		}
+	}
+}
+
+func TestTrimPDFBadInputNeverPanics(t *testing.T) {
+	garbage := append([]byte("%PDF-1.4\n"), bytes.Repeat([]byte{0x00, 0xff, 'x'}, 500)...)
+	for name, in := range map[string][]byte{"garbage": garbage, "zero pages": buildPDF(0), "header only": []byte("%PDF-"), "truncated": buildPDF(3)[:120], "nil": nil} {
+		out, err := TrimPDF(in, 1, 2)
+		if err == nil || !errors.Is(err, ErrUnreadable) || out != nil {
+			t.Errorf("%s: out=%d err=%v, want ErrUnreadable", name, len(out), err)
+		}
+	}
+}

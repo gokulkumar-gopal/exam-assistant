@@ -14,6 +14,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/gokulkumar/exam-assistant/backend/internal/docs"
 	"github.com/gokulkumar/exam-assistant/backend/internal/store"
 )
 
@@ -458,5 +459,18 @@ func TestPixelCapIs25Megapixels(t *testing.T) {
 	// End to end, through DecodeConfig, with header-only fixtures.
 	if _, err := Downscale(bombPNG(5000, 5001)); !errors.Is(err, ErrImageTooLarge) {
 		t.Errorf("5000x5001 header: %v", err)
+	}
+}
+
+// Ranged PDFs reach PrepareSources already trimmed; it passes a PDF through as it is.
+func TestPrepareSourcesKeepsTrimmedPDFBytes(t *testing.T) {
+	trimmed, err := docs.TrimPDF(testPDF(9), 2, 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := store.Document{ID: "p", Name: "p.pdf", Type: "PDF", ContentType: "application/pdf"}
+	got, _, failed := PrepareSources([]store.Document{d}, map[string][]byte{"p": trimmed})
+	if len(failed) != 0 || len(got) != 1 || !bytes.Equal(got[0].Bytes, trimmed) {
+		t.Errorf("got %d sources, failed %v", len(got), failed)
 	}
 }

@@ -53,3 +53,28 @@ func pdfPages(data []byte) (n int, err error) {
 	}
 	return n, nil
 }
+
+// TrimPDF returns a PDF holding only pages from..to (1-based, inclusive) of data. A PDF that
+// cannot be read or trimmed, or a range outside it, yields an error wrapping ErrUnreadable;
+// it never panics.
+func TrimPDF(data []byte, from, to int) (out []byte, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			out, err = nil, fmt.Errorf("%w: pdf library panic: %v", ErrUnreadable, r)
+		}
+	}()
+	if from < 1 || to < from {
+		return nil, fmt.Errorf("%w: invalid page range %d-%d", ErrUnreadable, from, to)
+	}
+	conf := model.NewDefaultConfiguration()
+	conf.ValidationMode = model.ValidationRelaxed
+	var buf bytes.Buffer
+	if err := api.Trim(bytes.NewReader(data), &buf, []string{fmt.Sprintf("%d-%d", from, to)}, conf); err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrUnreadable, err)
+	}
+	// pdfcpu clamps a range that runs past the last page, so check what came out.
+	if n, err := pdfPages(buf.Bytes()); err != nil || n != to-from+1 {
+		return nil, fmt.Errorf("%w: page range %d-%d is not in the file", ErrUnreadable, from, to)
+	}
+	return buf.Bytes(), nil
+}

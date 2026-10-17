@@ -393,10 +393,10 @@ The frontend retries a `role_required` response by sending the same credential a
 
 | Method and path | Body and response |
 |---|---|
-| `POST /generate` | body `{ sourceIds: string[], type: "mcq"\|"free", counts: {"1":4,"2":3,...}, shuffle: boolean, model?: string }`. `model` is a catalog id from `GET /ai/models`; omitted means the default. Response `202 { jobId }` |
+| `POST /generate` | body `{ sourceIds: string[], pageRanges?: { [docId]: { from: number, to: number } }, type: "mcq"\|"free", counts: {"1":4,"2":3,...}, shuffle: boolean, model?: string }`. `model` is a catalog id from `GET /ai/models`; omitted means the default. `pageRanges` is optional and keyed by a document id that is also in `sourceIds`: only that PDF's pages `from` to `to` (1-based, inclusive) are used. Response `202 { jobId }` |
 | `GET /generate/{jobId}` | response below |
 | `DELETE /generate/{jobId}` | sets `CancelRequested`, returns `204` (idempotent). The client also calls it when it gives up polling or the user leaves |
-| `POST /generate/regenerate` | body `{ marks, sourceIds, type, avoid: string[], model?: string }` (`avoid` at most 60 strings of at most 600 characters), response `202 { jobId }` |
+| `POST /generate/regenerate` | body `{ marks, sourceIds, pageRanges?, type, avoid: string[], model?: string }` (`pageRanges` as in `POST /generate`; `avoid` at most 60 strings of at most 600 characters), response `202 { jobId }` |
 
 Poll response:
 
@@ -423,8 +423,9 @@ When `status` is `done`, `questions` is the final ordered list. Each question is
 **Validation before the job is created** (all from the `Document` rows, no S3 access needed):
 - `model`, if present, must be a catalog model that is enabled (`LLM_PROVIDERS`); otherwise `422` with `fields.model`.
 - Only the job's owner can read or cancel it (`404` otherwise). All `sourceIds` must belong to the caller and be `ready` (`422` otherwise).
-- Total raw bytes of the sources at most `GEN_MAX_TOTAL_BYTES` (20 MB), total PDF pages at most `GEN_MAX_PDF_PAGES` (40), at most 10 sources.
-- A single file that alone breaks the pages cap gets `422` with `fields.sourceIds` naming that file. A set that is only too large in total gets `422` "These files are too large to use together. Select fewer or smaller files."
+- Total raw bytes of the sources at most `GEN_MAX_TOTAL_BYTES` (20 MB), total PDF pages at most `GEN_MAX_PDF_PAGES` (100), at most 10 sources. A PDF with a `pageRanges` entry counts its range length, not its page count, and is left out of the API's byte total; the worker applies the byte cap to the trimmed size before the first model call.
+- `pageRanges`: every key must be in `sourceIds`, the document must be a PDF, and `1 <= from <= to <= pages`; otherwise `422` with `fields.pageRanges` naming the file.
+- A single file that alone breaks the pages cap (its range length, if it has a range) gets `422` "{name} has too many pages. Choose at most {N} pages." with `fields.sourceIds` naming that file. A set that is only too large in total gets `422` "These files are too large to use together. Select fewer or smaller files."
 
 ### 8.5 Exams
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 	"sync"
@@ -61,6 +62,9 @@ func cloneJob(j store.Job) store.Job {
 			c[k] = v
 		}
 		j.Request.Counts = c
+	}
+	if j.Request.PageRanges != nil {
+		j.Request.PageRanges = maps.Clone(j.Request.PageRanges)
 	}
 	return j
 }

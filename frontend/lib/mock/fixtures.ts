@@ -8,6 +8,8 @@ export const docs: Doc[] = [
   { id: "d1", name: "Biology.pdf", type: "PDF", pages: 12, sizeBytes: 481234, createdAt: "2026-10-14T09:00:00Z" },
   { id: "d2", name: "Photosynthesis.jpg", type: "JPG", pages: 1, sizeBytes: 220311, createdAt: "2026-10-12T09:00:00Z" },
   { id: "d3", name: "Notes.txt", type: "TXT", pages: 2, sizeBytes: 5120, createdAt: "2026-10-10T09:00:00Z" },
+  // 300-page PDF for page ranges (the viewer reuses the small sample.pdf bytes).
+  { id: "d4", name: "Textbook.pdf", type: "PDF", pages: 300, sizeBytes: 3_200_000, createdAt: "2026-10-09T09:00:00Z" },
 ];
 
 export const models: AiModel[] = [

@@ -45,14 +45,21 @@ type QuotaCheck struct {
 	BudgetMicros                 int64
 }
 
+// PageRange is a 1-based inclusive page range of one PDF source.
+type PageRange struct {
+	From int `json:"from"`
+	To   int `json:"to"`
+}
+
 // GenerateRequest is the validated request a job was created from.
 type GenerateRequest struct {
-	SourceIDs []string       `json:"sourceIds"`
-	Type      string         `json:"type"` // "mcq" | "free"
-	Counts    map[string]int `json:"counts,omitempty"`
-	Marks     int            `json:"marks,omitempty"` // regenerate only
-	Shuffle   bool           `json:"shuffle,omitempty"`
-	Avoid     []string       `json:"avoid,omitempty"`
+	SourceIDs  []string             `json:"sourceIds"`
+	Type       string               `json:"type"` // "mcq" | "free"
+	Counts     map[string]int       `json:"counts,omitempty"`
+	Marks      int                  `json:"marks,omitempty"` // regenerate only
+	Shuffle    bool                 `json:"shuffle,omitempty"`
+	Avoid      []string             `json:"avoid,omitempty"`
+	PageRanges map[string]PageRange `json:"pageRanges,omitempty"` // by document id; PDFs only
 }
 
 // FailedSource is a source file the worker could not read.

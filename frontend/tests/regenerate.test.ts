@@ -14,6 +14,12 @@ describe("buildRegenerateBody", () => {
     expect(Object.keys(body).sort()).toEqual(["avoid", "marks", "model", "sourceIds", "type"]);
     expect(body).toEqual({ marks: 3, sourceIds: ["d1"], type: "mcq", avoid: ["First?", "<b>x</b>"], model: "m1" });
   });
+  it("carries pageRanges from the saved params when present", () => {
+    const pageRanges = { d1: { from: 41, to: 80 } };
+    const body = buildRegenerateBody(qs, 3, { sourceIds: ["d1"], type: "mcq", pageRanges }, "m1");
+    expect(Object.keys(body).sort()).toEqual(["avoid", "marks", "model", "pageRanges", "sourceIds", "type"]);
+    expect(body.pageRanges).toEqual(pageRanges);
+  });
   it("respects the backend caps on avoid", () => {
     const many = Array.from({ length: 70 }, (_, i) => ({ id: `${i}`, marks: 1 as const, text: "x".repeat(700) }));
     const body = buildRegenerateBody(many, 1, { sourceIds: [], type: "free" }, "m");

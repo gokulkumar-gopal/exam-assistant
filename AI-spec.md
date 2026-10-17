@@ -162,8 +162,8 @@ Sources are labelled `doc-1`, `doc-2`, and so on, in the stable order. The label
 |---|---|---|
 | Files per job | 10 | matches the request limit in `backend-spec.md` 7.5 |
 | Total raw bytes per job | 20 MB | the API request limit is about 32 MB, and base64 grows data by about a third. Larger sets need the Files API (section 16) |
-| Total PDF pages per job | 40 | keeps cost and time predictable |
-| Input tokens per job (measured) | 80,000 | a cost guard (section 10.2); about 40 PDF pages |
+| Total PDF pages per job | 100 | keeps cost and time predictable. A PDF with a page range (`pageRanges`, `backend-spec.md` 8.4) is trimmed to that range before it is sent, and counts only the range |
+| Input tokens per job (measured) | 200,000 | a cost guard (section 10.2); about 100 PDF pages. Claude Haiku 4.5 has a 200K context window and a lower PDF page limit, so jobs near this cap may fail on it with the too-large message; measure with `count_tokens` before relying on it |
 | Questions per call | 15 | keeps each response small and reliable. A request for 30 1-mark questions is two calls of 15 |
 | Calls per job | 10 first-attempt calls | five mark values, each at most two chunks. Each call may be retried once (a shortfall or `max_tokens` retry), so at most 20 in total |
 
@@ -359,6 +359,7 @@ Two cases, both with five mark values. Claude uses prompt caching with cache wri
 
 - **Small:** 15,000 input tokens of files (about 10 pages), four calls of about 3,000 output tokens each including thinking.
 - **Heavy:** 60,000 input tokens of files (about 30 to 40 pages), five calls of about 4,000 output tokens each.
+- **At the cap:** up to 200,000 input tokens (about 100 pages) is allowed per job. Input cost is then about 3.3 times a heavy job (200,000 / 60,000) for the same number of calls, so the "jobs a month" figures below shrink for such jobs. The budget guard (section 10) still bounds total spend.
 
 | Model | Small job | Heavy job | Jobs a month on a $15 budget (small / heavy) |
 |---|---|---|---|
@@ -403,8 +404,8 @@ These join the variables in `backend-spec.md` section 11.
 | `LLM_TIMEOUT_SECONDS` | `120` | per-call timeout (SDK max retries is fixed at 1) |
 | `GEN_MAX_FILES` | `10` | files per job |
 | `GEN_MAX_TOTAL_BYTES` | `20971520` | raw bytes per job (20 MB) |
-| `GEN_MAX_PDF_PAGES` | `40` | pages per job |
-| `GEN_MAX_INPUT_TOKENS` | `80000` | measured input tokens per job |
+| `GEN_MAX_PDF_PAGES` | `100` | pages per job (a PDF with a page range counts its range length) |
+| `GEN_MAX_INPUT_TOKENS` | `200000` | measured input tokens per job |
 | `GEN_MAX_PER_CALL` | `15` | questions per call |
 | `GEN_MAX_RUNNING` | `2` | soft limit on running jobs per user |
 | `GEN_MAX_PER_DAY` | `3` | generate jobs per user per UTC day |

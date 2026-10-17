@@ -227,7 +227,7 @@ func TestCapsFailBeforeAnyCall(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		e.w.Cfg.MaxPDFPages = 40
+		e.w.Cfg.MaxPDFPages = 40 // explicit; the fallback is 100
 		e.run(t)
 		e.wantFailed(t, TooLargeMessage)
 		if e.gen.callCount() != 0 {
@@ -236,7 +236,7 @@ func TestCapsFailBeforeAnyCall(t *testing.T) {
 	})
 	t.Run("tokens", func(t *testing.T) {
 		e := newWEnv(t, map[string]int{"1": 2})
-		cg := e.withCounter(80_001)
+		cg := e.withCounter(200_001)
 		e.run(t)
 		e.wantFailed(t, TooLargeMessage)
 		if cg.callCount() != 0 || cg.counted.Load() != 1 {
@@ -248,7 +248,7 @@ func TestCapsFailBeforeAnyCall(t *testing.T) {
 	})
 	t.Run("exactly at the token cap passes", func(t *testing.T) {
 		e := newWEnv(t, map[string]int{"1": 2})
-		e.withCounter(80_000)
+		e.withCounter(200_000)
 		e.run(t)
 		if e.job(t).Status != store.JobDone {
 			t.Errorf("job = %+v", e.job(t))

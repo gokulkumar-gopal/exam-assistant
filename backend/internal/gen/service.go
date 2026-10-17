@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"strconv"
 	"time"
@@ -59,13 +60,18 @@ type Limits struct {
 	Quota         QuotaLimits
 }
 
-// GenerateRequest is the body of POST /generate.
+// PageRange is a 1-based inclusive page range of one PDF source.
+type PageRange = store.PageRange
+
+// GenerateRequest is the body of POST /generate. PageRanges is optional and keyed by
+// document id (backend-spec 8.4).
 type GenerateRequest struct {
-	SourceIDs []string       `json:"sourceIds"`
-	Type      string         `json:"type"`
-	Counts    map[string]int `json:"counts"`
-	Shuffle   bool           `json:"shuffle"`
-	Model     string         `json:"model,omitempty"`
+	SourceIDs  []string             `json:"sourceIds"`
+	Type       string               `json:"type"`
+	Counts     map[string]int       `json:"counts"`
+	Shuffle    bool                 `json:"shuffle"`
+	Model      string               `json:"model,omitempty"`
+	PageRanges map[string]PageRange `json:"pageRanges,omitempty"`
 }
 
 // Progress is the poll view's progress object.
@@ -114,7 +120,7 @@ func (s *Service) Create(ctx context.Context, user store.User, req GenerateReque
 	if err != nil {
 		return "", err
 	}
-	if err := s.checkDocuments(ctx, user, req.SourceIDs); err != nil {
+	if err := s.checkDocuments(ctx, user, req.SourceIDs, req.PageRanges); err != nil {
 		return "", err
 	}
 	modelID, err := s.resolveModel(req.Model)
@@ -126,6 +132,7 @@ func (s *Service) Create(ctx context.Context, user store.User, req GenerateReque
 		Kind: store.KindGenerate, Model: modelID,
 		Request: store.GenerateRequest{
 			SourceIDs: slices.Clone(req.SourceIDs), Type: req.Type, Counts: cloneCounts(req.Counts), Shuffle: req.Shuffle,
+			PageRanges: maps.Clone(req.PageRanges),
 		},
 		Total: total,
 	}
@@ -193,7 +200,7 @@ func (s *Service) Regenerate(ctx context.Context, user store.User, req Regenerat
 			return "", invalid("The request is not valid.", "avoid", fmt.Sprintf("Each item may have at most %d characters.", maxAvoidChars))
 		}
 	}
-	if err := s.checkDocuments(ctx, user, req.SourceIDs); err != nil {
+	if err := s.checkDocuments(ctx, user, req.SourceIDs, req.PageRanges); err != nil {
 		return "", err
 	}
 	modelID, err := s.resolveModel(req.Model)
@@ -204,6 +211,7 @@ func (s *Service) Regenerate(ctx context.Context, user store.User, req Regenerat
 		Kind: store.KindRegenerate, Model: modelID,
 		Request: store.GenerateRequest{
 			SourceIDs: slices.Clone(req.SourceIDs), Type: req.Type, Marks: req.Marks, Avoid: slices.Clone(req.Avoid),
+			PageRanges: maps.Clone(req.PageRanges),
 		},
 		Total: 1,
 	}
@@ -273,7 +281,7 @@ func (s *Service) checkSourceIDs(ids []string) error {
 	return nil
 }
 
-func (s *Service) checkDocuments(ctx context.Context, user store.User, ids []string) error {
+func (s *Service) checkDocuments(ctx context.Context, user store.User, ids []string, ranges map[string]PageRange) error {
 	docs, err := s.docs.GetDocs(ctx, user.ID, ids)
 	if err != nil {
 		return apperr.Internal(err)
@@ -292,20 +300,55 @@ func (s *Service) checkDocuments(ctx context.Context, user store.User, ids []str
 		}
 		ordered = append(ordered, d)
 	}
+	if err := checkPageRanges(ids, byID, ranges); err != nil {
+		return err
+	}
+	// effective is the pages a PDF contributes: the range length when it has a range.
+	effective := func(d store.Document) int {
+		if r, ok := ranges[d.ID]; ok {
+			return r.To - r.From + 1
+		}
+		return d.Pages
+	}
 	for _, d := range ordered {
-		if d.Type == "PDF" && d.Pages > s.limits.MaxPDFPages {
-			msg := fmt.Sprintf("%s has too many pages. Use a file with at most %d pages.", d.Name, s.limits.MaxPDFPages)
+		if d.Type == "PDF" && effective(d) > s.limits.MaxPDFPages {
+			msg := fmt.Sprintf("%s has too many pages. Choose at most %d pages.", d.Name, s.limits.MaxPDFPages)
 			return invalid(msg, "sourceIds", msg)
 		}
 	}
 	for _, d := range ordered {
-		bytes += d.SizeBytes
+		if _, ranged := ranges[d.ID]; !ranged {
+			bytes += d.SizeBytes // a ranged PDF is measured after trimming, in the worker
+		}
 		if d.Type == "PDF" {
-			pages += d.Pages
+			pages += effective(d)
 		}
 	}
 	if bytes > s.limits.MaxTotalBytes || pages > s.limits.MaxPDFPages {
 		return apperr.Validation(TooLargeMessage, nil)
+	}
+	return nil
+}
+
+// checkPageRanges validates the optional per-PDF ranges (backend-spec 8.4): each key is a
+// selected document, the document is a PDF, and 1 <= from <= to <= its pages.
+func checkPageRanges(ids []string, byID map[string]store.Document, ranges map[string]PageRange) error {
+	for _, id := range slices.Sorted(maps.Keys(ranges)) {
+		r := ranges[id]
+		d, ok := byID[id]
+		if !slices.Contains(ids, id) || !ok {
+			return invalid("The page range is not valid.", "pageRanges", "Page ranges are only for the selected files.")
+		}
+		var msg string
+		switch {
+		case d.Type != "PDF":
+			msg = fmt.Sprintf("%s is not a PDF, so you can't choose pages.", d.Name)
+		case r.From < 1 || r.To < r.From || r.To > d.Pages:
+			msg = fmt.Sprintf("Choose pages 1 to %d for %s.", d.Pages, d.Name)
+		}
+		if msg != "" {
+			return invalid(msg, "pageRanges", msg)
+		}
 	}
 	return nil
 }
@@ -401,4 +444,7 @@ type RegenerateRequest struct {
 	Type      string   `json:"type"`
 	Avoid     []string `json:"avoid"`
 	Model     string   `json:"model,omitempty"`
+	// PageRanges are the ranges of the original request, so the new question is drawn from
+	// the same pages.
+	PageRanges map[string]PageRange `json:"pageRanges,omitempty"`
 }
