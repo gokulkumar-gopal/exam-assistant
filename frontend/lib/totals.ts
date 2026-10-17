@@ -70,6 +70,12 @@ export function isWholeFile(r: PageRange, pages: number): boolean {
   return r.from === 1 && r.to === pages;
 }
 
+/** PDF pages the selection will use: each PDF counts its range (0 if malformed), other files none. */
+export function pdfPageTotal(sel: Pick<Doc, "id" | "type" | "pages">[], ranges: PageRanges = {}): number {
+  return sel.reduce(
+    (sum, d) => sum + (d.type === "PDF" ? rangeLength(effectiveRange(d.pages, ranges[d.id])) : 0), 0);
+}
+
 /** Local mirror of the backend caps (fs 6.4). PDFs count their selected range, other files no pages.
  *  Returns an inline error or null. */
 export function sourceLimitError(
@@ -78,8 +84,7 @@ export function sourceLimitError(
 ): string | null {
   if (sel.length > MAX_SOURCES) return "Pick at most 10 files.";
   if (sel.reduce((s, d) => s + d.sizeBytes, 0) > MAX_BYTES) return "The selected files are over 20 MB in total.";
-  const pdfPages = sel.reduce(
-    (sum, d) => sum + (d.type === "PDF" ? rangeLength(effectiveRange(d.pages, ranges[d.id])) : 0), 0);
+  const pdfPages = pdfPageTotal(sel, ranges);
   if (pdfPages > MAX_PDF_PAGES) {
     return `The selected PDFs contain ${pdfPages} pages. The limit is ${MAX_PDF_PAGES} pages per question set. Select fewer PDFs or narrow a page range.`;
   }

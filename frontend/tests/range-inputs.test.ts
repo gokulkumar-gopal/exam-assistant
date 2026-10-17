@@ -2,6 +2,7 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { SourcesCard } from "../components/SourcesCard";
+import { pdfPageTotal } from "../lib/totals";
 import type { Doc } from "../lib/types";
 
 const pdf = (id: string, pages: number): Doc => ({
@@ -45,3 +46,46 @@ describe("SourcesCard page range inputs", () => {
     expect(html).toContain('role="alert"');
   });
 });
+
+describe("SourcesCard page slider", () => {
+  it("shows a two-handle slider with named handles and a live count", () => {
+    const html = render([pdf("book", 300)], ["book"], { book: { from: 41, to: 80 } });
+    expect(html.match(/type="range"/g)?.length).toBe(2);
+    expect(html).toContain('aria-label="book.pdf first page slider"');
+    expect(html).toContain('aria-label="book.pdf last page slider"');
+    expect(html).toContain("40 of 300 pages");
+  });
+  it("offers Use all pages only when the range is not the whole file", () => {
+    expect(render([pdf("book", 300)], ["book"])).not.toContain("Use all pages");
+    expect(render([pdf("book", 300)], ["book"])).toContain("Whole file");
+    expect(render([pdf("book", 300)], ["book"], { book: { from: 2, to: 300 } })).toContain("Use all pages");
+  });
+  it("keeps the slider sane while a number box is invalid", () => {
+    const html = render([pdf("book", 300)], ["book"], { book: { from: NaN, to: 9999 } });
+    expect(html).toContain('role="alert"');
+    expect(html).toContain('type="range"');
+  });
+  it("shows the page budget meter for selected PDFs, using the range", () => {
+    const html = render([pdf("book", 300), pdf("b", 20)], ["book", "b"], { book: { from: 1, to: 80 } });
+    expect(html).toContain('role="meter"');
+    expect(html).toContain('aria-valuenow="100"');
+    expect(html).toContain("100 / 100 pages");
+    expect(render([pdf("book", 300)], [])).not.toContain('role="meter"');
+  });
+  it("turns the meter red and shows the overage when over the cap", () => {
+    const html = render([pdf("a", 80), pdf("b", 40)], ["a", "b"]);
+    expect(html).toContain("120 / 100 pages");
+    expect(html).toContain("text-bad");
+    expect(html).toContain('aria-valuenow="100"');
+  });
+});
+
+describe("pdfPageTotal", () => {
+  it("sums ranges for PDFs and ignores other files", () => {
+    const sel = [pdf("a", 50), pdf("b", 30), { ...pdf("n", 9), type: "TXT" as const, name: "n.txt" }];
+    expect(pdfPageTotal(sel)).toBe(80);
+    expect(pdfPageTotal(sel, { a: { from: 11, to: 20 } })).toBe(40);
+    expect(pdfPageTotal(sel, { a: { from: 20, to: 11 } })).toBe(30);
+  });
+});
+
