@@ -3,7 +3,10 @@ package gen
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync/atomic"
+
+	"github.com/gokulkumar/exam-assistant/backend/internal/docs"
 )
 
 // fakeSeq numbers fake questions across the whole process, so calls running at the same time
@@ -43,11 +46,31 @@ func (FakeGenerator) Generate(ctx context.Context, in GenInput) (GenOutput, erro
 	return out, nil
 }
 
-// CountTokens implements TokenCounter trivially: one token per four bytes of sources.
+// Rough token costs the fake charges so local runs hit the caps about where a real provider
+// would: a PDF page (AI-spec 5.3 sizes the 100-page cap at 200,000 tokens) and one image.
+const (
+	fakeTokensPerPDFPage = 2000
+	fakeTokensPerImage   = 1500
+)
+
+// CountTokens implements TokenCounter with an estimate: PDFs by page count, images flat, text
+// (and any PDF it cannot read) by one token per four bytes. Raw file bytes are not tokens, so
+// counting a PDF by size would trip the cap on a few hundred kilobytes.
 func (FakeGenerator) CountTokens(_ context.Context, in GenInput) (int, error) {
 	n := 0
 	for _, s := range in.Sources {
-		n += len(s.Bytes)
+		switch {
+		case s.ContentType == "application/pdf":
+			if pages, err := docs.CountPages(s.ContentType, s.Bytes); err == nil {
+				n += pages * fakeTokensPerPDFPage
+				continue
+			}
+			n += len(s.Bytes) / 4
+		case strings.HasPrefix(s.ContentType, "image/"):
+			n += fakeTokensPerImage
+		default:
+			n += len(s.Bytes) / 4
+		}
 	}
-	return n / 4, nil
+	return n, nil
 }

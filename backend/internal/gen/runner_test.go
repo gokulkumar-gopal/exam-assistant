@@ -138,3 +138,32 @@ func TestFakeGeneratorHonoursCountsAndNeverRepeatsATextAcrossCalls(t *testing.T)
 		t.Errorf("free = %+v", f.Questions)
 	}
 }
+
+func TestFakeCountTokensCountsPDFByPagesNotBytes(t *testing.T) {
+	g := FakeGenerator{}
+	count := func(srcs ...SourceFile) int {
+		n, err := g.CountTokens(context.Background(), GenInput{Sources: srcs})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	pdf := testPDF(50)
+	if got, want := count(SourceFile{ContentType: "application/pdf", Bytes: pdf}), 50*fakeTokensPerPDFPage; got != want {
+		t.Errorf("50-page PDF = %d tokens, want %d", got, want)
+	}
+	// Many large PDFs by size would pass 200,000 tokens at one token per four bytes; by pages they do not.
+	big := SourceFile{ContentType: "application/pdf", Bytes: append(append([]byte{}, pdf...), make([]byte, 4<<20)...)}
+	if got := count(big); got > 100*fakeTokensPerPDFPage {
+		t.Errorf("padded PDF = %d tokens, want a page-based count", got)
+	}
+	if got := count(SourceFile{ContentType: "image/png", Bytes: make([]byte, 3<<20)}); got != fakeTokensPerImage {
+		t.Errorf("image = %d tokens, want %d", got, fakeTokensPerImage)
+	}
+	if got := count(SourceFile{ContentType: "text/plain", Bytes: make([]byte, 400)}); got != 100 {
+		t.Errorf("400 bytes of text = %d tokens, want 100", got)
+	}
+	if got := count(SourceFile{ContentType: "application/pdf", Bytes: []byte("not a pdf at all..")}); got != 4 {
+		t.Errorf("unreadable PDF = %d tokens, want bytes/4 = 4", got)
+	}
+}
