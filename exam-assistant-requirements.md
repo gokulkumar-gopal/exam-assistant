@@ -90,7 +90,7 @@ This is a component of Epic E, and it can also be launched standalone from a fil
 - Multiple choice generates 4 options and one correct answer.
 - Free text generates a question and a model answer.
 
-**D-3 (P0)** As a user, I can set a total marks target from 10 to 100 in steps of 10 and a per-mark breakdown.
+**D-3 (P0)** As a user, I can set a total marks target from 10 to 50 in steps of 10 and a per-mark breakdown.
 - Mark values available: 1 to 5.
 - I enter a count of questions per mark value, and the app shows the running total.
 - The total must equal the target, or the app shows the mismatch and blocks generation.
