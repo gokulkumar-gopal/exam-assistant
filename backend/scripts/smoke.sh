@@ -49,8 +49,11 @@ expect() {
 }
 
 # jstr KEY: first "KEY":"value" string in $resp (compact JSON).
+# Go's encoding/json HTML-escapes &, < and > as \u0026, \u003c, \u003e. A presigned
+# S3 URL is full of &, so those escapes must be decoded or the URL is unusable.
 jstr() {
-	printf '%s' "$resp" | sed -n 's/.*"'"$1"'":"\([^"]*\)".*/\1/p' | head -n 1
+	printf '%s' "$resp" | sed -n 's/.*"'"$1"'":"\([^"]*\)".*/\1/p' | head -n 1 |
+		sed -e 's/\\u0026/\&/g' -e 's/\\u003c/</g' -e 's/\\u003e/>/g'
 }
 
 # need NAME VALUE: the step fails when a value that should have been in the response is empty.
