@@ -13,7 +13,7 @@ import {
 import { defaultModelId } from "@/lib/models";
 import { PEEKS_UI } from "@/lib/features";
 import { MAX_PEEKS, peeksValue, stepPeeks } from "@/lib/peeks";
-import { PRESET_SECONDS, assignHelper, parseEmails, type Deadline } from "@/lib/publish";
+import { PRESET_SECONDS, assignHelper, othersOf, parseEmails, withSelf, type Deadline } from "@/lib/publish";
 import type { PublishForm } from "@/components/PublishBar";
 import { Minus, Plus } from "lucide-react";
 import { ModelSelect } from "@/components/ModelSelect";
@@ -76,6 +76,7 @@ function CreateInner() {
   const [closes, setCloses] = useState("86400");
   const [closesAt, setClosesAt] = useState("");
   const [assign, setAssign] = useState("");
+  const [assignSelf, setAssignSelf] = useState(false);
   const [listCount, setListCount] = useState(0); // questions currently in the list
   const [publishLocked, setPublishLocked] = useState(false); // publish in flight or done
   const [peeksEdited, setPeeksEdited] = useState<number | null>(null); // null: follows the default
@@ -242,10 +243,17 @@ function CreateInner() {
     }
   }, [applyModels, chosen, counts, modelId, ranges, shuffle, target, type]);
 
-  const assignees = useMemo(() => parseEmails(assign, user?.role), [assign, user?.role]);
+  const selfEmail = user?.email?.toLowerCase();
+  const useSelf = assignSelf && !!selfEmail;
+  // "Assign to me" counts toward the cap like any other assignee, so it is passed as already-assigned.
+  const assignees = useMemo(
+    () => parseEmails(assign, user?.role, useSelf && selfEmail ? [selfEmail] : []),
+    [assign, user?.role, useSelf, selfEmail],
+  );
+  const assigneeEmails = withSelf(assignees.emails, selfEmail, useSelf);
   // Peeks default to 3 for a personal practice exam and 0 when people are assigned, until the user edits it.
   const peeksCap = result ? Math.min(MAX_PEEKS, listCount) : MAX_PEEKS;
-  const maxPeeks = peeksValue(peeksEdited, assignees.emails, peeksCap);
+  const maxPeeks = peeksValue(peeksEdited, othersOf(assigneeEmails, selfEmail), peeksCap);
   // The deadline is the server's to compute (preset) or the user's chosen time (picker); never the device clock.
   const deadline: Deadline | null = useMemo(() => {
     if (closes !== "custom") return PRESET_SECONDS.includes(Number(closes)) ? { closesInSeconds: Number(closes) } : null;
@@ -253,7 +261,7 @@ function CreateInner() {
     return t && !Number.isNaN(t.getTime()) ? { closesAt: t.toISOString() } : null;
   }, [closes, closesAt]);
   const publishForm: PublishForm = {
-    title, deadline, assigneeEmails: assignees.emails, assignError: assignees.error, maxPeeks,
+    title, deadline, assigneeEmails, assignError: assignees.error, maxPeeks,
   };
 
   const generateEnabled = fs.generateEnabled && !limitError && !rangeInvalid && !running && !publishLocked;
@@ -369,6 +377,10 @@ function CreateInner() {
                   aria-invalid={assignees.error !== null}
                 />
                 {assignees.error && <p id="assign-error" role="alert" className="mt-1 text-[13px] text-bad">{assignees.error}</p>}
+                <label className="mt-2 flex min-h-10 cursor-pointer items-center gap-2.5">
+                  <Checkbox checked={assignSelf} onCheckedChange={(v) => setAssignSelf(v === true)} disabled={!selfEmail} />
+                  <span>Assign to me</span>
+                </label>
                 <p id="assign-help" className="mt-1 text-[13px] text-muted">
                   {assignHelper(user?.role)}. Leave empty for a personal practice exam.
                 </p>

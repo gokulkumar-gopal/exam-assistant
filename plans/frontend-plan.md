@@ -294,6 +294,14 @@ fs 11: publish appears in Open (assignee, and own Open when no assignees) with c
 - [ ] Implement; the mock gets `attempts: Attempt[]` per exam and a `?mockRetake=closed|limit|fail` trigger. Run: PASS.
 - [ ] Commit: "Retakes UI".
 
+### Task F-4.7: Assign to me
+**Spec:** fs 6.4 (Assign to), 6.6 (Assign dialog), 11 **Needs:** F-4.2 (Create), F-3.4 (status); no backend change (bs 8.5 already accepts the creator's own email)
+**Files:** Modify `lib/publish.ts`, `app/create/page.tsx`, `components/AssignDialog.tsx`, `app/exams/[id]/status/page.tsx`; Test `tests/assign-self.test.ts`
+**Interfaces:** `withSelf(emails, selfEmail, includeSelf): string[]` (appends the creator's lowercased email once, dedupes against typed ones); `othersOf(emails, selfEmail)` is what the peeks default looks at, so "Assign to me" alone keeps the default of 3.
+- [ ] Failing tests: `withSelf` appends once and dedupes a typed copy; the cap counts it; peeks default stays 3 with only self and is 0 once another email is typed; the dialog shows the checkbox only when the creator has no row yet; the checkbox is labelled (a11y static test).
+- [ ] Implement; the mock accepts the creator's own email. Run: PASS.
+- [ ] Commit: "Assign to me".
+
 ### Milestone check M4
 fs 11: taking exam autosave and "Saved hh:mm", Save & exit then Resume restores position, refresh keeps timer, changing the device clock does not change timer or deadline text, review lists unanswered and confirms blanks, deadline passes shows "Closing…" and submits with body answers then opens result, `409 exam_closed` toast, result hidden-key state with no ✓/✗ and the "Answers available after {date}." line, creator taking own exam sees no key until submit, 27.5 / 40 shows half marks, print item (A4 and Letter, 60 questions, key only when visible, no attempt started), unreachable-backend item. Needs: B-4 complete on the dev stack.
 

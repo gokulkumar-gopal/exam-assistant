@@ -158,6 +158,8 @@ This is a component of Epic E, and it can also be launched standalone from a fil
 - I can see the marks and my answers for every attempt.
 - The answer key rule is unchanged: per-question correct answers stay hidden until the exam is over (the creator still sees them), while each attempt's total marks are visible right after submitting.
 - Each attempt gets a fresh peek budget. A technical safety limit of 50 attempts per person per exam applies; there is no product limit.
+
+**G-8 (P1)** As an exam creator, I can assign an exam to myself with one tick (**Assign to me**) instead of typing my own email, on Create and in the Assign dialog, alone or together with other people.
 - The creator sees each student's best score, attempt count and per-attempt marks, but never a student's answers.
 
 ### Epic H: Non-functional Requirements

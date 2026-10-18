@@ -2,10 +2,11 @@
 import { useId, useMemo, useRef, useState } from "react";
 import { api, ApiError, errorMessageWithFields, isNetworkError, NETWORK_TOAST } from "@/lib/api";
 import { toast } from "sonner";
-import { assignHelper, parseEmails } from "@/lib/publish";
+import { assignHelper, parseEmails, withSelf } from "@/lib/publish";
 import type { AssignResponse, Role } from "@/lib/types";
 import { Notice } from "@/components/Notice";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
 } from "@/components/ui/dialog";
@@ -27,13 +28,15 @@ function resultText(r: AssignResponse): string {
  * `existing` is who is already on the exam (counts toward the cap). Remount (key) to reset.
  */
 export function AssignDialog({
-  open, onOpenChange, examId, role, existing, onAssigned, finalFocus,
+  open, onOpenChange, examId, role, existing, selfEmail, onAssigned, finalFocus,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   examId: string;
   role: Role | undefined;
   existing: string[];
+  /** The signed-in creator's email; enables "Assign to me" while they have no row on the exam yet. */
+  selfEmail?: string;
   onAssigned: () => void;
   /** Where focus goes when the dialog finishes closing (true = back to the opener). */
   finalFocus?: () => boolean | HTMLElement | null;
@@ -45,9 +48,15 @@ export function AssignDialog({
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<AssignResponse | null>(null);
 
-  const parsed = useMemo(() => parseEmails(text, role, existing), [text, role, existing]);
+  const [includeSelf, setIncludeSelf] = useState(false);
+  const self = selfEmail?.toLowerCase();
+  const offerSelf = !!self && !existing.some((e) => e.toLowerCase() === self);
+  const useSelf = offerSelf && includeSelf;
+  const have = useMemo(() => (useSelf && self ? [...existing, self] : existing), [existing, useSelf, self]);
+  const parsed = useMemo(() => parseEmails(text, role, have), [text, role, have]);
+  const emails = withSelf(parsed.emails, self, useSelf);
   const invalid = parsed.error !== null;
-  const canSubmit = parsed.emails.length > 0 && !invalid && !busy;
+  const canSubmit = emails.length > 0 && !invalid && !busy;
 
   async function submit() {
     if (inflight.current || !canSubmit) return;
@@ -56,9 +65,10 @@ export function AssignDialog({
     setError(null);
     setResult(null);
     try {
-      const r = await api<AssignResponse>("POST", `/exams/${encodeURIComponent(examId)}/assign`, { emails: parsed.emails });
+      const r = await api<AssignResponse>("POST", `/exams/${encodeURIComponent(examId)}/assign`, { emails });
       setResult(r);
       setText("");
+      setIncludeSelf(false);
       onAssigned();
     } catch (e) {
       if (isNetworkError(e)) toast.error(NETWORK_TOAST);
@@ -92,6 +102,12 @@ export function AssignDialog({
             aria-describedby={`${uid}-hint`}
           />
           <p id={`${uid}-hint`} className="text-[13px] text-muted">Separate with commas, spaces or new lines.</p>
+          {offerSelf && (
+            <label className="flex min-h-10 cursor-pointer items-center gap-2.5">
+              <Checkbox checked={includeSelf} onCheckedChange={(v) => setIncludeSelf(v === true)} disabled={busy} />
+              <span>Assign to me</span>
+            </label>
+          )}
           {text.trim() !== "" && parsed.error && <p className="text-[13px] text-bad">{parsed.error}</p>}
           <div aria-live="polite" className="empty:hidden">
             {error && <p role="alert" className="text-sm text-bad">{error}</p>}

@@ -94,6 +94,7 @@ Rules for coding agents:
 - [ ] **P0** Complete the exam in one sitting and submit.
 - [ ] **P0** Save progress and resume later where I left off, within the deadline.
 - [ ] **P0** Retake a submitted exam any number of times until it closes. Every attempt keeps its own answers and marks, and all of them stay visible to the person who took it. The creator sees each student's best score, attempt count and per-attempt marks, but never a student's answers. Each retake gets a fresh peek budget; a technical safety limit of 50 attempts per person per exam applies.
+- [ ] **P1** Assign an exam to myself with one tick (**Assign to me**) on Create and in the Assign dialog, instead of typing my own email, alone or together with other people.
 - [ ] **P0** The answer key is visible to the exam's creator, and to everyone else once the exam is over (the deadline plus a 60-second grace window). A creator who is taking their own exam does not see the key until they submit.
 - [ ] **P0** The deadline has a 60-second grace window so the final auto-submit at zero is never lost.
 - [ ] **P1** Peek at the answer to a single question during the exam for a score penalty: a revealed question earns at most half its marks. The result shows the score with and without the penalty.

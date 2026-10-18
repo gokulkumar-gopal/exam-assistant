@@ -193,6 +193,7 @@ export default function Page() {
             examId={id}
             role={user?.role}
             existing={rows.map((r) => r.email)}
+            selfEmail={user?.email}
             finalFocus={() => {
               // The empty-state Assign button leaves the DOM once the table appears: land on the table heading.
               if (opener.current?.isConnected) return true;

@@ -119,3 +119,16 @@ export function keyMissing(questions: Question[], type: ExamType): number {
       : !q.modelAnswer?.trim(),
   ).length;
 }
+
+/** "Assign to me" (fs 6.4): the creator's own email goes in the same list as everyone else's, once. */
+export function withSelf(emails: readonly string[], selfEmail: string | undefined, includeSelf: boolean): string[] {
+  const self = selfEmail?.trim().toLowerCase();
+  if (!includeSelf || !self || emails.includes(self)) return [...emails];
+  return [...emails, self];
+}
+
+/** The assignees other than the creator: the "practice exam" peek default only looks at these. */
+export function othersOf(emails: readonly string[], selfEmail: string | undefined): string[] {
+  const self = selfEmail?.trim().toLowerCase();
+  return emails.filter((e) => e !== self);
+}

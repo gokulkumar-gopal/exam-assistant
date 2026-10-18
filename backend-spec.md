@@ -187,7 +187,7 @@ type Job struct {
 
 **Derived status "missed"** is never stored. An attempt is `missed` when the exam is over (`now >= ClosesAt + 60 s`, section 9.2) and its status is `not_started`. An `in_progress` attempt past that point is **finalized on read** (section 9.2) into `submitted` with `AutoSubmitted = true`. A `declined` attempt is never finalized and never shown to the assignee again.
 
-**Practice exams:** if the create request has no assignees, the creator gets an attempt row (a personal practice exam). If it has assignees, only they get attempt rows. The creator can add themself by email. Any role may create exams, students included.
+**Practice exams:** if the create request has no assignees, the creator gets an attempt row (a personal practice exam). If it has assignees, only they get attempt rows. The creator can add themself by email; the frontend's **Assign to me** checkbox does exactly that with the creator's own address, so the API has no separate "self" field and treats the creator like any other assignee (counts toward the cap, `alreadyAssigned` if they already hold a row). Any role may create exams, students included.
 
 ### 6.2 DynamoDB tables (physical)
 
