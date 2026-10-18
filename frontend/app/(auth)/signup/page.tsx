@@ -9,6 +9,7 @@ import { validateSignup, type FieldErrors } from "@/lib/authValidation";
 import type { Role, SignupBody, UserResponse } from "@/lib/types";
 import { AuthCard, Field } from "@/components/AuthCard";
 import { GoogleButton } from "@/components/GoogleButton";
+import { GOOGLE_AUTH } from "@/lib/features";
 import { GOOGLE_COPY } from "@/lib/googleAuth";
 import { RoleChips } from "@/components/RoleChips";
 import { Input } from "@/components/ui/input";
@@ -94,16 +95,20 @@ function SignupForm() {
             />
             <p id="role-err" aria-live="polite" className="mt-1 text-[13px] text-bad">{needRole ? GOOGLE_COPY.needRole : errors.role}</p>
           </div>
-          <GoogleButton
-            text="signup_with"
-            role={role}
-            onNeedRole={() => { setNeedRole(true); setGoogleError(null); }}
-            onError={setGoogleError}
-            onBusy={setGoogleBusy}
-          />
-          <div aria-live="polite">
-            {googleError && <p className="mb-3 text-[13px] text-bad">{googleError}</p>}
-          </div>
+          {GOOGLE_AUTH && (
+            <>
+              <GoogleButton
+                text="signup_with"
+                role={role}
+                onNeedRole={() => { setNeedRole(true); setGoogleError(null); }}
+                onError={setGoogleError}
+                onBusy={setGoogleBusy}
+              />
+              <div aria-live="polite">
+                {googleError && <p className="mb-3 text-[13px] text-bad">{googleError}</p>}
+              </div>
+            </>
+          )}
           <Field id="name" label="Name" error={errors.name}>
             <Input id="name" name="name" autoComplete="name" value={name} onChange={(e) => setName(e.target.value)} {...fe("name")} />
           </Field>

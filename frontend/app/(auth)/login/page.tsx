@@ -10,6 +10,7 @@ import { GOOGLE_COPY } from "@/lib/googleAuth";
 import type { LoginBody, Role, UserResponse } from "@/lib/types";
 import { AuthCard, Field } from "@/components/AuthCard";
 import { GoogleButton } from "@/components/GoogleButton";
+import { GOOGLE_AUTH } from "@/lib/features";
 import { RoleChips } from "@/components/RoleChips";
 import { Input } from "@/components/ui/input";
 
@@ -73,22 +74,26 @@ function LoginForm() {
     >
       <form ref={form} method="post" noValidate onSubmit={onSubmit} aria-busy={busy}>
         <fieldset disabled={busy || googleBusy} className="min-w-0">
-          <GoogleButton
-            text="signin_with"
-            role={role}
-            onNeedRole={() => { setNeedRole(true); setGoogleError(null); }}
-            onError={setGoogleError}
-            onBusy={setGoogleBusy}
-          />
-          <div aria-live="polite">
-            {googleError && <p className="mb-3 text-[13px] text-bad">{googleError}</p>}
-          </div>
-          {needRole && (
-            <div className="mb-3.5">
-              <div id="role-label" className="mb-1 text-[13px] font-semibold">I am a</div>
-              <RoleChips value={role} onChange={setRole} highlight labelledBy="role-label" describedBy="role-msg" disabled={googleBusy} />
-              <p id="role-msg" role="status" className="mt-1 text-[13px] text-bad">{GOOGLE_COPY.needRole}</p>
-            </div>
+          {GOOGLE_AUTH && (
+            <>
+              <GoogleButton
+                text="signin_with"
+                role={role}
+                onNeedRole={() => { setNeedRole(true); setGoogleError(null); }}
+                onError={setGoogleError}
+                onBusy={setGoogleBusy}
+              />
+              <div aria-live="polite">
+                {googleError && <p className="mb-3 text-[13px] text-bad">{googleError}</p>}
+              </div>
+              {needRole && (
+                <div className="mb-3.5">
+                  <div id="role-label" className="mb-1 text-[13px] font-semibold">I am a</div>
+                  <RoleChips value={role} onChange={setRole} highlight labelledBy="role-label" describedBy="role-msg" disabled={googleBusy} />
+                  <p id="role-msg" role="status" className="mt-1 text-[13px] text-bad">{GOOGLE_COPY.needRole}</p>
+                </div>
+              )}
+            </>
           )}
           <Field id="email" label="Email" error={errors.email}>
             <Input id="email" name="email" type="email" autoComplete="username" value={email} onChange={(e) => setEmail(e.target.value)} {...fe("email")} />
