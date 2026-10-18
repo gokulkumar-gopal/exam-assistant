@@ -53,7 +53,7 @@ Rules for coding agents:
 ### 4. Question Generation
 - [ ] **P0** Select one or more files as sources.
 - [ ] **P0** Choose multiple choice or free text.
-- [ ] **P0** Set a total marks target (for example 30, 40, 50).
+- [ ] **P0** Set a total marks target from 10 to 100 in steps of 10.
 - [ ] **P0** Set the number of questions per mark value, from 1 to 5 marks, and block generation if the total doesn't match the target.
 - [ ] **P0** Generate questions from the selected files, at varying complexity, each showing its marks and source.
 - [ ] **P0** Order questions ascending by marks by default, with an optional shuffle.

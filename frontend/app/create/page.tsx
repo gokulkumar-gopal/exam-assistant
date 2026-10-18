@@ -28,7 +28,7 @@ import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 
 const MARKS: Marks[] = [1, 2, 3, 4, 5];
-const TARGETS = [30, 40, 50] as const;
+const TARGETS = [10, 20, 30, 40, 50, 60, 70, 80, 90, 100] as const;
 const MAX_COUNT = 30;
 const CLOSES = [
   { value: "3600", label: "1 hour" },
@@ -312,7 +312,7 @@ function CreateInner() {
             </div>
           </Card>
           <Card id="total-h" title="Total marks">
-            <div role="radiogroup" aria-labelledby="total-h" className="flex gap-2">
+            <div role="radiogroup" aria-labelledby="total-h" className="grid grid-cols-5 gap-2 min-[560px]:grid-cols-10">
               {TARGETS.map((t) => (
                 <button
                   key={t}
@@ -320,7 +320,7 @@ function CreateInner() {
                   role="radio"
                   aria-checked={target === t}
                   onClick={() => setTarget(t)}
-                  className={cn(SEG, "flex-none min-w-16", target === t ? "border-transparent bg-grad text-white" : "border-line bg-card text-ink hover:bg-tint")}
+                  className={cn(SEG, "min-w-0 px-0", target === t ? "border-transparent bg-grad text-white" : "border-line bg-card text-ink hover:bg-tint")}
                 >
                   {t}
                 </button>
